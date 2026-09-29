@@ -1,0 +1,821 @@
+<!doctype html>
+<html lang="km">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Khmer TTS Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Kantumruy+Pro:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#f5f5f2; --card:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e2e2dc; --accent:#2f5d8a; --err:#b3261e;
+          --female:#b0417a; --male:#2f6fb0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 "Kantumruy Pro", "Khmer OS", system-ui, sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  label { display:block; font-weight:600; margin:0 0 6px; }
+  textarea, input, select { width:100%; font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:#fff; color:inherit; }
+  textarea { min-height:220px; resize:vertical; }
+  .tabs { display:flex; gap:8px; margin-bottom:16px; }
+  .tab { flex:1; padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; font:inherit; font-weight:600; }
+  .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px; }
+  .field { margin-bottom:14px; }
+  .hint { color:var(--muted); font-size:13px; margin-top:4px; }
+  input[type=range] { padding:0; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button.go { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:11px 22px; font:inherit; font-weight:600; cursor:pointer; }
+  button.go:disabled { opacity:.6; cursor:wait; }
+  button.alt { background:#fff; color:var(--accent); border:1px solid var(--accent); border-radius:8px; padding:5px 12px; font:inherit; font-size:13px; cursor:pointer; }
+  #status { color:var(--muted); }
+  #status.err { color:var(--err); }
+  .count { color:var(--muted); font-size:13px; text-align:right; margin-top:4px; }
+  audio { width:100%; }
+  .history-item { border-top:1px solid var(--line); padding:10px 0; }
+  .history-item:first-child { border-top:0; }
+  .meta { font-size:13px; color:var(--muted); display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  a { color:var(--accent); }
+  .modes { display:inline-flex; flex-wrap:wrap; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin-bottom:14px; }
+  .mode { border:0; background:#fff; padding:7px 16px; font:inherit; cursor:pointer; }
+  .mode.active { background:var(--ink); color:#fff; }
+  .check { display:flex; gap:8px; align-items:center; }
+  .check input { width:auto; }
+  .cues { max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:8px; margin-bottom:14px; font-size:14px; }
+  .cue { display:flex; gap:10px; padding:5px 10px; border-top:1px solid var(--line); align-items:baseline; }
+  .cue:first-child { border-top:0; }
+  .cue time { color:var(--muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .g { font-size:12px; font-weight:600; border-radius:4px; padding:0 6px; white-space:nowrap; }
+  .g.female { color:var(--female); background:color-mix(in srgb, var(--female) 12%, #fff); }
+  .g.male { color:var(--male); background:color-mix(in srgb, var(--male) 12%, #fff); }
+  .removed { color:var(--muted); opacity:.6; }
+  .box { border:1px dashed var(--line); border-radius:8px; padding:12px 12px 0; margin-bottom:14px; }
+  .progress { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:12px; }
+  #progress-bar { height:100%; width:0; background:var(--accent); transition:width .3s; }
+  .warnings { margin-top:10px; font-size:13px; color:#8a5a00; max-height:120px; overflow:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Khmer TTS Studio</h1>
+  <p class="sub">បម្លែងអត្ថបទទៅជាសំឡេង ដោយប្រើ Edge TTS (ឥតគិតថ្លៃ) ឬ Gemini TTS · បម្លែងសំឡេងទៅជា SRT</p>
+
+  <div class="tabs" id="engine-tabs">
+    <button class="tab active" data-engine="edge">Edge TTS</button>
+    <button class="tab" data-engine="gemini">Gemini TTS</button>
+  </div>
+
+  <div class="card">
+    <div class="modes">
+      <button class="mode active" data-mode="text">អត្ថបទ</button>
+      <button class="mode" data-mode="srt">ឯកសារ SRT</button>
+      <button class="mode" data-mode="stt">សំឡេង → SRT</button>
+      <button class="mode" data-mode="merge">Merge វីដេអូ</button>
+      <button class="mode" data-mode="mute">Mute វីដេអូ</button>
+    </div>
+
+    <!-- Text mode -->
+    <div class="field" id="text-input">
+      <label for="text">អត្ថបទ</label>
+      <textarea id="text" placeholder="បញ្ចូលអត្ថបទរឿងនៅទីនេះ..."></textarea>
+      <div class="count" id="count">0 តួអក្សរ</div>
+    </div>
+
+    <!-- SRT mode -->
+    <div id="srt-input" hidden>
+      <div class="field">
+        <label for="srt-file">ជ្រើសរើសឯកសារ .srt</label>
+        <input type="file" id="srt-file" accept=".srt">
+        <div class="hint">subtitle នីមួយៗនឹងត្រូវបម្លែងជាសំឡេង ហើយដាក់តាមពេលវេលារបស់វា។</div>
+      </div>
+      <div class="cues" id="cues" hidden></div>
+
+      <div class="box">
+        <div class="field">
+          <label for="video-file">វីដេអូ (ជាជម្រើស)</label>
+          <input type="file" id="video-file" accept="video/*,.mp4,.mkv,.mov,.avi,.webm">
+          <div class="hint">បើជ្រើសវីដេអូ សំឡេង TTS នឹងត្រូវដាក់ចូលក្នុងវីដេអូ ហើយកាត់ជាផ្នែកៗដោយស្វ័យប្រវត្តិ</div>
+        </div>
+        <div class="grid" id="video-opts" hidden>
+          <div class="field">
+            <label>សំឡេងដើម (តន្ត្រី/បែបផែន): <span id="orig-volume-v">15</span>%</label>
+            <input type="range" id="orig-volume" min="0" max="100" step="5" value="15">
+            <label class="check" style="margin-top:6px;font-weight:400"><input type="checkbox" id="orig-mute"> 🔇 Mute សំឡេងដើម (ឮតែសំឡេង TTS)</label>
+          </div>
+          <div class="field">
+            <label for="part-minutes">កាត់ជាផ្នែក (នាទី)</label>
+            <input type="number" id="part-minutes" min="0" max="120" value="10">
+            <div class="hint">កាត់នៅចន្លោះស្ងាត់ជិតបំផុត · 0 = មិនកាត់</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="field">
+          <label class="check"><input type="checkbox" id="fit" checked> ពន្លឿនសំឡេងឱ្យត្រូវនឹងពេល</label>
+          <div class="hint">ពេលសំឡេងវែងជាងចន្លោះរបស់ subtitle</div>
+        </div>
+        <div class="field">
+          <label>ល្បឿនអតិបរមា: <span id="max-speed-v">1.5</span>x</label>
+          <input type="range" id="max-speed" min="1" max="2.5" step="0.1" value="1.5">
+        </div>
+        <div class="field">
+          <label for="format">ទម្រង់ឯកសារ</label>
+          <select id="format"><option value="mp3">MP3</option><option value="wav">WAV</option></select>
+        </div>
+        <div class="field">
+          <label for="workers">ចំនួនដំណើរការស្របគ្នា</label>
+          <input type="number" id="workers" min="1" max="16" value="12">
+          <div class="hint">Edge: ច្រើនជាង = លឿនជាង · Gemini: បន្ថយមក 1-2 បើជួប rate limit (429)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Merge mode -->
+    <div id="merge-input" hidden>
+      <div class="field">
+        <label for="merge-files">ជ្រើសរើសវីដេអូច្រើន (part01, part02, ...)</label>
+        <input type="file" id="merge-files" multiple accept="video/*,.mp4,.mkv,.mov,.avi,.webm">
+        <div class="hint">តម្រៀបតាមឈ្មោះដោយស្វ័យប្រវត្តិ — ប្រើ ↑ ↓ ដើម្បីប្តូរលំដាប់</div>
+      </div>
+      <div class="cues" id="merge-list" hidden></div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="merge-reencode"> Encode ឡើងវិញ (យឺត — ប្រើតែពេលវីដេអូដែលបានបញ្ចូលមានបញ្ហា)</label>
+        <div class="hint">ជាធម្មតា វីដេអូដែលមានទម្រង់ដូចគ្នាត្រូវចម្លងផ្ទាល់ — លឿនបំផុត ហើយគុណភាពមិនបាត់បង់</div>
+      </div>
+    </div>
+
+    <!-- Mute mode -->
+    <div id="mute-input" hidden>
+      <div class="field">
+        <label for="mute-files">ជ្រើសរើសវីដេអូ (មួយ ឬច្រើន)</label>
+        <input type="file" id="mute-files" multiple accept="video/*,.mp4,.mkv,.mov,.avi,.webm">
+        <div class="hint">លុបសំឡេងចេញទាំងស្រុង — វីដេអូត្រូវចម្លងផ្ទាល់ (លឿន ហើយគុណភាពមិនបាត់បង់)</div>
+      </div>
+    </div>
+
+    <!-- Audio → SRT mode -->
+    <div id="stt-input" hidden>
+      <div class="field">
+        <label for="stt-file">ជ្រើសរើសឯកសារសំឡេង (MP3, WAV, M4A...) ឬវីដេអូ</label>
+        <input type="file" id="stt-file" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.mp4,.mkv">
+        <div class="hint">Gemini នឹងស្តាប់ ហើយសរសេរជា subtitle ដែលមានពេលវេលា។ សំឡេងវែងត្រូវបំបែកជាផ្នែក 10 នាទីដោយស្វ័យប្រវត្តិ។</div>
+      </div>
+      <div class="grid">
+        <div class="field">
+          <label for="stt-model">Model</label>
+          <select id="stt-model">
+            {% for m in stt_models %}<option>{{ m }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="stt-target">បកប្រែទៅជា</label>
+          <select id="stt-target">
+            <option value="km">ភាសាខ្មែរ</option>
+            <option value="">មិនបកប្រែ (រក្សាភាសាដើម)</option>
+            <option value="en">English</option>
+            <option value="th">ថៃ</option>
+            <option value="vi">វៀតណាម</option>
+            <option value="zh">ចិន</option>
+          </select>
+          <div class="hint">SRT ភាសាដើមក៏ត្រូវរក្សាទុកដែរ</div>
+        </div>
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="stt-gender" checked> ចាប់ភេទអ្នកនិយាយ (ស្រី/ប្រុស)</label>
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="stt-dub" checked> បង្កើតសំឡេង TTS ភ្លាមបន្ទាប់ពីបាន SRT</label>
+        <div class="hint">ប្រើ engine និងសំឡេងដែលជ្រើសខាងក្រោម</div>
+      </div>
+    </div>
+
+    <div class="box" id="gender-box">
+      <div class="field">
+        <label class="check"><input type="checkbox" id="auto-gender" checked> ជ្រើសសំឡេងស្រី/ប្រុសដោយស្វ័យប្រវត្តិ</label>
+        <div class="hint" id="gender-hint">ប្រើចំពោះបន្ទាត់ដែលមាន (ស្រី) ឬ (ប្រុស) — បង្កើតដោយមុខងារ "សំឡេង → SRT"</div>
+      </div>
+      <div class="grid" id="gender-voices">
+        <div class="field">
+          <label for="voice-female">សំឡេងស្រី</label>
+          <select id="voice-female"></select>
+        </div>
+        <div class="field">
+          <label for="voice-male">សំឡេងប្រុស</label>
+          <select id="voice-male"></select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gemini API key: Gemini TTS និង សំឡេង → SRT -->
+    <div class="field" id="key-field" hidden>
+      <label for="api-key">Gemini API Key</label>
+      <input type="password" id="api-key" placeholder="{% if has_env_key %}ប្រើ GEMINI_API_KEY ពី environment{% else %}AIza...{% endif %}">
+      <div class="hint">រក្សាទុកក្នុង browser របស់អ្នកតែប៉ុណ្ណោះ។ យក Key បាននៅ aistudio.google.com/apikey</div>
+    </div>
+
+    <!-- Edge settings -->
+    <div id="edge-settings">
+      <div class="grid">
+        <div class="field">
+          <label for="edge-lang">ភាសា</label>
+          <select id="edge-lang"></select>
+        </div>
+        <div class="field">
+          <label for="edge-voice">សំឡេង</label>
+          <select id="edge-voice"><option>កំពុងផ្ទុក...</option></select>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="field">
+          <label>ល្បឿន: <span id="rate-v">0</span>%</label>
+          <input type="range" id="rate" min="-50" max="100" value="0">
+        </div>
+        <div class="field">
+          <label>កម្រិតសំឡេង (Pitch): <span id="pitch-v">0</span>Hz</label>
+          <input type="range" id="pitch" min="-50" max="50" value="0">
+        </div>
+        <div class="field">
+          <label>កម្រិតខ្លាំង (Volume): <span id="volume-v">0</span>%</label>
+          <input type="range" id="volume" min="-50" max="50" value="0">
+        </div>
+      </div>
+    </div>
+
+    <!-- Gemini settings -->
+    <div id="gemini-settings" hidden>
+      <div class="grid">
+        <div class="field">
+          <label for="gemini-model">Model</label>
+          <select id="gemini-model">
+            {% for m in gemini_models %}<option>{{ m }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="gemini-voice">សំឡេង</label>
+          <select id="gemini-voice">
+            {% for v in gemini_voices %}<option value="{{ v.name }}">{{ v.name }} ({{ "ស្រី" if v.gender == "Female" else "ប្រុស" }})</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="style">រចនាប័ទ្មនិយាយ (ជាជម្រើស)</label>
+        <input id="style" placeholder="ឧ. Read this story in Khmer, warmly and slowly, like a storyteller">
+        <div class="hint">ការណែនាំនេះប្រាប់ Gemini ពីអារម្មណ៍ និងល្បឿន។ អត្ថបទវែងនឹងត្រូវបំបែកជាផ្នែកៗដោយស្វ័យប្រវត្តិ។</div>
+      </div>
+    </div>
+
+    <div class="field" id="strip-field">
+      <label class="check"><input type="checkbox" id="strip-parens" checked> លុបអត្ថបទក្នុង ( ) ដោយស្វ័យប្រវត្តិ</label>
+      <div class="hint">ឧ. ឈ្មោះតួអង្គ "(សុខា): សួស្តី" → អានតែ "សួស្តី"</div>
+    </div>
+
+    <div class="row">
+      <button class="go" id="go">បង្កើតសំឡេង</button>
+      <span id="status"></span>
+    </div>
+    <div class="progress" id="progress" hidden><div id="progress-bar"></div></div>
+    <div class="warnings" id="warnings" hidden></div>
+  </div>
+
+  <div class="card">
+    <label>លទ្ធផល</label>
+    <div id="history"><div class="hint">មិនទាន់មានលទ្ធផលនៅឡើយ</div></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <label style="margin:0">ឯកសារដែលបានរក្សាទុក <span class="hint">(outputs/)</span></label>
+      <button class="alt" id="saved-refresh">↻ ផ្ទុកឡើងវិញ</button>
+    </div>
+    <video id="saved-player" controls hidden style="width:100%;border-radius:8px;background:#000;margin-top:10px"></video>
+    <audio id="saved-audio" controls hidden style="margin-top:10px"></audio>
+    <div class="cues" id="saved" style="margin-top:10px;max-height:420px"><div class="cue"><span class="hint">កំពុងផ្ទុក...</span></div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const GEMINI_VOICES = {{ gemini_voices | tojson }};
+const GENDER_KM = { female: "ស្រី", male: "ប្រុស", Female: "ស្រី", Male: "ប្រុស" };
+let engine = "edge", mode = "text", edgeVoices = [], cues = [];
+
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmtTime = ms => new Date(ms).toISOString().substring(11, 23).replace(".", ",");
+function setStatus(msg, err) { $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+
+// ---------- layout ----------
+function updateUI() {
+  const stt = mode === "stt", merge = mode === "merge", mute = mode === "mute";
+  const tool = merge || mute;   // ឧបករណ៍វីដេអូ — មិនត្រូវការការកំណត់ TTS
+  const dub = !tool && (!stt || $("stt-dub").checked);   // ត្រូវការការកំណត់ TTS ឬទេ
+  $("engine-tabs").hidden = !dub;
+  $("text-input").hidden = mode !== "text";
+  $("srt-input").hidden = mode !== "srt";
+  $("stt-input").hidden = !stt;
+  $("merge-input").hidden = !merge;
+  $("mute-input").hidden = !mute;
+  $("gender-box").hidden = mode === "text" || !dub;
+  $("edge-settings").hidden = !dub || engine !== "edge";
+  $("gemini-settings").hidden = !dub || engine !== "gemini";
+  $("key-field").hidden = tool || !(stt || engine === "gemini");
+  $("strip-field").hidden = !dub;
+  const withVideo = mode === "srt" && $("video-file").files.length > 0;
+  $("video-opts").hidden = !withVideo;
+  $("orig-volume").disabled = $("orig-mute").checked;
+  $("go").textContent = merge ? "Merge វីដេអូ" : mute ? "🔇 Mute វីដេអូ"
+    : withVideo ? "បង្កើតសំឡេង → ដាក់ចូលវីដេអូ"
+    : !stt ? "បង្កើតសំឡេង" : dub ? "បម្លែងទៅជា SRT → បង្កើតសំឡេង" : "បម្លែងទៅជា SRT";
+  $("gender-voices").hidden = !$("auto-gender").checked;
+}
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll(".mode").forEach(x => x.classList.toggle("active", x.dataset.mode === m));
+  updateUI();
+}
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  engine = t.dataset.engine;
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === t));
+  fillGenderVoices();
+  updateUI();
+});
+document.querySelectorAll(".mode").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+// ---------- inputs ----------
+["rate", "pitch", "volume"].forEach(id => {
+  $(id).oninput = () => $(id + "-v").textContent = $(id).value;
+});
+$("max-speed").oninput = () => $("max-speed-v").textContent = $("max-speed").value;
+$("orig-volume").value = store.get("orig_volume") ?? 15;
+$("orig-volume-v").textContent = $("orig-volume").value;
+$("orig-volume").oninput = () => {
+  $("orig-volume-v").textContent = $("orig-volume").value;
+  store.set("orig_volume", $("orig-volume").value);
+};
+$("part-minutes").value = store.get("part_minutes") ?? 10;
+$("part-minutes").onchange = () => store.set("part_minutes", $("part-minutes").value);
+$("video-file").onchange = () => updateUI();
+$("orig-mute").checked = store.get("orig_mute") === "1";
+$("orig-mute").onchange = () => { store.set("orig_mute", $("orig-mute").checked ? "1" : "0"); updateUI(); };
+$("text").oninput = () => $("count").textContent = $("text").value.length + " តួអក្សរ";
+
+$("api-key").value = store.get("gemini_api_key") || "";
+$("api-key").onchange = () => store.set("gemini_api_key", $("api-key").value.trim());
+$("gemini-voice").value = store.get("gemini_voice") || "Kore";
+$("gemini-voice").onchange = () => store.set("gemini_voice", $("gemini-voice").value);
+$("stt-model").value = store.get("stt_model") || $("stt-model").value;
+$("stt-model").onchange = () => store.set("stt_model", $("stt-model").value);
+$("stt-target").value = store.get("stt_target") ?? "km";
+$("stt-target").onchange = () => store.set("stt_target", $("stt-target").value);
+$("stt-dub").checked = store.get("stt_dub") !== "0";
+$("stt-dub").onchange = () => { store.set("stt_dub", $("stt-dub").checked ? "1" : "0"); updateUI(); };
+
+$("strip-parens").checked = store.get("strip_parens") !== "0";
+$("strip-parens").onchange = () => {
+  store.set("strip_parens", $("strip-parens").checked ? "1" : "0");
+  renderCues();
+};
+$("auto-gender").checked = store.get("auto_gender") !== "0";
+$("auto-gender").onchange = () => { store.set("auto_gender", $("auto-gender").checked ? "1" : "0"); updateUI(); };
+
+// ---------- voices ----------
+async function loadEdgeVoices() {
+  const res = await fetch("/api/edge-voices");
+  const data = await res.json();
+  if (!res.ok) { $("edge-voice").innerHTML = `<option>${esc(data.error)}</option>`; return; }
+  edgeVoices = data;
+  const langs = [...new Set(data.map(v => v.locale))];
+  $("edge-lang").innerHTML = langs.map(l => `<option>${l}</option>`).join("");
+  $("edge-lang").value = store.get("edge_lang") || "km-KH";
+  fillEdgeVoices();
+  const saved = store.get("edge_voice");
+  if (saved && [...$("edge-voice").options].some(o => o.value === saved)) $("edge-voice").value = saved;
+}
+function voiceOption(v, prefix) {
+  return `<option value="${v.name}">${v.name.replace(prefix, "")} (${GENDER_KM[v.gender]})</option>`;
+}
+function fillEdgeVoices() {
+  const lang = $("edge-lang").value;
+  $("edge-voice").innerHTML = edgeVoices.filter(v => v.locale === lang).map(v => voiceOption(v, lang + "-")).join("");
+  fillGenderVoices();
+}
+// បញ្ជីសំឡេងស្រី/ប្រុស សម្រាប់ជ្រើសដោយស្វ័យប្រវត្តិ តាម engine ដែលកំពុងប្រើ
+function fillGenderVoices() {
+  const lang = $("edge-lang").value;
+  const list = engine === "edge" ? edgeVoices.filter(v => v.locale === lang) : GEMINI_VOICES;
+  const prefix = engine === "edge" ? lang + "-" : "";
+  for (const g of ["female", "male"]) {
+    const sel = $("voice-" + g);
+    const opts = list.filter(v => v.gender.toLowerCase() === g);
+    sel.innerHTML = (opts.length ? opts : list).map(v => voiceOption(v, prefix)).join("");
+    const saved = store.get(`voice_${g}_${engine}`);
+    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+    sel.onchange = () => store.set(`voice_${g}_${engine}`, sel.value);
+  }
+}
+$("edge-lang").onchange = () => { store.set("edge_lang", $("edge-lang").value); fillEdgeVoices(); };
+$("edge-voice").onchange = () => store.set("edge_voice", $("edge-voice").value);
+loadEdgeVoices();
+fillGenderVoices();
+
+// ---------- SRT preview ----------
+function loadCues(list) {
+  cues = list;
+  renderCues();
+  $("cues").hidden = !cues.length;
+  const f = cues.filter(c => c.gender === "female").length, m = cues.filter(c => c.gender === "male").length;
+  $("gender-hint").textContent = f + m
+    ? `រកឃើញ ស្រី ${f} បន្ទាត់ · ប្រុស ${m} បន្ទាត់ · មិនស្គាល់ ${cues.length - f - m} (ប្រើសំឡេងចម្បង)`
+    : "ឯកសារនេះមិនមាន (ស្រី)/(ប្រុស) ទេ — បន្ទាត់ទាំងអស់នឹងប្រើសំឡេងចម្បង";
+}
+// បង្ហាញផ្នែកក្នុង ( ) ដែលនឹងត្រូវលុប ជាអក្សរឆូត
+function renderCues() {
+  if (!cues.length) return;
+  const strip = $("strip-parens").checked;
+  $("cues").innerHTML = cues.map(c => {
+    const html = strip
+      ? esc(c.text).replace(/\([^()]*\)|（[^（）]*）/g, m => `<s class="removed">${m}</s>`)
+      : esc(c.text);
+    const badge = c.gender ? `<span class="g ${c.gender}">${GENDER_KM[c.gender]}</span>` : "";
+    const orig = c.original && c.original !== c.text ? `<div class="hint">${esc(c.original)}</div>` : "";
+    return `<div class="cue"><time>${fmtTime(c.start)}</time>${badge}<span>${html}${orig}</span></div>`;
+  }).join("");
+}
+$("srt-file").onchange = async () => {
+  loadCues([]);
+  const file = $("srt-file").files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch("/api/srt/parse", { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) return setStatus(data.error, true);
+  loadCues(data.cues);
+  setStatus(`${cues.length} បន្ទាត់ · ${fmtTime(cues[cues.length - 1].end)}`);
+};
+
+// ---------- requests ----------
+function engineSettings() {
+  const common = { engine, strip_parens: $("strip-parens").checked };
+  return engine === "edge"
+    ? { ...common, voice: $("edge-voice").value, rate: +$("rate").value, pitch: +$("pitch").value, volume: +$("volume").value }
+    : { ...common, api_key: $("api-key").value.trim(), model: $("gemini-model").value, voice: $("gemini-voice").value, style: $("style").value };
+}
+async function postJSON(url, body) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+async function pollJob(job, labels) {
+  $("progress").hidden = false;
+  store.set("active_job", job);  // ដើម្បីបន្តតាមដានក្រោយ reload
+  let failures = 0;
+  try {
+    while (true) {
+      await new Promise(r => setTimeout(r, 1000));
+      let res, s;
+      try {
+        res = await fetch(`/api/jobs/${job}`);
+        s = await res.json();
+        failures = 0;
+      } catch (e) {  // បណ្តាញដាច់មួយភ្លែត — ព្យាយាមម្តងទៀត
+        if (++failures > 30) throw new Error("មិនអាចភ្ជាប់ទៅកម្មវិធីបាន — សូមពិនិត្យថា run.bat នៅតែដំណើរការ");
+        continue;
+      }
+      if (!res.ok) throw new Error(s.error);
+      $("progress-bar").style.width = (100 * s.done / s.total) + "%";
+      if (s.status === "error") throw new Error(s.error);
+      if (s.status === "done") { loadSaved(); return s; }
+      setStatus(s.status === "mixing" ? "កំពុងតម្រឹមពេលវេលា..."
+        : s.status === "video" ? "កំពុងដាក់សំឡេងចូលវីដេអូ និងកាត់ជាផ្នែកៗ..." : labels(s));
+    }
+  } finally {
+    store.set("active_job", "");
+  }
+}
+
+// ---------- ឯកសារដែលបានរក្សាទុក (មិនបាត់ពេល reload) ----------
+const KIND_KM = { video: "វីដេអូ", audio: "សំឡេង", srt: "SRT", parts: "វីដេអូ (ផ្នែកៗ)" };
+function savedRow(label, path, size, kind) {
+  const url = "/outputs/" + encodeURI(path);
+  const play = (kind === "video" || kind === "audio"
+    ? `<button class="alt" data-play="${url}" data-kind="${kind}">▶</button>` : "")
+    + (kind === "video" ? `<button class="alt" data-mute="${esc(path)}" title="លុបសំឡេងចេញ">🔇</button>` : "");
+  return `<div class="cue">${play}<span style="flex:1;word-break:break-all">${esc(label)}</span>
+    <span class="hint">${fmtSize(size)}</span><a href="${url}?dl=1" download>ទាញយក</a></div>`;
+}
+async function loadSaved() {
+  let items;
+  try { items = await (await fetch("/api/history")).json(); }
+  catch { $("saved").innerHTML = `<div class="cue"><span class="hint">មិនអាចផ្ទុកបានទេ</span></div>`; return; }
+  if (!items.length) { $("saved").innerHTML = `<div class="cue"><span class="hint">មិនទាន់មានឯកសារ</span></div>`; return; }
+  $("saved").innerHTML = items.map(it => {
+    const when = new Date(it.mtime * 1000).toLocaleString();
+    const head = `<div class="cue" style="background:var(--bg)"><span class="g">${KIND_KM[it.kind]}</span>
+      <span class="hint" style="flex:1">${esc(it.kind === "parts" ? it.name : "")}</span><span class="hint">${when}</span></div>`;
+    if (it.kind === "parts") {
+      const merge = it.parts.length > 1
+        ? `<div class="cue"><button class="alt" data-merge="${esc(JSON.stringify(it.parts.map(p => p.path)))}">Merge ${it.parts.length} ផ្នែក</button></div>` : "";
+      return head + it.parts.map(p => savedRow(p.name, p.path, p.size, "video")).join("") + merge;
+    }
+    return head + savedRow(it.name, it.path, it.size, it.kind);
+  }).join("");
+  $("saved").querySelectorAll("button[data-play]").forEach(b => b.onclick = () => {
+    const video = b.dataset.kind === "video";
+    const player = $(video ? "saved-player" : "saved-audio");
+    $("saved-player").hidden = !video;
+    $("saved-audio").hidden = video;
+    $(video ? "saved-audio" : "saved-player").pause();
+    player.src = b.dataset.play;
+    player.play().catch(() => {});
+  });
+  $("saved").querySelectorAll("button[data-merge]").forEach(b => b.onclick = () => withBusy(async t0 => {
+    const { job } = await postJSON("/api/merge", { paths: JSON.parse(b.dataset.merge) });
+    await finishMerge(job, t0);
+  }));
+}
+$("saved-refresh").onclick = loadSaved;
+// ប៊ូតុង 🔇 ក្នុងបញ្ជី — ប្រើ event delegation ព្រោះបញ្ជីត្រូវគូរឡើងវិញញឹកញាប់
+$("saved").addEventListener("click", e => {
+  const b = e.target.closest("button[data-mute]");
+  if (!b) return;
+  withBusy(async t0 => {
+    const { job } = await postJSON("/api/mute", { paths: [b.dataset.mute] });
+    await finishMute(job, t0);
+  });
+});
+
+// ---------- Mute ----------
+async function runMute(t0) {
+  const files = [...$("mute-files").files];
+  if (!files.length) throw new Error("សូមជ្រើសរើសវីដេអូ");
+  const fd = new FormData();
+  files.forEach(f => fd.append("videos", f, f.name));
+  const { job } = await uploadWithProgress("/api/mute", fd);
+  await finishMute(job, t0);
+}
+async function finishMute(job, t0) {
+  const s = await pollJob(job, s => `កំពុង Mute ${s.done}%...`);
+  setStatus(`រួចរាល់ — ${s.files.length} វីដេអូគ្មានសំឡេង (${secs(t0)})`);
+  if (s.warnings.length) {
+    $("warnings").innerHTML = s.warnings.map(esc).join("<br>");
+    $("warnings").hidden = false;
+  }
+  const rows = s.files.map(f => {
+    const url = "/outputs/" + encodeURI(f.name);
+    return `<div class="cue"><span style="flex:1;word-break:break-all">🔇 ${esc(f.name)}</span>
+      <span class="hint">${fmtDur(f.duration)} · ${fmtSize(f.size)}</span><a href="${url}?dl=1" download>ទាញយក</a></div>`;
+  }).join("");
+  addItem(`<video controls muted src="/outputs/${encodeURI(s.files[0].name)}" style="width:100%;border-radius:8px;background:#000"></video>
+    <div class="cues">${rows}</div>`);
+}
+const secs = t0 => ((Date.now() - t0) / 1000).toFixed(1) + "s";
+
+async function runText(body, t0) {
+  body.text = $("text").value.trim();
+  if (!body.text) throw new Error("សូមបញ្ចូលអត្ថបទ");
+  setStatus("កំពុងបង្កើតសំឡេង...");
+  const data = await postJSON("/api/tts", body);
+  setStatus(`រួចរាល់ (${secs(t0)})`);
+  addAudioResult(data, body.voice);
+}
+
+async function runSrt(body, t0) {
+  if (!cues.length) throw new Error("សូមជ្រើសរើសឯកសារ .srt");
+  const auto = $("auto-gender").checked && cues.some(c => c.gender);
+  Object.assign(body, {
+    cues, fit: $("fit").checked, max_speed: +$("max-speed").value,
+    format: $("format").value, workers: +$("workers").value,
+    auto_gender: auto, voice_female: $("voice-female").value, voice_male: $("voice-male").value,
+  });
+  const video = $("video-file").files[0];
+  let job;
+  if (video) {
+    body.orig_volume = $("orig-mute").checked ? 0 : +$("orig-volume").value / 100;
+    body.part_minutes = +$("part-minutes").value;
+    const fd = new FormData();
+    fd.append("video", video);
+    fd.append("payload", JSON.stringify(body));
+    ({ job } = await uploadWithProgress("/api/video-dub", fd));
+  } else {
+    ({ job } = await postJSON("/api/srt", body));
+  }
+  const s = await pollJob(job, s => `កំពុងបង្កើតសំឡេង ${s.done}/${s.total}...`);
+  setStatus(video ? `រួចរាល់ ${s.parts.length} ផ្នែក (${secs(t0)})` : `រួចរាល់ ${s.total} បន្ទាត់ (${secs(t0)})`);
+  if (s.warnings.length) {
+    $("warnings").innerHTML = s.warnings.map(esc).join("<br>");
+    $("warnings").hidden = false;
+  }
+  const voiceLabel = auto ? `ស្រី: ${body.voice_female} · ប្រុស: ${body.voice_male}` : body.voice;
+  if (video) addVideoResult(s, voiceLabel);
+  else addAudioResult(s, voiceLabel);
+}
+
+// ផ្ទុកឡើងដោយបង្ហាញភាគរយ (វីដេអូអាចធំ)
+function uploadWithProgress(url, fd) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    $("progress").hidden = false;
+    xhr.upload.onprogress = e => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round(100 * e.loaded / e.total);
+      $("progress-bar").style.width = pct + "%";
+      setStatus(`កំពុងផ្ទុកវីដេអូ ${pct}%...`);
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("ការផ្ទុកឡើងបរាជ័យ"));
+    xhr.send(fd);
+  });
+}
+
+async function runStt(t0) {
+  const file = $("stt-file").files[0];
+  if (!file) throw new Error("សូមជ្រើសរើសឯកសារសំឡេង");
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("api_key", $("api-key").value.trim());
+  fd.append("model", $("stt-model").value);
+  fd.append("gender", $("stt-gender").checked ? "1" : "0");
+  fd.append("target", $("stt-target").value);
+  setStatus("កំពុងផ្ទុកឡើង...");
+  const res = await fetch("/api/transcribe", { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error);
+  const action = $("stt-target").value ? "ស្តាប់ និងបកប្រែ" : "ស្តាប់";
+  const s = await pollJob(data.job, s => `Gemini កំពុង${action} ${s.done}/${s.total} ផ្នែក...`);
+  setStatus(`បាន SRT ${s.cues.length} បន្ទាត់ (${secs(t0)})`);
+  const useIt = addSrtResult(s);
+
+  if ($("stt-dub").checked) {
+    // បន្តបង្កើតសំឡេង TTS ពី SRT ដែលទើបបាន
+    useIt();
+    $("progress-bar").style.width = "0";
+    await runSrt(engineSettings(), t0);
+  }
+}
+
+$("go").onclick = async () => {
+  $("go").disabled = true;
+  $("progress").hidden = true;
+  $("warnings").hidden = true;
+  $("progress-bar").style.width = "0";
+  const t0 = Date.now();
+  try {
+    if (mode === "stt") await runStt(t0);
+    else if (mode === "merge") await runMerge(t0);
+    else if (mode === "mute") await runMute(t0);
+    else await (mode === "srt" ? runSrt : runText)(engineSettings(), t0);
+  } catch (e) {
+    setStatus(e.message, true);
+  } finally {
+    $("go").disabled = false;
+  }
+};
+
+// ---------- results ----------
+function addItem(html) {
+  const h = $("history");
+  if (h.querySelector(".hint")) h.innerHTML = "";
+  const item = document.createElement("div");
+  item.className = "history-item";
+  item.innerHTML = html;
+  h.prepend(item);
+  return item;
+}
+function addAudioResult(data, voice) {
+  const item = addItem(`<audio controls src="${data.url}"></audio>
+    <div class="meta"><span>${engine === "edge" ? "Edge" : "Gemini"} · ${esc(voice)} · ${esc(data.file)}</span>
+    <a href="${data.url}?dl=1" download>ទាញយក</a></div>`);
+  item.querySelector("audio").play().catch(() => {});
+}
+const fmtDur = sec => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
+const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(2) + " GB" : (b / 1e6).toFixed(1) + " MB";
+
+function addVideoResult(s, voice) {
+  const rows = s.parts.map((p, i) => `<div class="cue">
+      <button class="alt" data-src="/outputs/${encodeURI(p.path)}">▶ ${esc(p.name)}</button>
+      <span class="hint">${fmtDur(p.duration)} · ${fmtSize(p.size)}</span>
+      <a href="/outputs/${encodeURI(p.path)}?dl=1" download>ទាញយក</a></div>`).join("");
+  const first = `/outputs/${encodeURI(s.parts[0].path)}`;
+  const item = addItem(`<video controls src="${first}" style="width:100%;border-radius:8px;background:#000"></video>
+    <div class="cues">${rows}</div>
+    <div class="meta"><span>${engine === "edge" ? "Edge" : "Gemini"} · ${esc(voice)} · ${s.parts.length} ផ្នែក</span>
+    <span class="row">${s.parts.length > 1 ? `<button class="alt" data-merge>Merge ទាំងអស់</button>` : ""}
+    <span>ថត: outputs/${esc(s.folder)}</span></span></div>`);
+  item.querySelectorAll("button[data-src]").forEach(b => b.onclick = () => {
+    const v = item.querySelector("video");
+    v.src = b.dataset.src;
+    v.play().catch(() => {});
+  });
+  const mergeBtn = item.querySelector("button[data-merge]");
+  if (mergeBtn) mergeBtn.onclick = () => withBusy(async t0 => {
+    const { job } = await postJSON("/api/merge", { paths: s.parts.map(p => p.path) });
+    await finishMerge(job, t0);
+  });
+}
+
+// ---------- Merge ----------
+let mergeFiles = [];
+const natural = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+$("merge-files").onchange = () => {
+  mergeFiles = [...$("merge-files").files].sort((a, b) => natural.compare(a.name, b.name));
+  renderMergeList();
+};
+function renderMergeList() {
+  $("merge-list").hidden = !mergeFiles.length;
+  $("merge-list").innerHTML = mergeFiles.map((f, i) => `<div class="cue">
+      <time>${i + 1}.</time><span style="flex:1">${esc(f.name)}</span>
+      <span class="hint">${fmtSize(f.size)}</span>
+      <button class="alt" data-up="${i}" ${i ? "" : "disabled"}>↑</button>
+      <button class="alt" data-down="${i}" ${i < mergeFiles.length - 1 ? "" : "disabled"}>↓</button>
+      <button class="alt" data-del="${i}">✕</button></div>`).join("");
+  $("merge-list").querySelectorAll("button").forEach(b => b.onclick = () => {
+    const i = +(b.dataset.up ?? b.dataset.down ?? b.dataset.del);
+    if (b.dataset.del !== undefined) mergeFiles.splice(i, 1);
+    else {
+      const j = b.dataset.up !== undefined ? i - 1 : i + 1;
+      [mergeFiles[i], mergeFiles[j]] = [mergeFiles[j], mergeFiles[i]];
+    }
+    renderMergeList();
+  });
+  if (mode === "merge") setStatus(mergeFiles.length ? `${mergeFiles.length} វីដេអូ · ${fmtSize(mergeFiles.reduce((s, f) => s + f.size, 0))}` : "");
+}
+async function runMerge(t0) {
+  if (mergeFiles.length < 2) throw new Error("សូមជ្រើសរើសវីដេអូយ៉ាងតិច 2");
+  const fd = new FormData();
+  mergeFiles.forEach(f => fd.append("videos", f, f.name));
+  fd.append("reencode", $("merge-reencode").checked ? "1" : "0");
+  const { job } = await uploadWithProgress("/api/merge", fd);
+  await finishMerge(job, t0);
+}
+async function finishMerge(job, t0) {
+  const s = await pollJob(job, s => `កំពុង Merge ${s.done}%...`);
+  setStatus(`រួចរាល់ — ${s.parts} ផ្នែក → ${fmtDur(s.duration)} (${secs(t0)})`);
+  if (s.warnings.length) {
+    $("warnings").innerHTML = s.warnings.map(esc).join("<br>");
+    $("warnings").hidden = false;
+  }
+  addItem(`<video controls src="${s.url}" style="width:100%;border-radius:8px;background:#000"></video>
+    <div class="meta"><span>Merge · ${s.parts} ផ្នែក · ${fmtDur(s.duration)} · ${fmtSize(s.size)} ·
+    ${s.mode === "copy" ? "ចម្លងផ្ទាល់ (មិន encode)" : "encode ឡើងវិញ"} · ${esc(s.file)}</span>
+    <a href="${s.url}?dl=1" download>ទាញយក</a></div>`);
+}
+// ដំណើរការសកម្មភាពដែលប្រើប៊ូតុងចម្បង/វឌ្ឍនភាពរួមគ្នា
+async function withBusy(fn) {
+  $("go").disabled = true;
+  $("progress").hidden = true;
+  $("warnings").hidden = true;
+  $("progress-bar").style.width = "0";
+  try { await fn(Date.now()); }
+  catch (e) { setStatus(e.message, true); }
+  finally { $("go").disabled = false; }
+}
+
+function addSrtResult(s) {
+  const preview = s.cues.slice(0, 8).map(c =>
+    `<div class="cue"><time>${fmtTime(c.start)}</time>${c.gender && GENDER_KM[c.gender] ? `<span class="g ${c.gender}">${GENDER_KM[c.gender]}</span>` : ""}<span>${esc(c.text)}</span></div>`
+  ).join("") + (s.cues.length > 8 ? `<div class="cue"><span class="hint">... និង ${s.cues.length - 8} បន្ទាត់ទៀត</span></div>` : "");
+  const item = addItem(`<div class="cues">${preview}</div>
+    <div class="meta"><span>SRT · ${s.cues.length} បន្ទាត់ · ${esc(s.file)}</span>
+    <span class="row"><button class="alt">ប្រើ SRT នេះដើម្បីបង្កើតសំឡេង</button>
+    <a href="${s.url}?dl=1" download>ទាញយក .srt</a>
+    ${s.original_url ? `<a href="${s.original_url}?dl=1" download>.srt ភាសាដើម</a>` : ""}</span></div>`);
+  const useIt = () => {
+    loadCues(s.cues.map(c => ({ ...c, gender: GENDER_KM[c.gender] ? c.gender : null })));
+    setMode("srt");
+    setStatus(`បានផ្ទុក ${s.cues.length} បន្ទាត់ពី ${s.file}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  item.querySelector("button").onclick = useIt;
+  return useIt;
+}
+
+updateUI();
+loadSaved();
+
+// បើការងារកំពុងដំណើរការមុនពេល reload — បន្តតាមដាន
+(async () => {
+  const job = store.get("active_job");
+  if (!job) return;
+  const res = await fetch(`/api/jobs/${job}`).catch(() => null);
+  if (!res || !res.ok) { store.set("active_job", ""); return; }
+  await withBusy(async t0 => {
+    const s = await pollJob(job, s => `កំពុងដំណើរការ ${s.done}/${s.total}...`);
+    setStatus("រួចរាល់ — មើលក្នុង \"ឯកសារដែលបានរក្សាទុក\"");
+  });
+})();
+</script>
+</body>
+</html>

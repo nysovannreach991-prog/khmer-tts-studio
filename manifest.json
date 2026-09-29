@@ -1,0 +1,23 @@
+{
+  "version": "1.0.0",
+  "notes": "ok",
+  "files": {
+    "app.py": "3c8c77a6e84ec3b83d1fedbec41b29810db5bf9c99cc670f4f86c1a00a1b6ea1",
+    "fonts/KantumruyPro-Bold.ttf": "464386b92203d3380b0253d67a1c02b015877160d9fd297535c53e09073e4ac5",
+    "fonts/KantumruyPro-Regular.ttf": "2cd3e85c6ad5be83a4355ffcda69c9ee6437b1eb69f20061477e2cb2b2989188",
+    "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
+    "gui.py": "c0eaeff3fd14204912fb4d689ba7d5113f43ece26c835486140e0a1fdc5597c2",
+    "publish.py": "3dde1608a59b6b4e552beda79e457427054d93da52fb0707f29a50a1e3169ec8",
+    "publish_update.bat": "322f4787628dfcb64e71adc441cfe0c2635503ac9be13e12b5c5dfb7e68d1f2c",
+    "requirements.txt": "8d177bfbe734f6a2d1af9efaa50160a1aa641ca2b0a58bd308fc1aaf8c7733a3",
+    "run.bat": "3f6aa68acdd760af2bb2faddcbefc99649326ba6d082fe81f321467a9f5a982d",
+    "run_gui.bat": "82bcacf6e99624acd9b8d39a223058170d72b1ef5e503216ce5f03c67da20e91",
+    "srt_dub.py": "8544a33598c6bcc1094d3acdbd53a80de1ebb31f0041297af5f87a9e2fc4298b",
+    "templates/index.html": "4057eb17780a1c35653d4d79dfe5af3648691d24e1060a42cadc12e046abfd03",
+    "transcribe.py": "f85fc0e2332e0af78c41a0e0882936a756c87504e7c3b3ea455e9a048a570772",
+    "update_config.json": "6cc48a30963de990ffe61c2779e9a8cf5f7bc0ff50c2901bb2ef35c4e1431dab",
+    "updater.py": "e32176eaeae8c7ea5676b5d26b5e73027c28b9cb591cef5ecd26c8f4b99f5be1",
+    "video_dub.py": "1804e1cc946a6f698484d7304a81cfbff9a761df1c3dcaf92afd14762b4ce0b6",
+    "video_merge.py": "b54b0eb6ed07026cffc9a59974dc349de107c88a113fee75079f014e285a68a6"
+  }
+}

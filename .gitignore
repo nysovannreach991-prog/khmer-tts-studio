@@ -1,0 +1,5 @@
+outputs/
+__pycache__/
+.update_pending/
+*.log
+*.ini
