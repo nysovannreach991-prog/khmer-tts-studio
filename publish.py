@@ -72,13 +72,63 @@ def setup_repo():
     if not os.path.exists(gitignore):
         with open(gitignore, "w", encoding="utf-8") as f:
             f.write(GITIGNORE)
+    # រក្សាទុកឯកសារដូចនៅលើកុំព្យូទ័រទាំងស្រុង (កុំឱ្យ git ប្តូរ CRLF → LF)
+    # បើមិនដូច្នោះ SHA-256 ក្នុង manifest នឹងមិនត្រូវនឹងឯកសារនៅលើ GitHub ហើយ Update នឹងបរាជ័យ
+    gitattributes = os.path.join(APP_DIR, ".gitattributes")
+    if not os.path.exists(gitattributes):
+        with open(gitattributes, "w", encoding="utf-8") as f:
+            f.write("* -text\n")
+    git("config", "core.autocrlf", "false")
     return cfg
+
+
+def has_unpushed():
+    """មាន commit ដែលមិនទាន់ push (ឧ. login បរាជ័យលើកមុន) ហើយគ្មានការកែប្រែថ្មី"""
+    if git("status", "--porcelain", check=False).stdout.strip():
+        return False
+    ahead = git("rev-list", "--count", "@{u}..HEAD", check=False)
+    if ahead.returncode == 0:
+        return ahead.stdout.strip() not in ("", "0")
+    return git("rev-parse", "HEAD", check=False).returncode == 0  # មិនទាន់ធ្លាប់ push ទាល់តែសោះ
+
+
+def push(cfg):
+    """push ទៅ GitHub — បើ login តាម browser មិនដំណើរការ ផ្តល់ជម្រើសប្រើ Token"""
+    print("\nកំពុង push ទៅ GitHub (លើកដំបូងអាចបើក browser ឱ្យ login)...")
+    for attempt in range(2):
+        try:
+            git("push", "-u", "origin", cfg["branch"])
+            return True
+        except RuntimeError:
+            if attempt == 1:
+                break
+            print("\n✕ push បរាជ័យ។ បើប៊ូតុង Authorize ក្នុង browser មិនអាចចុចបាន អាចប្រើ Token ជំនួសវិញ។")
+            if ask("ប្រើ Token ជំនួស browser? (y/n)", "y").lower() != "y":
+                break
+            url = "https://github.com/settings/tokens/new?scopes=repo&description=khmer-tts-studio"
+            print("\n  1. ទំព័រ GitHub នឹងបើក → ចុចប៊ូតុងពណ៌បៃតង 'Generate token' នៅខាងក្រោម\n"
+                  "  2. Copy token (ចាប់ផ្តើមដោយ ghp_...)\n"
+                  "  3. ត្រឡប់មកទីនេះ → ផ្ទាំងតូចមួយនឹងលេចឡើង → ជ្រើស 'Token' ហើយ Paste token\n")
+            os.startfile(url)
+            input("ចុច Enter ពេល Copy token រួច...")
+            git("config", "credential.gitHubAuthModes", "pat")  # តែ repo នេះប៉ុណ្ណោះ
+    print(f"\n✕ push បរាជ័យ។ សូមពិនិត្យថា៖\n"
+          f"  1. មាន repo នៅ https://github.com/{cfg['repo']} (Public)\n"
+          f"  2. បាន login GitHub ជាគណនី '{cfg['repo'].split('/')[0]}'\n"
+          f"បន្ទាប់មកដំណើរការ publish_update.bat ម្តងទៀត (កំណែដដែលនឹងត្រូវ upload មិនបង្កើនលេខទេ)។")
+    return False
 
 
 def main():
     print("=== បោះពុម្ព Update ទៅ GitHub ===\n")
     cfg = setup_repo()
     current = updater.local_version()
+    if has_unpushed():
+        print(f"v{current} បាន commit រួចហើយ ប៉ុន្តែមិនទាន់ upload — កំពុង upload ម្តងទៀត...")
+        if not push(cfg):
+            return 1
+        print(f"\n✔ រួចរាល់! v{current} ត្រូវបានបោះពុម្ពនៅ https://github.com/{cfg['repo']}")
+        return 0
     version = ask(f"Version (បច្ចុប្បន្ន {current})", next_version(current))
     notes = ask("អ្វីដែលថ្មីក្នុង Update នេះ (មិត្តភក្តិនឹងឃើញសារនេះ)", "កែលម្អ និងជួសជុលកំហុស")
 
@@ -88,16 +138,10 @@ def main():
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     print(f"\n✓ manifest.json — v{version} · {len(files)} ឯកសារ")
 
+    git("add", "--renormalize", ".")
     git("add", "-A")
     git("commit", "-m", f"v{version}: {notes}", check=False)
-    print("\nកំពុង push ទៅ GitHub (លើកដំបូងអាចបើក browser ឱ្យ login)...")
-    try:
-        git("push", "-u", "origin", cfg["branch"])
-    except RuntimeError:
-        print(f"\n✕ push បរាជ័យ។ សូមពិនិត្យថា៖\n"
-              f"  1. បានបង្កើត repo ទទេនៅ https://github.com/new ឈ្មោះ '{cfg['repo'].split('/')[-1]}' (Public)\n"
-              f"  2. បាន login GitHub ជាគណនី '{cfg['repo'].split('/')[0]}'\n"
-              f"បន្ទាប់មកដំណើរការ publish_update.bat ម្តងទៀត។")
+    if not push(cfg):
         return 1
     print(f"\n✔ រួចរាល់! v{version} ត្រូវបានបោះពុម្ពនៅ https://github.com/{cfg['repo']}\n"
           f"  កម្មវិធីរបស់មិត្តភក្តិនឹងឃើញ Update នេះពេលបើកលើកក្រោយ (ឬចុច ជំនួយ → ពិនិត្យ Update)។")

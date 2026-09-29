@@ -16,7 +16,7 @@ from PyQt5.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontDatabase
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
+    QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSlider, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -25,12 +25,12 @@ import app as backend
 import srt_dub
 import transcribe
 import video_dub
+import theme
 import updater
 import video_merge
 
 OUTPUT_DIR = backend.OUTPUT_DIR
 GENDER_KM = {"female": "ស្រី", "male": "ប្រុស"}
-GENDER_COLOR = {"female": QColor("#b0417a"), "male": QColor("#2f6fb0")}
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".ts"}
 VIDEO_FILTER = "វីដេអូ (*.mp4 *.mkv *.mov *.avi *.webm *.flv *.m4v *.ts);;ឯកសារទាំងអស់ (*)"
 MEDIA_FILTER = ("សំឡេង/វីដេអូ (*.mp3 *.wav *.m4a *.aac *.ogg *.flac *.mp4 *.mkv *.mov *.avi *.webm);;"
@@ -171,13 +171,13 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._poll_job)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_text_tab(), "អត្ថបទ")
-        self.tabs.addTab(self._build_srt_tab(), "SRT → វីដេអូ")
-        self.tabs.addTab(self._build_stt_tab(), "សំឡេង → SRT")
-        self.tabs.addTab(self._build_merge_tab(), "Merge")
+        self.tabs.addTab(self._build_text_tab(), "✍️ អត្ថបទ")
+        self.tabs.addTab(self._build_srt_tab(), "🎬 SRT → វីដេអូ")
+        self.tabs.addTab(self._build_stt_tab(), "🎧 សំឡេង → SRT")
+        self.tabs.addTab(self._build_merge_tab(), "🧩 Merge")
         self.tabs.addTab(self._build_batch_tab(), "⚡ Auto")
         self.files_tab = self._build_files_tab()
-        self.tabs.addTab(self.files_tab, "ឯកសារ")
+        self.tabs.addTab(self.files_tab, "📁 ឯកសារ")
         self.tabs.currentChanged.connect(
             lambda i: self.refresh_files() if self.tabs.widget(i) is self.files_tab else None)
 
@@ -190,6 +190,9 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         lay = QVBoxLayout(central)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(10)
+        lay.addWidget(self._build_header())
         lay.addWidget(splitter, 1)
         lay.addLayout(self._build_status_bar())
         self.setCentralWidget(central)
@@ -197,7 +200,6 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._update_engine()
         self.load_edge_voices()
-        self._build_menu()
         QTimer.singleShot(3000, lambda: self.check_update(silent=True))  # ពិនិត្យ Update ស្ងាត់ៗ
 
     # ================= UI: voice settings (right) =================
@@ -205,7 +207,7 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         lay = QVBoxLayout(panel)
 
-        engine_box = QGroupBox("Engine")
+        engine_box = QGroupBox("⚙️ Engine")
         el = QHBoxLayout(engine_box)
         self.rb_edge = QRadioButton("Edge TTS (ឥតគិតថ្លៃ)")
         self.rb_gemini = QRadioButton("Gemini TTS")
@@ -249,7 +251,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.gemini_box)
 
         # Auto gender
-        gender_box = QGroupBox("សំឡេងស្រី/ប្រុស (SRT)")
+        gender_box = QGroupBox("👩 👨 សំឡេងស្រី/ប្រុស")
         gl = QFormLayout(gender_box)
         self.auto_gender = QCheckBox("ជ្រើសដោយស្វ័យប្រវត្តិតាម (ស្រី)/(ប្រុស)")
         self.auto_gender.setChecked(True)
@@ -269,13 +271,14 @@ class MainWindow(QMainWindow):
         lay.addWidget(gender_box)
 
         # Gemini key (TTS + សំឡេង → SRT)
-        key_box = QGroupBox("Gemini API Key")
+        key_box = QGroupBox("🔑 Gemini API Key")
         kl = QHBoxLayout(key_box)
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("ប្រើ GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "AIza... / AQ...")
         show = QPushButton("👁")
-        show.setFixedWidth(36)
+        show.setFixedWidth(40)
+        show.setStyleSheet("padding:0")
         show.setCheckable(True)
         show.toggled.connect(lambda on: self.api_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
         kl.addWidget(self.api_key)
@@ -310,9 +313,9 @@ class MainWindow(QMainWindow):
     # ================= UI: tabs =================
     def _run_button(self, text, fn):
         b = QPushButton(text)
-        b.setMinimumHeight(38)
-        b.setStyleSheet("QPushButton{background:#2f5d8a;color:white;font-weight:bold;border-radius:6px;padding:0 18px}"
-                        "QPushButton:disabled{background:#9db0c4}")
+        b.setObjectName("primary")
+        b.setMinimumHeight(44)
+        b.setCursor(Qt.PointingHandCursor)
         b.clicked.connect(fn)
         self.run_buttons.append(b)
         return b
@@ -362,14 +365,15 @@ class MainWindow(QMainWindow):
         self.video_path, video_row = self._file_row("វីដេអូ (ជាជម្រើស) — ដាក់សំឡេងចូល ហើយកាត់ជាផ្នែកៗ",
                                                     VIDEO_FILTER)
         clear_video = QPushButton("✕")
-        clear_video.setFixedWidth(32)
+        clear_video.setFixedWidth(36)
+        clear_video.setStyleSheet("padding:0")
         clear_video.clicked.connect(self.video_path.clear)
         video_row.addWidget(clear_video)
         form.addRow("វីដេអូ", video_row)
         lay.addLayout(form)
 
         self.cue_info = QLabel("ចុចពីរដងលើ 'ភេទ' ដើម្បីប្តូរ · អាចកែអត្ថបទក្នុងតារាងបាន")
-        self.cue_info.setStyleSheet("color:#6b6b66")
+        self.cue_info.setProperty("role", "muted")
         lay.addWidget(self.cue_info)
         self.cue_table = QTableWidget(0, 5)
         self.cue_table.setHorizontalHeaderLabels(["#", "ពេល", "ភេទ", "អត្ថបទ", "ភាសាដើម"])
@@ -378,11 +382,14 @@ class MainWindow(QMainWindow):
                           (2, QHeaderView.ResizeToContents), (3, QHeaderView.Stretch), (4, QHeaderView.Stretch)]:
             hdr.setSectionResizeMode(col, mode)
         self.cue_table.verticalHeader().setVisible(False)
+        self.cue_table.setAlternatingRowColors(True)
+        self.cue_table.setShowGrid(False)
         self.cue_table.itemChanged.connect(self._cue_edited)
         self.cue_table.cellDoubleClicked.connect(self._cycle_gender)
+        self.cue_table.setMinimumHeight(150)
         lay.addWidget(self.cue_table, 1)
 
-        opts = QGroupBox("ការកំណត់")
+        opts = QGroupBox("🎛 ការកំណត់")
         g = QFormLayout(opts)
         self.fit = QCheckBox("ពន្លឿនសំឡេងឱ្យត្រូវនឹងពេល")
         self.fit.setChecked(True)
@@ -458,7 +465,7 @@ class MainWindow(QMainWindow):
         lay.addLayout(form)
         note = QLabel("Gemini ស្តាប់ បកប្រែ និងចាប់ភេទក្នុងពេលតែមួយ។ សំឡេងវែងត្រូវបំបែកជាផ្នែក 10 នាទី។\n"
                       "ឯកសារដើមរបស់អ្នកមិនត្រូវបានកែប្រែ ឬលុបទេ។")
-        note.setStyleSheet("color:#6b6b66")
+        note.setProperty("role", "muted")
         lay.addWidget(note)
         row = QHBoxLayout()
         row.addWidget(self._run_button("🎧 បម្លែងទៅជា SRT", self.run_stt))
@@ -476,7 +483,7 @@ class MainWindow(QMainWindow):
         self.merge_reencode = QCheckBox("Encode ឡើងវិញ (យឺត — ប្រើតែពេលលទ្ធផលមានបញ្ហា)")
         lay.addWidget(self.merge_reencode)
         note = QLabel("វីដេអូដែលមានទម្រង់ដូចគ្នាត្រូវចម្លងផ្ទាល់ — លឿនបំផុត ហើយគុណភាពមិនបាត់បង់។")
-        note.setStyleSheet("color:#6b6b66")
+        note.setProperty("role", "muted")
         lay.addWidget(note)
         row = QHBoxLayout()
         row.addWidget(self._run_button("🎬 Merge វីដេអូ", self.run_merge))
@@ -512,7 +519,9 @@ class MainWindow(QMainWindow):
                           (2, QHeaderView.ResizeToContents), (3, QHeaderView.Stretch), (4, QHeaderView.Stretch)]:
             hdr.setSectionResizeMode(col, mode)
         t.verticalHeader().setVisible(False)
-        t.verticalHeader().setDefaultSectionSize(30)
+        t.verticalHeader().setDefaultSectionSize(34)
+        t.setAlternatingRowColors(True)
+        t.setShowGrid(False)
         t.setMinimumHeight(180)
         t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -523,7 +532,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.batch_keep_merged)
         note = QLabel("ប្រើការកំណត់សំឡេងខាងស្តាំ និងផ្ទាំង SRT (Mute សំឡេងដើម, កាត់ជាផ្នែក) · "
                       "SRT មួយក្នុងមួយ Part → បញ្ចូលគ្នាដោយស្វ័យប្រវត្តិ")
-        note.setStyleSheet("color:#6b6b66")
+        note.setProperty("role", "muted")
         note.setWordWrap(True)
         lay.addWidget(note)
 
@@ -602,8 +611,8 @@ class MainWindow(QMainWindow):
             return f"{len(srts)} ឯកសារ → បញ្ចូលគ្នាតាម Part"
         return f"⚠ {len(srts)} ឯកសារ (≠ {n} វីដេអូ) — ប្រើ {os.path.basename(srts[0])}"
 
-    _STATUS = {"waiting": ("○ រង់ចាំ", "#6b6b66"), "running": ("● កំពុងដំណើរការ...", "#2f5d8a"),
-               "done": ("✓ រួចរាល់", "#2e7d32"), "failed": ("✕ បរាជ័យ", "#b3261e"), "skipped": ("— រំលង", "#8a5a00")}
+    _STATUS = {"waiting": ("○ រង់ចាំ", "muted"), "running": ("● កំពុងដំណើរការ...", "accent"),
+               "done": ("✓ រួចរាល់", "success"), "failed": ("✕ បរាជ័យ", "error"), "skipped": ("— រំលង", "warn")}
 
     def _batch_render(self):
         t = self.batch_table
@@ -622,7 +631,7 @@ class MainWindow(QMainWindow):
             items[1].setToolTip(row["folder"])
             items[2].setToolTip("\n".join(os.path.basename(v) for v in row["videos"]))
             items[3].setToolTip("\n".join(row["srts"]))
-            items[4].setForeground(QColor(color))
+            items[4].setForeground(QColor(theme.C[color]))
             items[4].setToolTip(row["msg"])
             for col, item in enumerate(items):
                 t.setItem(r, col, item)
@@ -768,6 +777,7 @@ class MainWindow(QMainWindow):
         self.files_tree = QTreeWidget()
         self.files_tree.setHeaderLabels(["ឈ្មោះ", "ប្រភេទ", "ទំហំ", "ពេលវេលា"])
         self.files_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.files_tree.setAlternatingRowColors(True)
         self.files_tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.files_tree.itemDoubleClicked.connect(lambda item, _: open_path(item.data(0, Qt.UserRole)))
         lay.addWidget(self.files_tree, 1)
@@ -784,17 +794,18 @@ class MainWindow(QMainWindow):
         return w
 
     def _build_status_bar(self):
-        box = QGroupBox("ដំណើរការ")
+        box = QGroupBox("📊 ដំណើរការ")
         lay = QVBoxLayout(box)
 
         # ជួរដំណាក់កាល: ✓ រួច → ● កំពុងធ្វើ → ○ រង់ចាំ   ·   ⏱ ពេលវេលា
         top = QHBoxLayout()
         self.stage_label = QLabel()
+        self.stage_label.setObjectName("stageLabel")
         self.stage_label.setTextFormat(Qt.RichText)
         self.stage_label.setWordWrap(True)
         top.addWidget(self.stage_label, 1)
         self.elapsed = QLabel()
-        self.elapsed.setStyleSheet("color:#6b6b66")
+        self.elapsed.setProperty("role", "muted")
         top.addWidget(self.elapsed)
         lay.addLayout(top)
 
@@ -821,16 +832,16 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
 
         self.warnings = QLabel()
-        self.warnings.setStyleSheet("color:#8a5a00")
+        self.warnings.setProperty("role", "warn")
         self.warnings.setWordWrap(True)
         self.warnings.hide()
         lay.addWidget(self.warnings)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMaximumHeight(96)
+        self.log.setMaximumHeight(72)
         self.log.setPlaceholderText("កំណត់ហេតុ — ដំណាក់កាលនីមួយៗ និងរយៈពេលរបស់វានឹងបង្ហាញនៅទីនេះ")
-        self.log.setStyleSheet("font-size:9pt")
+        self.log.setStyleSheet("font-size:9pt; font-family:Consolas, 'Kantumruy Pro';")
         self.btn_log.toggled.connect(self.log.setVisible)
         lay.addWidget(self.log)
 
@@ -884,24 +895,25 @@ class MainWindow(QMainWindow):
         self._render_stages()
 
     def _render_stages(self):
+        c = theme.C
         if not self.stage_names:
-            self.stage_label.setText("<span style='color:#9a9a94'>មិនទាន់មានការងារ</span>")
+            self.stage_label.setText(f"<span style='color:{c['faint']}'>✨ មិនទាន់មានការងារ — ជ្រើសផ្ទាំងមួយ ហើយចាប់ផ្តើម</span>")
             return
         parts = []
         for i, name in enumerate(self.stage_names):
             if i < self.stage_idx:
-                parts.append(f"<span style='color:#2e7d32'>✓ {name}</span>")
+                parts.append(f"<span style='color:{c['success']}'>✓ {name}</span>")
             elif i == self.stage_idx and self.stage_state == "failed":
-                parts.append(f"<b style='color:#b3261e'>✕ {name}</b>")
+                parts.append(f"<b style='color:{c['error']}'>✕ {name}</b>")
             elif i == self.stage_idx:
-                parts.append(f"<b style='color:#2f5d8a'>● {name}</b>")
+                parts.append(f"<b style='color:{c['accent']}'>● {name}</b>")
             elif self.stage_state == "failed" and self.stage_idx < 0 and i == 0:
-                parts.append(f"<b style='color:#b3261e'>✕ {name}</b>")
+                parts.append(f"<b style='color:{c['error']}'>✕ {name}</b>")
             else:
-                parts.append(f"<span style='color:#9a9a94'>○ {name}</span>")
+                parts.append(f"<span style='color:{c['faint']}'>○ {name}</span>")
         step = min(self.stage_idx + 1, len(self.stage_names))
-        head = f"<b>ដំណាក់កាល {step}/{len(self.stage_names)}</b> &nbsp; " if self.stage_state == "running" else ""
-        self.stage_label.setText(head + " <span style='color:#9a9a94'>→</span> ".join(parts))
+        head = f"<b style='color:{c['accent2']}'>ដំណាក់កាល {step}/{len(self.stage_names)}</b> &nbsp; " if self.stage_state == "running" else ""
+        self.stage_label.setText(head + f" <span style='color:{c['faint']}'>→</span> ".join(parts))
 
     def _tick(self):
         if not self.stage_names:
@@ -1003,7 +1015,9 @@ class MainWindow(QMainWindow):
     # ================= busy / status / jobs =================
     def set_status(self, msg, error=False):
         self.status.setText(msg)
-        self.status.setStyleSheet("color:#b3261e" if error else "")
+        self.status.setProperty("role", "error" if error else "")
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
 
     def set_busy(self, busy, msg=None):
         self.busy = busy
@@ -1174,7 +1188,7 @@ class MainWindow(QMainWindow):
         g = self.cues[row].get("gender")
         item = self.cue_table.item(row, 2)
         item.setText(GENDER_KM.get(g or "", "—"))
-        item.setForeground(GENDER_COLOR.get(g or "", QColor("#6b6b66")))
+        item.setForeground(QColor(theme.C.get(g or "", theme.C["muted"])))
 
     def _cycle_gender(self, row, col):
         if col != 2:
@@ -1517,11 +1531,69 @@ class MainWindow(QMainWindow):
             s.setValue(name, getattr(self, name).value())
         s.setValue("geometry", self.saveGeometry())
 
+    # ================= header / theme =================
+    def _build_header(self):
+        header = QFrame()
+        header.setObjectName("header")
+        lay = QHBoxLayout(header)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(12)
+        logo = QLabel("🎙")
+        logo.setObjectName("logo")
+        logo.setFixedSize(48, 48)
+        logo.setAlignment(Qt.AlignCenter)
+        lay.addWidget(logo)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        title_row = QHBoxLayout()
+        title = QLabel("Khmer TTS Studio")
+        title.setObjectName("appTitle")
+        title_row.addWidget(title)
+        version = updater.local_version()
+        if version != "0":
+            pill = QLabel(f"v{version}")
+            pill.setObjectName("pill")
+            title_row.addWidget(pill)
+        title_row.addStretch()
+        titles.addLayout(title_row)
+        sub = QLabel("បកប្រែ · បញ្ចូលសំឡេង · កាត់វីដេអូ — ក្នុងមួយចុច ✨")
+        sub.setObjectName("appSub")
+        titles.addWidget(sub)
+        lay.addLayout(titles, 1)
+
+        self.btn_theme = QPushButton()
+        self.btn_update = QPushButton("🔄 Update")
+        about = QPushButton("ⓘ")
+        for b in (self.btn_theme, self.btn_update, about):
+            b.setObjectName("ghost")
+            b.setCursor(Qt.PointingHandCursor)
+            lay.addWidget(b)
+        self.btn_theme.setToolTip("ប្តូរ Dark / Light")
+        self.btn_update.setToolTip("ពិនិត្យ Update")
+        about.setToolTip("អំពីកម្មវិធី")
+        self.btn_theme.clicked.connect(self.toggle_theme)
+        self.btn_update.clicked.connect(lambda: self.check_update(silent=False))
+        about.clicked.connect(self._about)
+        self._sync_theme_button()
+        return header
+
+    def _sync_theme_button(self):
+        self.btn_theme.setText("☀️ Light" if theme.mode == "dark" else "🌙 Dark")
+
+    def toggle_theme(self):
+        new = "light" if theme.mode == "dark" else "dark"
+        theme.apply(QApplication.instance(), new)
+        self.settings.setValue("theme", new)
+        self._sync_theme_button()
+        # ពណ៌ក្នុង rich text / តារាង ត្រូវគូរឡើងវិញ
+        self._render_stages()
+        self._batch_render()
+        self.cue_table.blockSignals(True)
+        for r in range(min(len(self.cues), self.cue_table.rowCount())):
+            self._paint_gender(r)
+        self.cue_table.blockSignals(False)
+
     # ================= Update =================
-    def _build_menu(self):
-        menu = self.menuBar().addMenu("ជំនួយ")
-        menu.addAction("🔄 ពិនិត្យ Update...", lambda: self.check_update(silent=False))
-        menu.addAction("អំពីកម្មវិធី", self._about)
 
     def _about(self):
         cfg = updater.load_config()
@@ -1628,6 +1700,7 @@ def main():
     qt_app = QApplication(sys.argv)
     qt_app.setStyle("Fusion")
     setup_font(qt_app)
+    theme.apply(qt_app, QSettings("KhmerTTS", "Studio").value("theme", "dark"))
     window = MainWindow()
     window.show()
     sys.exit(qt_app.exec_())

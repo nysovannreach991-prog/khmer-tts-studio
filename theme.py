@@ -1,0 +1,211 @@
+"""រចនាប័ទ្ម Modern / Gen Z — Dark & Light mode, ពណ៌ gradient ស្វាយ→ផ្កាឈូក, ជ្រុងមូល។
+
+C = ពណ៌បច្ចុប្បន្ន (dict ដែលប្តូរតាម mode) — gui.py ប្រើវាសម្រាប់ rich text និងពណ៌ក្នុងតារាង។
+"""
+import os
+import tempfile
+
+from PyQt5.QtGui import QColor, QPalette
+
+DARK = {
+    "bg": "#0e0b16", "surface": "#161221", "card": "#1d1830", "input": "#120f1c", "hover": "#262038",
+    "border": "#2c2542", "border_hi": "#43395f", "text": "#f3f0ff", "muted": "#9d95b8", "faint": "#6c6488",
+    "accent": "#a78bfa", "accent2": "#f472b6", "accent3": "#22d3ee", "on_accent": "#ffffff",
+    "success": "#34d399", "error": "#fb7185", "warn": "#fbbf24",
+    "female": "#f472b6", "male": "#60a5fa", "selection": "#3b2d63",
+}
+LIGHT = {
+    "bg": "#f5f3fc", "surface": "#ffffff", "card": "#faf8ff", "input": "#ffffff", "hover": "#f0ecfb",
+    "border": "#e6e0f5", "border_hi": "#cfc4ee", "text": "#1b1530", "muted": "#6b6386", "faint": "#a39cbb",
+    "accent": "#7c3aed", "accent2": "#db2777", "accent3": "#0891b2", "on_accent": "#ffffff",
+    "success": "#059669", "error": "#e11d48", "warn": "#b45309",
+    "female": "#db2777", "male": "#2563eb", "selection": "#e9ddff",
+}
+C = dict(DARK)
+mode = "dark"
+
+GRAD = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {a}, stop:1 {b})"
+
+
+def _icons(c):
+    """SVG តូចៗសម្រាប់ checkbox / combo / spinbox (QSS ត្រូវការឯកសាររូបភាព)"""
+    folder = os.path.join(tempfile.gettempdir(), f"khmer_tts_theme_{mode}")
+    os.makedirs(folder, exist_ok=True)
+    stroke = 'fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"'
+    svgs = {
+        "check": f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" '
+                 f'stroke="#ffffff" {stroke}/></svg>',
+        "down": f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" '
+                f'stroke="{c["muted"]}" {stroke}/></svg>',
+        "up": f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" '
+              f'stroke="{c["muted"]}" {stroke}/></svg>',
+        "dot": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5" '
+               'fill="#ffffff"/></svg>',
+    }
+    paths = {}
+    for name, svg in svgs.items():
+        path = os.path.join(folder, name + ".svg")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(svg)
+        paths[name] = path.replace("\\", "/")
+    return paths
+
+
+def stylesheet():
+    c = C
+    i = _icons(c)
+    grad = GRAD.format(a=c["accent"], b=c["accent2"])
+    grad_hover = GRAD.format(a=QColor(c["accent"]).lighter(112).name(), b=QColor(c["accent2"]).lighter(112).name())
+    return f"""
+* {{ outline: none; }}
+QMainWindow, QDialog, QMessageBox {{ background: {c['bg']}; }}
+QWidget {{ color: {c['text']}; }}
+QToolTip {{ background: {c['card']}; color: {c['text']}; border: 1px solid {c['border_hi']};
+            border-radius: 8px; padding: 6px 8px; }}
+
+/* ---------- header ---------- */
+QFrame#header {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 18px; }}
+QLabel#logo {{ background: {GRAD.format(a=c['accent'], b=c['accent2'])}; border-radius: 14px;
+               font-size: 20pt; color: white; }}
+QLabel#appTitle {{ font-size: 16pt; font-weight: bold; }}
+QLabel#appSub {{ color: {c['muted']}; }}
+QLabel#pill {{ background: {c['hover']}; color: {c['accent']}; border: 1px solid {c['border_hi']};
+               border-radius: 11px; padding: 2px 10px; font-weight: bold; font-size: 9pt; }}
+QPushButton#ghost {{ background: transparent; border: 1px solid {c['border']}; border-radius: 12px;
+                     padding: 6px 14px; }}
+QPushButton#ghost:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
+
+/* ---------- tabs ---------- */
+QTabWidget::pane {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 18px;
+                    top: -1px; }}
+QTabWidget > QStackedWidget > QWidget {{ background: transparent; }}
+QTabBar {{ qproperty-drawBase: 0; }}
+QTabBar::tab {{ background: transparent; color: {c['muted']}; border: none; border-radius: 12px;
+                padding: 8px 16px; margin: 0 4px 8px 0; font-weight: bold; }}
+QTabBar::tab:hover {{ background: {c['hover']}; color: {c['text']}; }}
+QTabBar::tab:selected {{ background: {grad}; color: {c['on_accent']}; }}
+QTabBar QToolButton {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 8px; }}
+
+/* ---------- cards ---------- */
+QGroupBox {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 16px;
+             margin-top: 24px; font-weight: bold; }}
+QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: 10px; top: 0px;
+                    padding: 0 4px; color: {c['accent']}; }}
+QGroupBox QLabel, QGroupBox QCheckBox, QGroupBox QRadioButton {{ font-weight: normal; }}
+QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
+QSplitter::handle {{ background: transparent; width: 10px; }}
+
+/* ---------- buttons ---------- */
+QPushButton {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 11px;
+               padding: 7px 14px; }}
+QPushButton:hover {{ background: {c['hover']}; border-color: {c['border_hi']}; }}
+QPushButton:pressed {{ background: {c['border']}; }}
+QPushButton:checked {{ background: {c['selection']}; border-color: {c['accent']}; color: {c['text']}; }}
+QPushButton:disabled {{ color: {c['faint']}; background: {c['surface']}; border-color: {c['border']}; }}
+QPushButton#primary {{ background: {grad}; color: {c['on_accent']}; border: none; border-radius: 14px;
+                       padding: 0 24px; font-weight: bold; font-size: 11pt; }}
+QPushButton#primary:hover {{ background: {grad_hover}; }}
+QPushButton#primary:disabled {{ background: {c['border']}; color: {c['faint']}; }}
+
+/* ---------- inputs ---------- */
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
+    background: {c['input']}; border: 1px solid {c['border']}; border-radius: 10px; padding: 6px 10px;
+    selection-background-color: {c['accent']}; selection-color: white; }}
+QPlainTextEdit, QTextEdit {{ padding: 8px; }}
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover,
+QPlainTextEdit:hover {{ border-color: {c['border_hi']}; }}
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus,
+QDoubleSpinBox:focus {{ border: 1px solid {c['accent']}; }}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{ color: {c['faint']}; }}
+QComboBox {{ padding-right: 28px; }}
+QComboBox::drop-down {{ border: none; width: 26px; }}
+QComboBox::down-arrow {{ image: url({i['down']}); width: 14px; height: 14px; }}
+QComboBox QAbstractItemView {{ background: {c['card']}; border: 1px solid {c['border_hi']}; border-radius: 10px;
+                               padding: 4px; selection-background-color: {c['selection']};
+                               selection-color: {c['text']}; }}
+QSpinBox, QDoubleSpinBox {{ padding-right: 22px; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    border: none; background: transparent; width: 20px; }}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url({i['up']}); width: 12px; height: 12px; }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url({i['down']}); width: 12px; height: 12px; }}
+
+/* ---------- checkbox / radio ---------- */
+QCheckBox, QRadioButton {{ spacing: 8px; background: transparent; }}
+QCheckBox::indicator, QRadioButton::indicator {{ width: 18px; height: 18px; border: 2px solid {c['border_hi']};
+                                                 background: {c['input']}; }}
+QCheckBox::indicator {{ border-radius: 6px; }}
+QRadioButton::indicator {{ border-radius: 11px; }}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {c['accent']}; }}
+QCheckBox::indicator:checked {{ background: {grad}; border-color: {c['accent']}; image: url({i['check']}); }}
+QRadioButton::indicator:checked {{ background: {grad}; border-color: {c['accent']}; image: url({i['dot']}); }}
+QCheckBox::indicator:disabled {{ background: {c['surface']}; border-color: {c['border']}; }}
+
+/* ---------- slider ---------- */
+QSlider::groove:horizontal {{ height: 6px; background: {c['border']}; border-radius: 3px; }}
+QSlider::sub-page:horizontal {{ background: {grad}; border-radius: 3px; }}
+QSlider::handle:horizontal {{ background: white; border: 3px solid {c['accent']}; width: 12px; height: 12px;
+                              margin: -6px 0; border-radius: 9px; }}
+
+/* ---------- tables / lists ---------- */
+QTableWidget, QTreeWidget, QListWidget {{ background: {c['input']}; alternate-background-color: {c['card']};
+    border: 1px solid {c['border']}; border-radius: 12px; gridline-color: {c['border']};
+    selection-background-color: {c['selection']}; selection-color: {c['text']}; }}
+QListWidget::item {{ padding: 6px 8px; border-radius: 8px; margin: 1px 4px; }}
+QListWidget::item:hover, QTreeWidget::item:hover {{ background: {c['hover']}; }}
+QListWidget::item:selected, QTreeWidget::item:selected {{ background: {c['selection']}; color: {c['text']}; }}
+QTreeWidget::item {{ padding: 4px 0; }}
+QHeaderView {{ background: transparent; }}
+QHeaderView::section {{ background: {c['card']}; color: {c['muted']}; border: none;
+    border-bottom: 1px solid {c['border']}; padding: 7px 8px; font-weight: bold; }}
+QTableCornerButton::section {{ background: {c['card']}; border: none; }}
+
+/* ---------- progress ---------- */
+QProgressBar {{ background: {c['input']}; border: 1px solid {c['border']}; border-radius: 10px; height: 20px;
+                text-align: center; font-weight: bold; color: {c['text']}; }}
+QProgressBar::chunk {{ border-radius: 9px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {c['accent']}, stop:0.6 {c['accent2']},
+                                stop:1 {c['accent3']}); }}
+
+/* ---------- labels ---------- */
+QLabel[role="muted"] {{ color: {c['muted']}; }}
+QLabel[role="warn"] {{ color: {c['warn']}; }}
+QLabel[role="error"] {{ color: {c['error']}; }}
+QLabel#stageLabel {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 12px;
+                     padding: 8px 12px; }}
+
+/* ---------- scrollbars ---------- */
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+QScrollBar::handle {{ background: {c['border_hi']}; border-radius: 3px; min-height: 30px; min-width: 30px; }}
+QScrollBar::handle:hover {{ background: {c['accent']}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+
+/* ---------- menu ---------- */
+QMenu {{ background: {c['card']}; border: 1px solid {c['border_hi']}; border-radius: 10px; padding: 6px; }}
+QMenu::item {{ padding: 7px 18px; border-radius: 7px; }}
+QMenu::item:selected {{ background: {c['selection']}; }}
+"""
+
+
+def palette():
+    c = C
+    p = QPalette()
+    for role, key in [(QPalette.Window, "bg"), (QPalette.Base, "input"), (QPalette.AlternateBase, "card"),
+                      (QPalette.Button, "card"), (QPalette.WindowText, "text"), (QPalette.Text, "text"),
+                      (QPalette.ButtonText, "text"), (QPalette.ToolTipBase, "card"), (QPalette.ToolTipText, "text"),
+                      (QPalette.Highlight, "accent"), (QPalette.PlaceholderText, "faint"), (QPalette.Link, "accent")]:
+        p.setColor(role, QColor(c[key]))
+    p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        p.setColor(QPalette.Disabled, role, QColor(c["faint"]))
+    return p
+
+
+def apply(qt_app, new_mode):
+    global mode
+    mode = new_mode if new_mode in ("dark", "light") else "dark"
+    C.clear()
+    C.update(DARK if mode == "dark" else LIGHT)
+    qt_app.setPalette(palette())
+    qt_app.setStyleSheet(stylesheet())
