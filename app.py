@@ -557,5 +557,7 @@ def outputs(name):
 
 
 if __name__ == "__main__":
+    import ffmpeg_setup
+    ffmpeg_setup.add_to_path()
     print("បើកកម្មវិធីនៅ http://127.0.0.1:5000")
     app.run(host="127.0.0.1", port=5000, debug=False)

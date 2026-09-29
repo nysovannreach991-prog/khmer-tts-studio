@@ -3,3 +3,6 @@ __pycache__/
 .update_pending/
 *.log
 *.ini
+license_admin.py
+license_admin.bat
+*.key

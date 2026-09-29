@@ -6,7 +6,8 @@ import subprocess
 import tempfile
 
 from srt_dub import SAMPLE_RATE, write_output
-from video_merge import _run_ffmpeg
+import overlay as ov
+from video_merge import _probe, _run_ffmpeg
 
 
 class _StagePct:
@@ -88,9 +89,11 @@ def cut_points(cues, duration, part_sec, kf=None):
     return points
 
 
-def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job):
-    """ដាក់ dub_pcm ចូលវីដេអូ (រក្សាសំឡេងដើមតាម orig_volume) ហើយកាត់ជាផ្នែកៗ"""
+def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job, overlays=None):
+    """ដាក់ dub_pcm ចូលវីដេអូ (រក្សាសំឡេងដើមតាម orig_volume) ហើយកាត់ជាផ្នែកៗ។
+    overlays = Logo / Lower third (មើល overlay.py) — ត្រូវ encode វីដេអូឡើងវិញ"""
     duration, has_audio = probe(video)
+    overlays = [o for o in (overlays or []) if o.get("path") and os.path.isfile(o["path"])]
     tmp = tempfile.mkdtemp(prefix="vdub_")
     try:
         dub_wav = os.path.join(tmp, write_output(dub_pcm, tmp, "dub", "wav"))
@@ -105,7 +108,8 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
         else:
             graph = f"{dub}[a]"
 
-        points = cut_points(cues, duration, part_sec, keyframes(video) if part_sec > 0 else None)
+        # encode ឡើងវិញ (Logo) → កាត់បានគ្រប់ទីកន្លែង មិនចាំបាច់រក keyframe
+        points = cut_points(cues, duration, part_sec, keyframes(video) if part_sec > 0 and not overlays else None)
         folder = f"{name_base}_parts" if points else name_base
         dest = os.path.join(out_dir, folder)
         os.makedirs(dest, exist_ok=True)
@@ -116,13 +120,34 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
         else:
             output = [os.path.join(dest, f"{name_base}.mp4")]
 
-        base = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", video, "-i", dub_wav,
-                "-filter_complex", graph, "-map", "0:v:0", "-map", "[a]",
-                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
         job["status"] = "video"
         job["stage_pct"] = 0
         progress = _StagePct(job)
-        args = base[5:]  # _run_ffmpeg បន្ថែម "ffmpeg -hide_banner -loglevel error -y" ដោយខ្លួនឯង
+        force = ["-force_key_frames", ",".join(map(str, points))] if points else []
+        if overlays:
+            info = _probe(video)
+            bounds = [0.0] + points + [duration]
+            inputs, chains, vlabel = ov.build(overlays, info["width"], info["fps"], duration,
+                                              list(zip(bounds, bounds[1:])), 2)
+            enc = ov.pick_encoder()
+            job["encoder"] = enc
+            args = ["-i", video, "-i", dub_wav, *inputs, "-filter_complex", ";".join(chains + [graph]),
+                    "-map", vlabel, "-map", "[a]", "-t", f"{duration:.3f}",
+                    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+            try:
+                _run_ffmpeg(args + ov.encoder_args(enc) + force + output, duration, progress)
+            except RuntimeError:
+                if enc == "libx264":
+                    raise
+                job["warnings"].append(f"{enc} បរាជ័យ — ប្រើ libx264 ជំនួស (យឺតជាង)")
+                job["encoder"] = "libx264"
+                for f in os.listdir(dest):
+                    os.remove(os.path.join(dest, f))
+                _run_ffmpeg(args + ov.encoder_args("libx264") + force + output, duration, progress)
+            return folder, _collect(dest, folder, progress, job)
+
+        args = ["-i", video, "-i", dub_wav, "-filter_complex", graph, "-map", "0:v:0", "-map", "[a]",
+                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
         try:
             # ចម្លងវីដេអូដោយមិន encode ឡើងវិញ — លឿនបំផុត
             _run_ffmpeg(args + ["-c:v", "copy"] + output, duration, progress)
@@ -132,17 +157,19 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
             job["video_reencode"] = True
             for f in os.listdir(dest):
                 os.remove(os.path.join(dest, f))
-            force = ["-force_key_frames", ",".join(map(str, points))] if points else []
             _run_ffmpeg(args + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] + force + output,
                         duration, progress)
-        job["stage_pct"] = 100
-
-        parts = []
-        for f in sorted(os.listdir(dest)):
-            if f.endswith(".mp4"):
-                path = os.path.join(dest, f)
-                parts.append({"name": f, "path": f"{folder}/{f}",
-                              "duration": probe(path)[0], "size": os.path.getsize(path)})
-        return folder, parts
+        return folder, _collect(dest, folder, progress, job)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _collect(dest, folder, progress, job):
+    job["stage_pct"] = 100
+    parts = []
+    for f in sorted(os.listdir(dest)):
+        if f.endswith(".mp4"):
+            path = os.path.join(dest, f)
+            parts.append({"name": f, "path": f"{folder}/{f}",
+                          "duration": probe(path)[0], "size": os.path.getsize(path)})
+    return parts

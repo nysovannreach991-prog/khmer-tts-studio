@@ -1,4 +1,4 @@
-"""រចនាប័ទ្ម Modern / Gen Z — Dark & Light mode, ពណ៌ gradient ស្វាយ→ផ្កាឈូក, ជ្រុងមូល។
+"""រចនាប័ទ្ម Modern / Gen Z — Dark & Light mode, ពណ៌ gradient លឿង→ទឹកក្រូច, ជ្រុងមូល។
 
 C = ពណ៌បច្ចុប្បន្ន (dict ដែលប្តូរតាម mode) — gui.py ប្រើវាសម្រាប់ rich text និងពណ៌ក្នុងតារាង។
 """
@@ -8,18 +8,20 @@ import tempfile
 from PyQt5.QtGui import QColor, QPalette
 
 DARK = {
-    "bg": "#0e0b16", "surface": "#161221", "card": "#1d1830", "input": "#120f1c", "hover": "#262038",
-    "border": "#2c2542", "border_hi": "#43395f", "text": "#f3f0ff", "muted": "#9d95b8", "faint": "#6c6488",
-    "accent": "#a78bfa", "accent2": "#f472b6", "accent3": "#22d3ee", "on_accent": "#ffffff",
-    "success": "#34d399", "error": "#fb7185", "warn": "#fbbf24",
-    "female": "#f472b6", "male": "#60a5fa", "selection": "#3b2d63",
+    "bg": "#0e0d0a", "surface": "#17150f", "card": "#1f1c14", "input": "#13110c", "hover": "#2a261b",
+    "border": "#2f2a1e", "border_hi": "#4a4230", "text": "#fbf8ef", "muted": "#b0a88f", "faint": "#756d58",
+    "accent": "#facc15", "accent2": "#f59e0b", "accent3": "#fb923c", "on_accent": "#1a1400",
+    "grad_a": "#fde047", "grad_b": "#f59e0b",
+    "success": "#34d399", "error": "#fb7185", "warn": "#fb923c",
+    "female": "#f472b6", "male": "#60a5fa", "selection": "#3d3418",
 }
 LIGHT = {
-    "bg": "#f5f3fc", "surface": "#ffffff", "card": "#faf8ff", "input": "#ffffff", "hover": "#f0ecfb",
-    "border": "#e6e0f5", "border_hi": "#cfc4ee", "text": "#1b1530", "muted": "#6b6386", "faint": "#a39cbb",
-    "accent": "#7c3aed", "accent2": "#db2777", "accent3": "#0891b2", "on_accent": "#ffffff",
-    "success": "#059669", "error": "#e11d48", "warn": "#b45309",
-    "female": "#db2777", "male": "#2563eb", "selection": "#e9ddff",
+    "bg": "#fbf9f1", "surface": "#ffffff", "card": "#fffdf6", "input": "#ffffff", "hover": "#fdf6dc",
+    "border": "#efe7cc", "border_hi": "#e2d29a", "text": "#1f1a0d", "muted": "#6f6650", "faint": "#aca38a",
+    "accent": "#b45309", "accent2": "#d97706", "accent3": "#ea580c", "on_accent": "#1f1a0d",
+    "grad_a": "#fcd34d", "grad_b": "#f59e0b",
+    "success": "#059669", "error": "#e11d48", "warn": "#c2410c",
+    "female": "#db2777", "male": "#2563eb", "selection": "#fdefb2",
 }
 C = dict(DARK)
 mode = "dark"
@@ -34,13 +36,13 @@ def _icons(c):
     stroke = 'fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"'
     svgs = {
         "check": f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" '
-                 f'stroke="#ffffff" {stroke}/></svg>',
+                 f'stroke="{c["on_accent"]}" {stroke}/></svg>',
         "down": f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" '
                 f'stroke="{c["muted"]}" {stroke}/></svg>',
         "up": f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" '
               f'stroke="{c["muted"]}" {stroke}/></svg>',
         "dot": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5" '
-               'fill="#ffffff"/></svg>',
+               f'fill="{c["on_accent"]}"/></svg>',
     }
     paths = {}
     for name, svg in svgs.items():
@@ -54,8 +56,8 @@ def _icons(c):
 def stylesheet():
     c = C
     i = _icons(c)
-    grad = GRAD.format(a=c["accent"], b=c["accent2"])
-    grad_hover = GRAD.format(a=QColor(c["accent"]).lighter(112).name(), b=QColor(c["accent2"]).lighter(112).name())
+    grad = GRAD.format(a=c["grad_a"], b=c["grad_b"])
+    grad_hover = GRAD.format(a=QColor(c["grad_a"]).lighter(108).name(), b=QColor(c["grad_b"]).lighter(110).name())
     return f"""
 * {{ outline: none; }}
 QMainWindow, QDialog, QMessageBox {{ background: {c['bg']}; }}
@@ -65,8 +67,8 @@ QToolTip {{ background: {c['card']}; color: {c['text']}; border: 1px solid {c['b
 
 /* ---------- header ---------- */
 QFrame#header {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 18px; }}
-QLabel#logo {{ background: {GRAD.format(a=c['accent'], b=c['accent2'])}; border-radius: 14px;
-               font-size: 20pt; color: white; }}
+QLabel#logo {{ background: {grad}; border-radius: 14px;
+               font-size: 20pt; color: {c['on_accent']}; }}
 QLabel#appTitle {{ font-size: 16pt; font-weight: bold; }}
 QLabel#appSub {{ color: {c['muted']}; }}
 QLabel#pill {{ background: {c['hover']}; color: {c['accent']}; border: 1px solid {c['border_hi']};
@@ -110,7 +112,7 @@ QPushButton#primary:disabled {{ background: {c['border']}; color: {c['faint']}; 
 /* ---------- inputs ---------- */
 QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     background: {c['input']}; border: 1px solid {c['border']}; border-radius: 10px; padding: 6px 10px;
-    selection-background-color: {c['accent']}; selection-color: white; }}
+    selection-background-color: {c['grad_b']}; selection-color: {c['on_accent']}; }}
 QPlainTextEdit, QTextEdit {{ padding: 8px; }}
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover,
 QPlainTextEdit:hover {{ border-color: {c['border_hi']}; }}
@@ -163,7 +165,7 @@ QTableCornerButton::section {{ background: {c['card']}; border: none; }}
 QProgressBar {{ background: {c['input']}; border: 1px solid {c['border']}; border-radius: 10px; height: 20px;
                 text-align: center; font-weight: bold; color: {c['text']}; }}
 QProgressBar::chunk {{ border-radius: 9px;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {c['accent']}, stop:0.6 {c['accent2']},
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {c['grad_a']}, stop:0.6 {c['grad_b']},
                                 stop:1 {c['accent3']}); }}
 
 /* ---------- labels ---------- */
@@ -194,9 +196,9 @@ def palette():
     for role, key in [(QPalette.Window, "bg"), (QPalette.Base, "input"), (QPalette.AlternateBase, "card"),
                       (QPalette.Button, "card"), (QPalette.WindowText, "text"), (QPalette.Text, "text"),
                       (QPalette.ButtonText, "text"), (QPalette.ToolTipBase, "card"), (QPalette.ToolTipText, "text"),
-                      (QPalette.Highlight, "accent"), (QPalette.PlaceholderText, "faint"), (QPalette.Link, "accent")]:
+                      (QPalette.Highlight, "grad_b"), (QPalette.PlaceholderText, "faint"), (QPalette.Link, "accent")]:
         p.setColor(role, QColor(c[key]))
-    p.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    p.setColor(QPalette.HighlightedText, QColor(c["on_accent"]))
     for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
         p.setColor(QPalette.Disabled, role, QColor(c["faint"]))
     return p

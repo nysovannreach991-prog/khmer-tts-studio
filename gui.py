@@ -1,4 +1,4 @@
-"""Khmer TTS Studio — កម្មវិធី GUI (PyQt5)
+"""AI Team #1 — កម្មវិធី GUI (PyQt5)
 
 ប្រើ engine ដដែលនឹងកំណែ web: edge-tts / Gemini TTS, SRT → សំឡេង/វីដេអូ,
 សំឡេង → SRT (បកប្រែ + ចាប់ភេទ), Merge វីដេអូ, Mute វីដេអូ។
@@ -9,19 +9,23 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 
 from PyQt5.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QFontDatabase
+from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPixmap
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSlider, QSpinBox,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import app as backend
+import ffmpeg_setup
+import licensing
+import overlay
 import srt_dub
 import transcribe
 import video_dub
@@ -153,11 +157,220 @@ class FileListBox(QWidget):
         self.add_paths(paths)
 
 
+class OverlayConfirmDialog(QDialog):
+    """បង្ហាញ Logo / Lower third លើវីដេអូពិត មុនពេលចាប់ផ្តើម — OK ទើបដំណើរការ"""
+    EDIT = 2  # លទ្ធផល: ទៅកែការកំណត់
+
+    def __init__(self, parent, videos, specs):
+        """videos = [(ឈ្មោះ, path), ...] — Auto មានច្រើន (Folder នីមួយៗ) អាចជ្រើសមើលម្តងមួយ"""
+        super().__init__(parent)
+        self.videos, self.video, self.specs, self._workers = videos, videos[0][1], specs, []
+        self.setWindowTitle("ពិនិត្យ Logo / Lower third")
+        self.resize(880, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        title = QLabel("🎬 ពិនិត្យទីតាំង Logo / Lower third មុនចាប់ផ្តើម")
+        title.setStyleSheet("font-size:13pt; font-weight:bold")
+        lay.addWidget(title)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("វីដេអូ:"))
+        self.pick = QComboBox()
+        for name, path in videos:
+            self.pick.addItem(name, path)
+        self.pick.setEnabled(len(videos) > 1)
+        top.addWidget(self.pick, 1)
+        self.orient = QLabel()
+        self.orient.setProperty("role", "muted")
+        top.addWidget(self.orient)
+        lay.addLayout(top)
+
+        self.image = QLabel("⏳ កំពុងគូររូបមើលជាមុន...")
+        self.image.setObjectName("stageLabel")
+        self.image.setAlignment(Qt.AlignCenter)
+        self.image.setMinimumHeight(300)
+        self.image.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        lay.addWidget(self.image, 1)
+        self._pixmap = None
+
+        for spec in specs:
+            name = "📺 Lower third" if spec.get("mode") == "timed" else "🏷 Logo"
+            line = QLabel(f"<b>{name}</b> — {os.path.basename(spec['path'])}<br>"
+                          f"<span style='color:{theme.C['muted']}'>{overlay.summary(spec)}</span>")
+            line.setWordWrap(True)
+            lay.addWidget(line)
+
+        self.clip_status = QLabel("ចុច ▶ ដើម្បីមើលវីដេអូ Preview ខ្លី (~10វិ) — Lower third លេចនៅវិនាទីទី 1")
+        self.clip_status.setProperty("role", "muted")
+        self.clip_status.setWordWrap(True)
+        lay.addWidget(self.clip_status)
+
+        row = QHBoxLayout()
+        self.btn_clip = QPushButton("▶ មើល Preview វីដេអូ")
+        self.btn_clip.clicked.connect(self._make_clip)
+        edit = QPushButton("✏️ កែទីតាំង")
+        edit.clicked.connect(lambda: self.done(self.EDIT))
+        cancel = QPushButton("បោះបង់")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("✓ OK — ចាប់ផ្តើម")
+        ok.setObjectName("primary")
+        ok.setMinimumHeight(42)
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        for b in (self.btn_clip, edit, cancel, ok):
+            b.setCursor(Qt.PointingHandCursor)
+        row.addWidget(self.btn_clip)
+        row.addWidget(edit)
+        row.addStretch()
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+        self.pick.currentIndexChanged.connect(self._video_changed)
+        self._video_changed()
+
+    def _video_changed(self):
+        self.video = self.pick.currentData()
+        try:
+            self.orient.setText(f"📐 {overlay.orientation(self.video)}")
+        except Exception:  # noqa: BLE001
+            self.orient.setText("")
+        self._pixmap = None
+        self.image.setPixmap(QPixmap())
+        self.image.setText("⏳ កំពុងគូររូបមើលជាមុន...")
+        video, specs = self.video, self.specs
+        out = os.path.join(tempfile.gettempdir(), f"khmer_tts_confirm_{self.pick.currentIndex()}.png")
+        self._run(lambda: overlay.render_preview(video, specs, out),
+                  lambda path: self._show_image(path) if video == self.video else None,
+                  lambda e: self.image.setText(f"⚠ មើលជាមុនមិនបាន\n{e[-200:]}"))
+
+    def _run(self, fn, on_done, on_fail):
+        worker = Worker(fn)
+        worker.done.connect(on_done)
+        worker.failed.connect(on_fail)
+        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
+        self._workers.append(worker)
+        worker.start()
+
+    def _show_image(self, path):
+        self._pixmap = QPixmap(path)
+        self._fit()
+
+    def _fit(self):
+        if self._pixmap and not self._pixmap.isNull():
+            self.image.setPixmap(self._pixmap.scaled(self.image.contentsRect().size(), Qt.KeepAspectRatio,
+                                                     Qt.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._fit)
+
+    def _make_clip(self):
+        self.btn_clip.setEnabled(False)
+        self.btn_clip.setText("⏳ កំពុងបង្កើត...")
+        out = os.path.join(tempfile.gettempdir(), f"khmer_tts_preview_{int(time.time())}.mp4")
+
+        def done(path):
+            self.btn_clip.setEnabled(True)
+            self.btn_clip.setText("▶ មើលម្តងទៀត")
+            self.clip_status.setText("✓ បានបើកក្នុងកម្មវិធីមើលវីដេអូ — បើពេញចិត្ត ចុច OK")
+            open_path(path)
+
+        def failed(e):
+            self.btn_clip.setEnabled(True)
+            self.btn_clip.setText("▶ មើល Preview វីដេអូ")
+            self.clip_status.setText(f"⚠ បង្កើត Preview មិនបាន: {e[-200:]}")
+
+        video = self.video
+        self._run(lambda: overlay.render_preview_clip(video, self.specs, out), done, failed)
+
+    def done(self, result):
+        for w in list(self._workers):  # រង់ចាំ ffmpeg កុំឱ្យ QThread ត្រូវបំផ្លាញពេលកំពុងដំណើរការ
+            w.wait(15000)
+        super().done(result)
+
+
+class ActivationDialog(QDialog):
+    """បញ្ចូល License key — បង្ហាញពេលបើកកម្មវិធីបើមិនទាន់មាន key ត្រឹមត្រូវ"""
+
+    def __init__(self, parent=None, error=""):
+        super().__init__(parent)
+        self.setWindowTitle("AI Team #1 — License")
+        self.setMinimumWidth(620)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 18)
+        lay.setSpacing(10)
+        title = QLabel("🔑 បើកដំណើរការ AI Team #1")
+        title.setStyleSheet("font-size:15pt; font-weight:bold")
+        lay.addWidget(title)
+        intro = QLabel("កម្មវិធីនេះត្រូវការ License key។ ផ្ញើ <b>Machine code</b> ខាងក្រោមទៅម្ចាស់កម្មវិធី "
+                       "ដើម្បីទទួលបាន key សម្រាប់កុំព្យូទ័រនេះ។")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        lay.addWidget(QLabel("Machine code"))
+        row = QHBoxLayout()
+        code = QLineEdit(licensing.machine_code())
+        code.setReadOnly(True)
+        code.setStyleSheet("font-size:14pt; font-weight:bold; letter-spacing:2px")
+        row.addWidget(code, 1)
+        copy = QPushButton("📋 Copy")
+        copy.clicked.connect(lambda: (QApplication.clipboard().setText(code.text()), copy.setText("✓ Copied")))
+        row.addWidget(copy)
+        lay.addLayout(row)
+
+        lay.addWidget(QLabel("License key"))
+        krow = QHBoxLayout()
+        self.key = QPlainTextEdit()
+        self.key.setPlaceholderText("បិទភ្ជាប់ key នៅទីនេះ (AT1-...)")
+        self.key.setMaximumHeight(80)
+        krow.addWidget(self.key, 1)
+        paste = QPushButton("📥 Paste")
+        paste.clicked.connect(lambda: self.key.setPlainText(QApplication.clipboard().text()))
+        krow.addWidget(paste)
+        lay.addLayout(krow)
+
+        self.error = QLabel(error)
+        self.error.setProperty("role", "error")
+        self.error.setWordWrap(True)
+        self.error.setVisible(bool(error))
+        lay.addWidget(self.error)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        quit_btn = QPushButton("ចាកចេញ")
+        quit_btn.clicked.connect(self.reject)
+        ok = QPushButton("✓ Activate")
+        ok.setObjectName("primary")
+        ok.setMinimumHeight(42)
+        ok.setDefault(True)
+        ok.clicked.connect(self._activate)
+        buttons.addWidget(quit_btn)
+        buttons.addWidget(ok)
+        lay.addLayout(buttons)
+
+    def _activate(self):
+        try:
+            info = licensing.activate(self.key.toPlainText())
+        except licensing.LicenseError as e:
+            self.error.setText(f"✕ {e}")
+            self.error.setVisible(True)
+            return
+        QMessageBox.information(self, "License", f"✓ បើកដំណើរការរួចរាល់\n\n{licensing.describe(info)}")
+        self.accept()
+
+
+def ensure_license(parent=None):
+    """True បើកុំព្យូទ័រនេះមាន License ត្រឹមត្រូវ (ឬអ្នកប្រើបញ្ចូល key ត្រឹមត្រូវ)"""
+    ok, _, error = licensing.status()
+    return ok or ActivationDialog(parent, error).exec_() == QDialog.Accepted
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         version = updater.local_version()
-        self.setWindowTitle("Khmer TTS Studio" + (f"  v{version}" if version != "0" else ""))
+        self.setWindowTitle("AI Team #1" + (f"  v{version}" if version != "0" else ""))
         self.resize(1280, 820)
         self.settings = QSettings("KhmerTTS", "Studio")
         self.edge_voices = list(FALLBACK_EDGE_VOICES)
@@ -173,6 +386,8 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_text_tab(), "✍️ អត្ថបទ")
         self.tabs.addTab(self._build_srt_tab(), "🎬 SRT → វីដេអូ")
+        self.overlay_tab = self._build_overlay_tab()
+        self.tabs.addTab(self.overlay_tab, "🏷 Logo")
         self.tabs.addTab(self._build_stt_tab(), "🎧 សំឡេង → SRT")
         self.tabs.addTab(self._build_merge_tab(), "🧩 Merge")
         self.tabs.addTab(self._build_batch_tab(), "⚡ Auto")
@@ -180,6 +395,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.files_tab, "📁 ឯកសារ")
         self.tabs.currentChanged.connect(
             lambda i: self.refresh_files() if self.tabs.widget(i) is self.files_tab else None)
+        self.tabs.currentChanged.connect(
+            lambda i: self._ov_timer.start(50) if self.tabs.widget(i) is self.overlay_tab else None)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.tabs)
@@ -200,6 +417,10 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._update_engine()
         self.load_edge_voices()
+        if ffmpeg_setup.available():
+            threading.Thread(target=overlay.pick_encoder, daemon=True).start()  # រក GPU encoder ជាមុន
+        QTimer.singleShot(2000, self._check_revoked)
+        QTimer.singleShot(1200, lambda: self.offer_ffmpeg(startup=True))
         QTimer.singleShot(3000, lambda: self.check_update(silent=True))  # ពិនិត្យ Update ស្ងាត់ៗ
 
     # ================= UI: voice settings (right) =================
@@ -491,6 +712,345 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         return w
 
+    # ================= Logo / Lower third =================
+    OV_POS = [("tl", "↖ លើ ឆ្វេង"), ("tc", "⬆ លើ កណ្តាល"), ("tr", "↗ លើ ស្តាំ"),
+              ("bl", "↙ ក្រោម ឆ្វេង"), ("bc", "⬇ ក្រោម កណ្តាល"), ("br", "↘ ក្រោម ស្តាំ")]
+    OV_KEY = [("auto", "✨ Auto (រកឃើញខ្លួនឯង)"), ("green", "🟩 Green screen"), ("blue", "🟦 Blue screen"),
+              ("none", "គ្មាន (ប្រើដូចដើម)")]
+    # (prefix, ចំណងជើង, លំនាំដើម)
+    OV_DEFAULTS = {"lg": {"pos": "tr", "size": 12, "margin": 3, "opacity": 90, "strength": 15},
+                   "lt": {"pos": "bl", "size": 45, "margin": 4, "opacity": 100, "strength": 15,
+                          "start": 10, "every": 5, "show": 8, "per_part": True}}
+
+    def _build_overlay_tab(self):
+        w = QWidget()
+        outer = QHBoxLayout(w)
+        left_w = QWidget()
+        left = QVBoxLayout(left_w)
+        left.setContentsMargins(0, 0, 6, 0)
+        self.ov = {}
+        self._ov_loading = False
+        left.addWidget(self._overlay_card("lg", "🏷 Logo", "Logo នៅជ្រុងវីដេអូ — បង្ហាញជានិច្ច (វីដេអូនឹង loop)"))
+        left.addWidget(self._overlay_card("lt", "📺 Lower third", "ផ្ទាំងអក្សរខាងក្រោម — លេចឡើងតាមពេលកំណត់"))
+        self.ov_confirm = QCheckBox("👀 បង្ហាញ Preview ឱ្យចុច OK មុនពេលចាប់ផ្តើមដំណើរការ")
+        self.ov_confirm.setChecked(True)
+        left.addWidget(self.ov_confirm)
+        note = QLabel("ប្រើ PNG ថ្លា, MP4 Greenscreen ឬ MOV/WEBM ថ្លា · អនុវត្តលើ SRT → វីដេអូ, សំឡេង → SRT និង Auto\n"
+                      "⚠ ការដាក់ Logo ត្រូវ encode វីដេអូឡើងវិញ (ប្រើ GPU បើមាន)")
+        note.setProperty("role", "muted")
+        note.setWordWrap(True)
+        left.addWidget(note)
+        left.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(left_w)
+        outer.addWidget(scroll, 3)
+
+        right = QVBoxLayout()
+        head = QHBoxLayout()
+        title = QLabel("👀 មើលជាមុន")
+        title.setStyleSheet("font-weight:bold")
+        head.addWidget(title)
+        head.addStretch()
+        self.ov_aspect = QComboBox()
+        for key, label in [("auto", "📐 Auto (តាមវីដេអូ)"), ("16:9", "▭ 16:9 ដេក"), ("9:16", "▯ 9:16 បញ្ឈរ"),
+                           ("1:1", "□ 1:1 ការ៉េ"), ("4:5", "4:5 Facebook/IG"), ("4:3", "4:3")]:
+            self.ov_aspect.addItem(label, key)
+        self.ov_aspect.setToolTip("Aspect ratio នៃផ្ទៃ Preview — Auto ប្រើទំហំវីដេអូពិត")
+        self.ov_aspect.currentIndexChanged.connect(lambda _: self._ov_timer.start(50))
+        head.addWidget(self.ov_aspect)
+        refresh = QPushButton("↻")
+        refresh.setToolTip("គូរឡើងវិញ")
+        refresh.setFixedWidth(40)
+        refresh.setStyleSheet("padding:0")
+        refresh.clicked.connect(self._overlay_preview)
+        head.addWidget(refresh)
+        right.addLayout(head)
+        self.ov_preview = QLabel("ជ្រើស Logo ឬ Lower third ដើម្បីមើលជាមុន")
+        self.ov_preview.setObjectName("stageLabel")
+        self.ov_preview.setAlignment(Qt.AlignCenter)
+        self.ov_preview.setMinimumSize(280, 158)
+        self.ov_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.ov_preview.setWordWrap(True)
+        right.addWidget(self.ov_preview, 1)
+        self.btn_ov_clip = QPushButton("▶ Preview វីដេអូ (~10វិ)")
+        self.btn_ov_clip.setCursor(Qt.PointingHandCursor)
+        self.btn_ov_clip.clicked.connect(self._overlay_clip)
+        right.addWidget(self.btn_ov_clip)
+        self.ov_preview_note = QLabel("ប្រើវីដេអូក្នុងផ្ទាំង SRT → វីដេអូ (បើមាន) · Lower third លេចនៅវិនាទីទី 1")
+        self.ov_preview_note.setProperty("role", "muted")
+        self.ov_preview_note.setWordWrap(True)
+        right.addWidget(self.ov_preview_note)
+        outer.addLayout(right, 2)
+
+        self._ov_pixmap = None
+        self._ov_pending = False
+        self._ov_timer = QTimer(self)
+        self._ov_timer.setSingleShot(True)
+        self._ov_timer.setInterval(450)
+        self._ov_timer.timeout.connect(self._overlay_preview)
+        self.video_path.textChanged.connect(lambda _: self._ov_timer.start())
+        return w
+
+    def _overlay_card(self, prefix, title, hint):
+        d = self.OV_DEFAULTS[prefix]
+        box = QGroupBox(title)
+        form = QFormLayout(box)
+        c = {}
+        c["on"] = QCheckBox(hint)
+        form.addRow(c["on"])
+        c["path"], row = self._file_row("ជ្រើស PNG / MP4 Greenscreen / MOV ថ្លា", overlay.OVERLAY_FILTER)
+        form.addRow("ឯកសារ", row)
+        c["info"] = QLabel()
+        c["info"].setProperty("role", "muted")
+        form.addRow("", c["info"])
+
+        c["key"] = QComboBox()
+        for key, label in self.OV_KEY:
+            c["key"].addItem(label, key)
+        c["strength"] = self._spin(1, 60, d["strength"], " %", "ភាពខ្លាំងនៃការលុបពណ៌ — បង្កើនបើនៅសល់ពណ៌បៃតង")
+        form.addRow("លុបពណ៌", self._hrow(c["key"], QLabel("ខ្លាំង"), c["strength"]))
+
+        c["pos"] = QComboBox()
+        for key, label in self.OV_POS:
+            c["pos"].addItem(label, key)
+        self._select_data(c["pos"], d["pos"])
+        c["size"] = self._spin(2, 400, d["size"], " %",
+                               "ទំហំ ធៀបនឹងទទឹងវីដេអូ — លើស 100% = ធំជាងវីដេអូ (ផ្នែកលើសត្រូវកាត់ចោល)")
+        form.addRow("ទីតាំង", self._hrow(c["pos"], QLabel("ទំហំ"), c["size"]))
+        c["margin"] = self._spin(0, 30, d["margin"], " %", "គម្លាតពីគែមវីដេអូ")
+        c["opacity"] = self._spin(5, 100, d["opacity"], " %", "ភាពមើលឃើញ (100% = មិនថ្លា)")
+        form.addRow("គម្លាត", self._hrow(c["margin"], QLabel("ភាពច្បាស់"), c["opacity"]))
+        c["x"] = self._dspin(-100, 100, 0, " %", "រំកិលទៅស្តាំ (+) ឬឆ្វេង (−) — % នៃទទឹងវីដេអូ")
+        c["y"] = self._dspin(-100, 100, 0, " %", "រំកិលចុះក្រោម (+) ឬឡើងលើ (−) — % នៃកម្ពស់វីដេអូ")
+        reset = QPushButton("↺")
+        reset.setToolTip("កំណត់ X / Y ឡើងវិញ (0)")
+        reset.setFixedWidth(36)
+        reset.setStyleSheet("padding:0")
+        reset.clicked.connect(lambda: (c["x"].setValue(0), c["y"].setValue(0)))
+        form.addRow("សារ៉េ", self._hrow(QLabel("X"), c["x"], QLabel("Y"), c["y"], reset))
+
+        if prefix == "lt":
+            c["start"] = self._spin(0, 3600, d["start"], " វិ", "លេចឡើងលើកដំបូងនៅវិនាទីទី...")
+            c["every"] = self._spin(0, 120, d["every"], " នាទី", "លេចម្តងទៀតរៀងរាល់... (0 = តែម្តង)")
+            c["every"].setSpecialValueText("តែម្តង")
+            form.addRow("ចាប់ផ្តើម", self._hrow(c["start"], QLabel("ម្តងទៀតរៀងរាល់"), c["every"]))
+            c["show"] = self._spin(1, 120, d["show"], " វិ", "រយៈពេលបង្ហាញ (សម្រាប់រូបភាព — វីដេអូលេងដល់ចប់)")
+            c["per_part"] = QCheckBox("រាប់ពេលពីដើមផ្នែកនីមួយៗ")
+            c["per_part"].setChecked(d["per_part"])
+            c["per_part"].setToolTip("ពេលកាត់វីដេអូជាផ្នែក — ផ្នែកនីមួយៗមាន Lower third ដូចគ្នា")
+            form.addRow("បង្ហាញ", self._hrow(c["show"], c["per_part"]))
+
+        c["path"].textChanged.connect(lambda _, p=prefix: self._overlay_file_changed(p))
+        for key, widget in c.items():
+            if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                widget.valueChanged.connect(lambda _: self._ov_timer.start())
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(lambda _: self._ov_timer.start())
+            elif isinstance(widget, QCheckBox):
+                widget.toggled.connect(lambda _: self._ov_timer.start())
+        self.ov[prefix] = c
+        return box
+
+    @staticmethod
+    def _spin(lo, hi, value, suffix, tip):
+        s = QSpinBox()
+        s.setRange(lo, hi)
+        s.setValue(value)
+        s.setSuffix(suffix)
+        s.setToolTip(tip)
+        return s
+
+    @staticmethod
+    def _dspin(lo, hi, value, suffix, tip):
+        s = QDoubleSpinBox()
+        s.setRange(lo, hi)
+        s.setDecimals(1)
+        s.setSingleStep(0.5)
+        s.setValue(value)
+        s.setSuffix(suffix)
+        s.setToolTip(tip + " · ចុច ↑ ↓ ឬ scroll ដើម្បីរំកិល")
+        return s
+
+    @staticmethod
+    def _hrow(*widgets):
+        row = QHBoxLayout()
+        for widget in widgets:
+            row.addWidget(widget)
+        row.addStretch()
+        return row
+
+    def _overlay_file_changed(self, prefix):
+        c = self.ov[prefix]
+        path = c["path"].text().strip()
+        if not path:
+            c["info"].setText("")
+        elif not os.path.isfile(path):
+            c["info"].setText("⚠ រកមិនឃើញឯកសារ")
+        else:
+            try:
+                c["info"].setText(overlay.describe(path))
+                if not c["on"].isChecked() and not self._ov_loading:  # ទើបជ្រើសឯកសារ → បើកស្វ័យប្រវត្តិ
+                    c["on"].setChecked(True)
+            except Exception as e:  # noqa: BLE001
+                c["info"].setText("⚠ រកមិនឃើញ ffmpeg" if not ffmpeg_setup.available() else f"⚠ {e}")
+        self._ov_timer.start()
+
+    def overlays(self):
+        """spec ទាំងអស់ដែលបើក ហើយមានឯកសារ (សម្រាប់ video_dub.mix_and_split)"""
+        specs = []
+        for prefix, c in self.ov.items():
+            path = c["path"].text().strip()
+            if not c["on"].isChecked() or not os.path.isfile(path):
+                continue
+            spec = {"path": path, "key": c["key"].currentData(), "strength": c["strength"].value() / 100,
+                    "pos": c["pos"].currentData(), "size": c["size"].value(), "margin": c["margin"].value(),
+                    "opacity": c["opacity"].value(), "x": c["x"].value(), "y": c["y"].value(),
+                    "mode": "timed" if prefix == "lt" else "always"}
+            if prefix == "lt":
+                spec.update(start=c["start"].value(), every=c["every"].value() * 60, show=c["show"].value(),
+                            per_part=c["per_part"].isChecked())
+            specs.append(spec)
+        return specs
+
+    def _overlay_preview(self):
+        if self._ov_pending:  # កំពុងគូរ → គូរម្តងទៀតពេលចប់
+            self._ov_timer.start()
+            return
+        specs = self.overlays()
+        if not specs:
+            self._ov_pixmap = None
+            self.ov_preview.setPixmap(QPixmap())
+            self.ov_preview.setText("ជ្រើស Logo ឬ Lower third ដើម្បីមើលជាមុន")
+            return
+        if not ffmpeg_setup.available():
+            self.ov_preview.setPixmap(QPixmap())
+            self.ov_preview.setText(f"⚠ {ffmpeg_setup.MISSING_MSG}")
+            return
+        video, canvas = self._ov_source()
+        out = os.path.join(tempfile.gettempdir(), "khmer_tts_overlay_preview.png")
+        self._ov_pending = True
+
+        def done(path):
+            self._ov_pending = False
+            self._ov_pixmap = QPixmap(path)
+            self._show_ov_pixmap()
+
+        def failed(e):
+            self._ov_pending = False
+            self.ov_preview.setPixmap(QPixmap())
+            self.ov_preview.setText(f"⚠ មើលជាមុនមិនបាន\n{e[-200:]}")
+
+        worker = Worker(lambda: overlay.render_preview(video, specs, out, canvas=canvas))
+        worker.done.connect(done)
+        worker.failed.connect(failed)
+        self._start_worker(worker)
+
+    def _overlay_clip(self):
+        if not self._check_ffmpeg():
+            return
+        specs = self.overlays()
+        if not specs:
+            return self.set_status("សូមជ្រើស Logo ឬ Lower third ជាមុនសិន", True)
+        video, canvas = self._ov_source()
+        out = os.path.join(tempfile.gettempdir(), f"khmer_tts_preview_{int(time.time())}.mp4")
+        self.btn_ov_clip.setEnabled(False)
+        self.btn_ov_clip.setText("⏳ កំពុងបង្កើត Preview...")
+
+        def reset():
+            self.btn_ov_clip.setEnabled(True)
+            self.btn_ov_clip.setText("▶ Preview វីដេអូ (~10វិ)")
+
+        worker = Worker(lambda: overlay.render_preview_clip(video, specs, out, canvas=canvas))
+        worker.done.connect(lambda path: (reset(), open_path(path)))
+        worker.failed.connect(lambda e: (reset(), self.set_status(f"បង្កើត Preview មិនបាន: {e[-200:]}", True)))
+        self._start_worker(worker)
+
+    def _ov_source(self):
+        """(វីដេអូ, canvas) សម្រាប់ Preview — Auto: វីដេអូក្នុងផ្ទាំង SRT (ឬ Folder ទីមួយក្នុង Auto)"""
+        aspect = self.ov_aspect.currentData()
+        video = self.video_path.text().strip()
+        if not os.path.isfile(video):
+            video = next((r["videos"][0] for r in self.batch_rows if r["videos"]), "")
+        if aspect != "auto":
+            self.ov_preview_note.setText(f"ផ្ទៃ {aspect} · Lower third លេចនៅវិនាទីទី 1 ក្នុង Preview វីដេអូ")
+            return None, overlay.ASPECTS[aspect]
+        if video:
+            try:
+                info = overlay.orientation(video)
+            except Exception:  # noqa: BLE001
+                info = ""
+            self.ov_preview_note.setText(f"🎞 {os.path.basename(video)} · {info}")
+            return video, None
+        self.ov_preview_note.setText("គ្មានវីដេអូ — ប្រើផ្ទៃ 16:9 (ជ្រើស Aspect ratio ខាងលើដើម្បីប្តូរ)")
+        return None, None
+
+    def confirm_overlays(self, videos):
+        """បើមាន Logo/Lower third — បង្ហាញ Preview លើវីដេអូ ហើយចាំអ្នកប្រើចុច OK។
+        videos = path មួយ ឬ [(ឈ្មោះ, path), ...]"""
+        specs = self.overlays()
+        if isinstance(videos, str):
+            videos = [(os.path.basename(videos), videos)]
+        videos = [(n, p) for n, p in videos if p and os.path.isfile(p)]
+        if not specs or not self.ov_confirm.isChecked() or not videos:
+            return True
+        video = videos[0][1]
+        result = OverlayConfirmDialog(self, videos, specs).exec_()
+        if result == OverlayConfirmDialog.EDIT:
+            self.tabs.setCurrentWidget(self.overlay_tab)
+            if os.path.isfile(video) and not self.video_path.text().strip():
+                self.video_path.setText(video)  # មើលជាមុនលើវីដេអូដដែល
+            self.set_status("កែទីតាំង Logo / Lower third ហើយចុចដំណើរការម្តងទៀត")
+        return result == QDialog.Accepted
+
+    def _show_ov_pixmap(self):
+        if self._ov_pixmap and not self._ov_pixmap.isNull():
+            size = self.ov_preview.contentsRect().size()
+            self.ov_preview.setPixmap(self._ov_pixmap.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "_ov_pixmap", None):
+            QTimer.singleShot(0, self._show_ov_pixmap)
+
+    def _ov_load(self):
+        s = self.settings
+        self._ov_loading = True
+        self._select_data(self.ov_aspect, s.value("ov_aspect", "auto"))
+        for prefix, c in self.ov.items():
+            for key, widget in c.items():
+                name = f"ov_{prefix}_{key}"
+                if not s.contains(name) or key == "info":
+                    continue
+                value = s.value(name)
+                if isinstance(widget, QLineEdit):
+                    widget.setText(value or "")
+                elif isinstance(widget, QSpinBox):
+                    widget.setValue(int(float(value)))
+                elif isinstance(widget, QDoubleSpinBox):
+                    widget.setValue(float(value))
+                elif isinstance(widget, QComboBox):
+                    self._select_data(widget, value)
+                elif isinstance(widget, QCheckBox):
+                    widget.setChecked(value in (True, "true", "1"))
+        self._ov_loading = False
+
+    def _ov_save(self):
+        s = self.settings
+        s.setValue("ov_aspect", self.ov_aspect.currentData())
+        for prefix, c in self.ov.items():
+            for key, widget in c.items():
+                name = f"ov_{prefix}_{key}"
+                if isinstance(widget, QLineEdit):
+                    s.setValue(name, widget.text().strip())
+                elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                    s.setValue(name, widget.value())
+                elif isinstance(widget, QComboBox):
+                    s.setValue(name, widget.currentData())
+                elif isinstance(widget, QCheckBox):
+                    s.setValue(name, widget.isChecked())
+
     # ================= Auto (Folder) =================
     B_ON, B_NAME, B_VIDEOS, B_SRT, B_STATUS = range(5)
 
@@ -692,6 +1252,9 @@ class MainWindow(QMainWindow):
         self._batch_render()
         if not queue:
             return self.set_status("គ្មាន Folder ដែលត្រៀមរួច (ត្រូវមានវីដេអូ និង SRT)", True)
+        if not self.confirm_overlays([(os.path.basename(self.batch_rows[r]["folder"]),
+                                       self.batch_rows[r]["videos"][0]) for r in queue]):
+            return
         self.batch_queue, self.batch_total = queue, len(queue)
         self.batch_active, self.batch_stop = True, False
         self.btn_batch_stop.setEnabled(True)
@@ -1031,6 +1594,8 @@ class MainWindow(QMainWindow):
             self.set_status(msg)
 
     def fail(self, msg):
+        if "WinError 2" in msg and not ffmpeg_setup.available():
+            msg = ffmpeg_setup.MISSING_MSG
         self.timer.stop()
         self.set_busy(False)
         self.progress.setRange(0, 100)
@@ -1125,10 +1690,55 @@ class MainWindow(QMainWindow):
                          "video": "កំពុងដាក់សំឡេងចូលវីដេអូ និងកាត់ជាផ្នែកៗ..."}.get(s["status"]) or label(s))
 
     def _check_ffmpeg(self):
-        if not shutil.which("ffmpeg"):
-            QMessageBox.warning(self, "ffmpeg", "រកមិនឃើញ ffmpeg — សូមដំឡើង ffmpeg ហើយដាក់ក្នុង PATH")
-            return False
-        return True
+        if ffmpeg_setup.available():
+            return True
+        self.offer_ffmpeg()
+        return False
+
+    def offer_ffmpeg(self, startup=False):
+        """ffmpeg មិនទាន់មាន → សួរ ហើយទាញយកដោយស្វ័យប្រវត្តិ (~115MB)"""
+        if ffmpeg_setup.available() or getattr(self, "_ff_downloading", False) or self.busy:
+            return
+        text = ("កម្មវិធីត្រូវការ ffmpeg សម្រាប់ដំណើរការសំឡេង និងវីដេអូ។\n\n"
+                "ទាញយក និងដំឡើងដោយស្វ័យប្រវត្តិឥឡូវនេះ? (~115 MB, ធ្វើតែម្តង)")
+        if QMessageBox.question(self, "ត្រូវការ ffmpeg", text) != QMessageBox.Yes:
+            if not startup:
+                self.set_status(ffmpeg_setup.MISSING_MSG, True)
+            return
+        self._ff_downloading = True
+        self._ff_prog = [0, 0]
+        self.begin_stages("ដំឡើង ffmpeg", ["ទាញយក ffmpeg"])
+        self.enter_stage("ទាញយក ffmpeg")
+        self.set_busy(True, "កំពុងទាញយក ffmpeg...")
+        poll = QTimer(self)
+
+        def tick():
+            done, total = self._ff_prog
+            if total:
+                self.progress.setValue(int(done * 100 / total))
+                self.progress.setFormat(f"{done / 1e6:.0f}/{total / 1e6:.0f} MB · %p%")
+
+        poll.timeout.connect(tick)
+        poll.start(300)
+
+        def finish(ok, msg):
+            poll.stop()
+            self._ff_downloading = False
+            if ok:
+                self.set_busy(False)
+                threading.Thread(target=overlay.pick_encoder, daemon=True).start()
+                self.set_result(None, "✓ បានដំឡើង ffmpeg — អាចប្រើកម្មវិធីបានហើយ")
+                self._ov_timer.start(50)
+            else:
+                self.fail(msg)
+
+        def progress(done, total):
+            self._ff_prog = [done, total]
+
+        worker = Worker(lambda: ffmpeg_setup.download(progress))
+        worker.done.connect(lambda _: finish(True, ""))
+        worker.failed.connect(lambda e: finish(False, e))
+        self._start_worker(worker)
 
     # ================= actions =================
     def run_text(self):
@@ -1228,8 +1838,8 @@ class MainWindow(QMainWindow):
     def dub_stages(self, with_video):
         if not with_video:
             return [self.S_TTS, self.S_MIX_SAVE]
-        return [self.S_TTS, self.S_MIX,
-                "ដាក់ចូលវីដេអូ & កាត់ជាផ្នែក" if self.part_minutes.value() else "ដាក់ចូលវីដេអូ"]
+        video = "ដាក់ចូលវីដេអូ" + (" + Logo" if self.overlays() else "")
+        return [self.S_TTS, self.S_MIX, video + (" & កាត់ជាផ្នែក" if self.part_minutes.value() else "")]
 
     def _dub_args(self, cues):
         """arguments សម្រាប់ srt_dub.start_job ពីការកំណត់បច្ចុប្បន្ន (raise backend.BadRequest)"""
@@ -1246,10 +1856,16 @@ class MainWindow(QMainWindow):
         """បង្កើតសំឡេង → ដាក់ចូលវីដេអូ → កាត់ជាផ្នែក (stages = ឈ្មោះ 3 ដំណាក់កាល)"""
         orig = 0.0 if self.orig_mute.isChecked() else self.orig_volume.value() / 100
         part_sec = self.part_minutes.value() * 60
+        overlays = self.overlays()
+        for prefix, c in self.ov.items():
+            if c["on"].isChecked() and not os.path.isfile(c["path"].text().strip()):
+                self._log(f"   ⚠ {'Logo' if prefix == 'lg' else 'Lower third'}: រកមិនឃើញឯកសារ — រំលង")
+        if overlays:
+            self._log(f"   🏷 {len(overlays)} Logo/Lower third — encode ដោយ {overlay.pick_encoder()}")
 
         def post(job, pcm):
             job["folder"], job["parts"] = video_dub.mix_and_split(
-                video, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job)
+                video, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays)
 
         job = srt_dub.start_job(**args, post=post)
         self.enter_stage(stages[0])
@@ -1290,6 +1906,8 @@ class MainWindow(QMainWindow):
             video_dub.probe(video)
         except Exception as e:  # noqa: BLE001
             return error(f"មិនអាចអានវីដេអូ: {e}")
+        if not chained and not self.confirm_overlays(video):
+            return
         if not chained:
             self.begin_stages(f"SRT → វីដេអូ ({engine} · {len(args['cues'])} បន្ទាត់ · {os.path.basename(video)})",
                               stages)
@@ -1320,6 +1938,8 @@ class MainWindow(QMainWindow):
         s_gemini = "Gemini ស្តាប់ & បកប្រែ" if target else "Gemini ស្តាប់"
         dub = self.stt_dub.isChecked()
         with_video = is_video and self.stt_video.isChecked()
+        if dub and with_video and not self.confirm_overlays(src):
+            return
         self.begin_stages(f"សំឡេង → SRT ({os.path.basename(src)})",
                           [s_prep, s_gemini, "រក្សាទុក SRT"] + (self.dub_stages(with_video) if dub else []))
         self.enter_stage(s_prep)
@@ -1476,7 +2096,7 @@ class MainWindow(QMainWindow):
 
     # ================= settings =================
     _CHECKS = ["auto_gender", "strip_parens", "fit", "orig_mute", "stt_gender", "stt_dub", "stt_video",
-               "batch_keep_merged"]
+               "batch_keep_merged", "ov_confirm"]
     _SPINS = ["max_speed", "workers", "orig_volume", "part_minutes"]
     # key ថ្មី → លំនាំដើមថ្មី (Mute សំឡេងដើម = បើក) មិនត្រូវជាន់ដោយតម្លៃចាស់ដែលបានរក្សាទុក
     _KEYS = {"orig_mute": "orig_mute_v2"}
@@ -1502,6 +2122,7 @@ class MainWindow(QMainWindow):
             if s.contains(name):
                 widget = getattr(self, name)
                 widget.setValue(type(widget.value())(float(s.value(name))))
+        self._ov_load()
         geom = s.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
@@ -1529,6 +2150,7 @@ class MainWindow(QMainWindow):
             s.setValue(self._KEYS.get(name, name), getattr(self, name).isChecked())
         for name in self._SPINS:
             s.setValue(name, getattr(self, name).value())
+        self._ov_save()
         s.setValue("geometry", self.saveGeometry())
 
     # ================= header / theme =================
@@ -1546,7 +2168,7 @@ class MainWindow(QMainWindow):
         titles = QVBoxLayout()
         titles.setSpacing(0)
         title_row = QHBoxLayout()
-        title = QLabel("Khmer TTS Studio")
+        title = QLabel("AI Team #1")
         title.setObjectName("appTitle")
         title_row.addWidget(title)
         version = updater.local_version()
@@ -1596,10 +2218,37 @@ class MainWindow(QMainWindow):
     # ================= Update =================
 
     def _about(self):
-        cfg = updater.load_config()
-        QMessageBox.information(self, "អំពីកម្មវិធី",
-                                f"Khmer TTS Studio  v{updater.local_version()}\n\n"
-                                f"Update ពី: {('github.com/' + cfg['repo']) if cfg else 'មិនទាន់កំណត់'}")
+        box = QMessageBox(self)
+        box.setWindowTitle("អំពីកម្មវិធី")
+        text = f"AI Team #1  v{updater.local_version()}\n\nយើងជាធីម AI #1"
+        change = None
+        if licensing.enabled():
+            _, info, _ = licensing.status()
+            text += f"\n\nLicense: {licensing.describe(info)}"
+            if not (info or {}).get("owner"):
+                change = box.addButton("🔑 ប្តូរ Key", QMessageBox.ActionRole)
+        box.setText(text)
+        box.addButton(QMessageBox.Ok)
+        box.exec_()
+        if change is not None and box.clickedButton() is change:
+            ActivationDialog(self).exec_()
+
+    def _check_revoked(self):
+        """ទាញបញ្ជី key ដែលត្រូវដកសិទ្ធិពី GitHub — បើ key នេះត្រូវដកសិទ្ធិ បិទកម្មវិធី"""
+        if not licensing.enabled() or licensing.is_owner():
+            return
+
+        def done(_):
+            ok, _, error = licensing.status()
+            if not ok and not self.busy:
+                QMessageBox.critical(self, "License", error)
+                self._save_settings()
+                QApplication.quit()
+
+        worker = Worker(licensing.fetch_revoked)
+        worker.done.connect(done)
+        worker.failed.connect(lambda e: None)  # គ្មាន Internet → ពិនិត្យលើកក្រោយ
+        self._start_worker(worker)
 
     def check_update(self, silent=True):
         """silent=True — ពេលបើកកម្មវិធី: បង្ហាញតែពេលមាន Update ថ្មីប៉ុណ្ណោះ"""
@@ -1694,6 +2343,7 @@ def setup_font(qt_app):
 
 def main():
     updater.apply_pending()  # ឯកសារ Update ដែលមិនទាន់បានដាក់ពីលើកមុន
+    ffmpeg_setup.add_to_path()  # ffmpeg ដែលកម្មវិធីបានទាញយក
     sys.excepthook = _excepthook
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
@@ -1701,6 +2351,8 @@ def main():
     qt_app.setStyle("Fusion")
     setup_font(qt_app)
     theme.apply(qt_app, QSettings("KhmerTTS", "Studio").value("theme", "dark"))
+    if not ensure_license():
+        return
     window = MainWindow()
     window.show()
     sys.exit(qt_app.exec_())

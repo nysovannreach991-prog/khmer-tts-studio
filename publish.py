@@ -13,8 +13,11 @@ import updater
 APP_DIR = updater.APP_DIR
 INCLUDE_EXT = {".py", ".bat", ".txt", ".html", ".ttf", ".otf", ".json", ".md", ".ico", ".png"}
 EXCLUDE_DIRS = {"outputs", "__pycache__", ".git", ".update_pending", ".cache"}
-EXCLUDE_FILES = {"manifest.json", "gui_error.log"}
-GITIGNORE = "outputs/\n__pycache__/\n.update_pending/\n*.log\n*.ini\n"
+EXCLUDE_FILES = {"manifest.json", "gui_error.log",
+                 "license_admin.py", "license_admin.bat",
+                 "publish.py", "publish_update.bat"}  # ឧបករណ៍ម្ចាស់ — មិនផ្តល់ឱ្យមិត្តភក្តិ
+GITIGNORE = ("outputs/\n__pycache__/\n.update_pending/\n*.log\n*.ini\n"
+             "license_admin.py\nlicense_admin.bat\n*.key\n")
 
 
 def git(*args, check=True):
