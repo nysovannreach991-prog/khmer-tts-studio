@@ -1,6 +1,6 @@
 {
-  "version": "1.0.3",
-  "notes": "បន្ថែម Ads",
+  "version": "1.0.4",
+  "notes": "បន្ថែមកន្លែងដាក់watermark",
   "files": {
     "ads.py": "a656284d99a15cc861aef64feadc0a91b3d5cba780a1f5f8deb1770337452b65",
     "app.py": "5761a661d1278fe7fc6bdf159e2898b4d466f1e855d49b06c32351958ea7cc40",
@@ -9,10 +9,10 @@
     "fonts/KantumruyPro-Bold.ttf": "464386b92203d3380b0253d67a1c02b015877160d9fd297535c53e09073e4ac5",
     "fonts/KantumruyPro-Regular.ttf": "2cd3e85c6ad5be83a4355ffcda69c9ee6437b1eb69f20061477e2cb2b2989188",
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
-    "gui.py": "000c581cb328b4e3445f8ee7cc431d8a4a154e7592c75037b8ec6298287f8dce",
+    "gui.py": "24bbfa44f2c8a6638d9d39453ee30968f3809bea6d93cc2836207c4be1857cd6",
     "launcher.ps1": "10ff2da4f43be36c9e0be95d6cefebbe29b1840cd39581ae66ce0795cdac1e1f",
     "licensing.py": "29718be83f670cf49c2af580348fa99a6f07cbef07f61635b9f64e811d0e2e56",
-    "overlay.py": "b7bd93262003412529e7c2d31903132560b9750bc91131559c59381d9d1aaaa9",
+    "overlay.py": "c10c9b59765b7c06a98cfefa2d2ee5fccecef6d0c0a85b14589348dbe0c5d976",
     "requirements.txt": "8d177bfbe734f6a2d1af9efaa50160a1aa641ca2b0a58bd308fc1aaf8c7733a3",
     "revoked.json": "ebfd160c88d4fe237113c5f5a270228d97ae5707b8bd78fac0e65669a8f18133",
     "run.bat": "2be5a974af0e8bfc199517dcf8f7decab1d5e2eb2af1b41216e8e09d28f32276",
@@ -24,6 +24,7 @@
     "update_config.json": "6cc48a30963de990ffe61c2779e9a8cf5f7bc0ff50c2901bb2ef35c4e1431dab",
     "updater.py": "e32176eaeae8c7ea5676b5d26b5e73027c28b9cb591cef5ecd26c8f4b99f5be1",
     "video_dub.py": "034e3c55c4f8ccf2dff632c666cad6fc548f0ace438cbb7fb51cfe212371a201",
-    "video_merge.py": "b54b0eb6ed07026cffc9a59974dc349de107c88a113fee75079f014e285a68a6"
+    "video_merge.py": "b54b0eb6ed07026cffc9a59974dc349de107c88a113fee75079f014e285a68a6",
+    "watermark.py": "71d4b372977b8bbf853ddd143b83c6e12395a33fae73a43c458f32811602dabb"
   }
 }

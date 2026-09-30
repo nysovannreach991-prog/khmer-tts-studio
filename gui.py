@@ -18,8 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯក�
 from PyQt5.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPixmap
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QFontComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -35,6 +35,7 @@ import video_dub
 import theme
 import updater
 import video_merge
+import watermark
 
 OUTPUT_DIR = backend.OUTPUT_DIR
 GENDER_KM = {"female": "ស្រី", "male": "ប្រុស"}
@@ -197,8 +198,9 @@ class OverlayConfirmDialog(QDialog):
         self._pixmap = None
 
         for spec in specs:
-            name = "📺 Lower third" if spec.get("mode") == "timed" else "🏷 Logo"
-            line = QLabel(f"<b>{name}</b> — {os.path.basename(spec['path'])}<br>"
+            name = ("💧 Watermark" if spec.get("watermark") else
+                    "📺 Lower third" if spec.get("mode") == "timed" else "🏷 Logo")
+            line = QLabel(f"<b>{name}</b> — {spec.get('label') or os.path.basename(spec['path'])}<br>"
                           f"<span style='color:{theme.C['muted']}'>{overlay.summary(spec)}</span>")
             line.setWordWrap(True)
             lay.addWidget(line)
@@ -744,6 +746,7 @@ class MainWindow(QMainWindow):
         self._ov_loading = False
         left.addWidget(self._overlay_card("lg", "🏷 Logo", "Logo នៅជ្រុងវីដេអូ — បង្ហាញជានិច្ច (វីដេអូនឹង loop)"))
         left.addWidget(self._overlay_card("lt", "📺 Lower third", "ផ្ទាំងអក្សរខាងក្រោម — លេចឡើងតាមពេលកំណត់"))
+        left.addWidget(self._watermark_card())
         left.addWidget(self._ads_card())
         self.ov_confirm = QCheckBox("👀 បង្ហាញ Preview ឱ្យចុច OK មុនពេលចាប់ផ្តើមដំណើរការ")
         self.ov_confirm.setChecked(True)
@@ -866,6 +869,120 @@ class MainWindow(QMainWindow):
         self.ov[prefix] = c
         return box
 
+    def _watermark_card(self):
+        box = QGroupBox("💧 Watermark (ឈ្មោះលោតទៅមក)")
+        form = QFormLayout(box)
+        m = self.wm = {}
+        m["on"] = QCheckBox("បង្ហាញឈ្មោះរបស់យើងរំកិលលើវីដេអូ (ការពារការលួចវីដេអូ)")
+        form.addRow(m["on"])
+        m["text"] = QLineEdit()
+        m["text"].setPlaceholderText("ឧ. AI Team #1")
+        form.addRow("អក្សរ", m["text"])
+        m["font"] = QFontComboBox()
+        m["font"].setCurrentFont(QFont("Kantumruy Pro"))
+        m["font"].setToolTip("Font ទាំងអស់ដែលមានលើកុំព្យូទ័រនេះ")
+        m["bold"] = QCheckBox("ដិត")
+        m["bold"].setChecked(True)
+        form.addRow("Font", self._hrow(m["font"], m["bold"]))
+        m["color"] = QLineEdit("#ffffff")
+        m["color"].setMaximumWidth(110)
+        pick = QPushButton("🎨")
+        pick.setFixedWidth(40)
+        pick.setStyleSheet("padding:0")
+        pick.setToolTip("ជ្រើសពណ៌")
+
+        def choose_color():
+            color = QColorDialog.getColor(QColor(m["color"].text()), self, "ពណ៌ Watermark")
+            if color.isValid():
+                m["color"].setText(color.name())
+        pick.clicked.connect(choose_color)
+        swatch = QLabel()
+        swatch.setFixedSize(26, 26)
+        m["color"].textChanged.connect(lambda c: swatch.setStyleSheet(
+            f"background:{c if QColor(c).isValid() else '#000'}; border-radius:6px; border:1px solid #888"))
+        m["color"].textChanged.emit(m["color"].text())
+        m["outline"] = QCheckBox("គែមខ្មៅ")
+        m["outline"].setChecked(True)
+        form.addRow("ពណ៌", self._hrow(swatch, m["color"], pick, m["outline"]))
+        m["size"] = self._spin(2, 100, 18, " %", "ទទឹងអក្សរ ធៀបនឹងទទឹងវីដេអូ")
+        m["opacity"] = self._spin(5, 100, 45, " %", "ភាពច្បាស់ (តិច = ថ្លាជាង)")
+        form.addRow("ទំហំ", self._hrow(m["size"], QLabel("ភាពច្បាស់"), m["opacity"]))
+        m["motion"] = QComboBox()
+        m["motion"].addItem("🏓 រំកិលទៅមក (Bounce)", "bounce")
+        m["motion"].addItem("🔀 លោតទីតាំង", "jump")
+        m["motion"].addItem("📌 នៅស្ងៀម (កំណត់ទីតាំង)", "static")
+        m["speed"] = self._spin(1, 50, 6, " %/វិ", "ល្បឿនរំកិល — % នៃទទឹងវីដេអូក្នុងមួយវិនាទី")
+        m["interval"] = self._spin(1, 120, 5, " វិ", "លោតទៅទីតាំងថ្មីរៀងរាល់...")
+        rate = QLabel()
+        form.addRow("ចលនា", self._hrow(m["motion"], rate, m["speed"], m["interval"]))
+
+        # ទីតាំង: នៅស្ងៀម → ជ្រុង + X/Y · រំកិល → តំបន់ដែលអក្សររំកិល
+        m["region"] = QComboBox()
+        for key, label in [("full", "↕ ពេញវីដេអូ"), ("top", "⬆ ពាក់កណ្តាលលើ"), ("bottom", "⬇ ពាក់កណ្តាលក្រោម"),
+                           ("middle", "↔ កណ្តាល")]:
+            m["region"].addItem(label, key)
+        m["region"].setToolTip("អក្សររំកិលតែក្នុងតំបន់នេះ — ឧ. ពាក់កណ្តាលលើ ដើម្បីកុំឱ្យបាំង subtitle")
+        m["pos"] = QComboBox()
+        for key, label in self.OV_POS:
+            m["pos"].addItem(label, key)
+        self._select_data(m["pos"], "tc")
+        m["x"] = self._dspin(-100, 100, 0, " %", "រំកិលទៅស្តាំ (+) ឬឆ្វេង (−) — % នៃទទឹងវីដេអូ")
+        m["y"] = self._dspin(-100, 100, 0, " %", "រំកិលចុះក្រោម (+) ឬឡើងលើ (−) — % នៃកម្ពស់វីដេអូ")
+        reset = QPushButton("↺")
+        reset.setToolTip("កំណត់ X / Y ឡើងវិញ (0)")
+        reset.setFixedWidth(36)
+        reset.setStyleSheet("padding:0")
+        reset.clicked.connect(lambda: (m["x"].setValue(0), m["y"].setValue(0)))
+        form.addRow("ទីតាំង", self._hrow(m["region"], m["pos"]))
+        xy_box = QWidget()
+        xy_row = self._hrow(QLabel("X"), m["x"], QLabel("Y"), m["y"], reset)
+        xy_row.setContentsMargins(0, 0, 0, 0)
+        xy_box.setLayout(xy_row)
+        xy_label = QLabel("សារ៉េ")
+        form.addRow(xy_label, xy_box)
+
+        def motion_changed():
+            motion = m["motion"].currentData()
+            m["speed"].setVisible(motion == "bounce")
+            m["interval"].setVisible(motion == "jump")
+            rate.setVisible(motion != "static")
+            rate.setText("ល្បឿន" if motion == "bounce" else "រៀងរាល់")
+            m["region"].setVisible(motion != "static")
+            for widget in (m["pos"], xy_label, xy_box):
+                widget.setVisible(motion == "static")
+        m["motion"].currentIndexChanged.connect(lambda _: motion_changed())
+        motion_changed()
+
+        for key, widget in m.items():
+            if isinstance(widget, QLineEdit):
+                widget.textChanged.connect(lambda _: self._ov_timer.start())
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                widget.valueChanged.connect(lambda _: self._ov_timer.start())
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(lambda _: self._ov_timer.start())
+            elif isinstance(widget, QCheckBox):
+                widget.toggled.connect(lambda _: self._ov_timer.start())
+        m["text"].textChanged.connect(
+            lambda t: m["on"].setChecked(True) if t.strip() and not self._ov_loading else None)
+        return box
+
+    def watermark_spec(self):
+        m = self.wm
+        text = m["text"].text().strip()
+        if not m["on"].isChecked() or not text:
+            return None
+        color = m["color"].text().strip()
+        path = watermark.render(text, m["font"].currentFont().family(), m["bold"].isChecked(),
+                                color if QColor(color).isValid() else "#ffffff", m["outline"].isChecked())
+        spec = {"path": path, "label": text, "key": "none", "mode": "always", "size": m["size"].value(),
+                "opacity": m["opacity"].value(), "watermark": True}
+        if m["motion"].currentData() == "static":  # ដូច Logo: ជ្រុង + គម្លាត + X/Y
+            spec.update(pos=m["pos"].currentData(), margin=3, x=m["x"].value(), y=m["y"].value())
+        else:
+            spec.update(motion=m["motion"].currentData(), region=m["region"].currentData(),
+                        speed=m["speed"].value(), interval=m["interval"].value())
+        return spec
+
     def _ads_card(self):
         box = QGroupBox("📢 Ads (វីដេអូពាណិជ្ជកម្ម)")
         form = QFormLayout(box)
@@ -976,6 +1093,9 @@ class MainWindow(QMainWindow):
                 spec.update(start=c["start"].value(), every=c["every"].value() * 60, show=c["show"].value(),
                             per_part=c["per_part"].isChecked())
             specs.append(spec)
+        wm = self.watermark_spec()
+        if wm:
+            specs.append(wm)
         return specs
 
     def _overlay_preview(self):
@@ -1083,13 +1203,15 @@ class MainWindow(QMainWindow):
         s = self.settings
         self._ov_loading = True
         self._select_data(self.ov_aspect, s.value("ov_aspect", "auto"))
-        for prefix, c in [*self.ov.items(), ("ad", self.ad)]:
+        for prefix, c in [*self.ov.items(), ("ad", self.ad), ("wm", self.wm)]:
             for key, widget in c.items():
                 name = f"ov_{prefix}_{key}"
                 if not s.contains(name) or key == "info":
                     continue
                 value = s.value(name)
-                if isinstance(widget, QLineEdit):
+                if isinstance(widget, QFontComboBox):
+                    widget.setCurrentFont(QFont(value))
+                elif isinstance(widget, QLineEdit):
                     widget.setText(value or "")
                 elif isinstance(widget, QSpinBox):
                     widget.setValue(int(float(value)))
@@ -1104,10 +1226,12 @@ class MainWindow(QMainWindow):
     def _ov_save(self):
         s = self.settings
         s.setValue("ov_aspect", self.ov_aspect.currentData())
-        for prefix, c in [*self.ov.items(), ("ad", self.ad)]:
+        for prefix, c in [*self.ov.items(), ("ad", self.ad), ("wm", self.wm)]:
             for key, widget in c.items():
                 name = f"ov_{prefix}_{key}"
-                if isinstance(widget, QLineEdit):
+                if isinstance(widget, QFontComboBox):
+                    s.setValue(name, widget.currentFont().family())
+                elif isinstance(widget, QLineEdit):
                     s.setValue(name, widget.text().strip())
                 elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                     s.setValue(name, widget.value())

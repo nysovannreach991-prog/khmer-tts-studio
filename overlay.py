@@ -92,7 +92,28 @@ def _clip_chain(spec, info, video_w):
     return chain
 
 
+# តំបន់ដែល Watermark រំកិល (ផ្នែកនៃកម្ពស់វីដេអូ: ពី, ដល់)
+REGIONS = {"full": (0.0, 1.0), "top": (0.0, 0.5), "bottom": (0.5, 1.0), "middle": (0.25, 0.75)}
+
+
+def _motion_xy(spec):
+    """Watermark រំកិល — expression វាយតម្លៃរាល់ស៊ុម (t = វិនាទី)។
+    "\\," = សញ្ញាក្បៀសក្នុង filtergraph (បើមិន escape ffmpeg យល់ថាជាការបំបែក filter)"""
+    y0, y1 = REGIONS.get(spec.get("region", "full"), (0.0, 1.0))
+    top = f"H*{y0:.2f}+" if y0 else ""
+    room = f"max(H*{y1 - y0:.2f}-h\\,1)"  # កម្ពស់ដែលអាចរំកិលបានក្នុងតំបន់
+    if spec["motion"] == "jump":  # លោតទៅទីតាំងថ្មីរៀងរាល់ N វិនាទី (លំដាប់ golden ratio → រាយប៉ាយស្មើ)
+        n = f"floor(t/{max(float(spec.get('interval', 5)), 0.5):.2f})"
+        return f"(W-w)*mod({n}*0.618034+0.13\\,1)", f"{top}{room}*mod({n}*0.414214+0.71\\,1)"
+    # bounce: រំកិលត្រង់ ហើយលោតត្រឡប់ពីគែម (ដូច DVD logo) — ល្បឿន = % នៃទទឹងវីដេអូ / វិនាទី
+    v = max(float(spec.get("speed", 6)), 0.5) / 100
+    return (f"abs(mod(t*W*{v:.4f}\\,2*(W-w))-(W-w))",
+            f"{top}abs(mod(t*W*{v * 0.73:.4f}+{room}/2\\,2*{room})-{room})")
+
+
 def _xy(spec, video_w):
+    if spec.get("motion"):
+        return _motion_xy(spec)
     m = int(round(video_w * float(spec.get("margin", 3)) / 100))
     pos = spec.get("pos", "tr")
     x = {"l": f"{m}", "c": "(W-w)/2", "r": f"W-w-{m}"}[pos[1]]
@@ -231,6 +252,12 @@ def clip_length(spec):
 
 def summary(spec):
     """អត្ថបទពន្យល់ពេលវេលា (សម្រាប់ផ្ទាំងបញ្ជាក់)"""
+    if spec.get("motion"):
+        how = (f"លោតទីតាំងរៀងរាល់ {spec.get('interval', 5)}វិ" if spec["motion"] == "jump"
+               else f"រំកិលទៅមក ល្បឿន {spec.get('speed', 6)}")
+        how += {"top": " · ពាក់កណ្តាលលើ", "bottom": " · ពាក់កណ្តាលក្រោម",
+                "middle": " · កណ្តាល"}.get(spec.get("region"), "")
+        return f"{how} · ទំហំ {spec.get('size', 15)}% · ភាពច្បាស់ {spec.get('opacity', 100)}%"
     pos = {"tl": "លើឆ្វេង", "tc": "លើកណ្តាល", "tr": "លើស្តាំ",
            "bl": "ក្រោមឆ្វេង", "bc": "ក្រោមកណ្តាល", "br": "ក្រោមស្តាំ"}[spec.get("pos", "tr")]
     head = f"{pos} · ទំហំ {spec.get('size', 15)}% · ភាពច្បាស់ {spec.get('opacity', 100)}%"
