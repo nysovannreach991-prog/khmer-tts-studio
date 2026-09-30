@@ -1,7 +1,7 @@
 @echo off
-chcp 65001 >nul
+title AI Team #1 (web)
 cd /d "%~dp0"
-pip install -q -r requirements.txt
-start "" http://127.0.0.1:5000
-python app.py
+echo Starting AI Team #1 web version ... please wait.
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launcher.ps1" -Web
 pause

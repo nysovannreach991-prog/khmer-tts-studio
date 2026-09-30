@@ -6,18 +6,20 @@ import subprocess
 import tempfile
 
 from srt_dub import SAMPLE_RATE, write_output
+import ads as ads_mod
 import overlay as ov
 from video_merge import _probe, _run_ffmpeg
 
 
 class _StagePct:
-    """_run_ffmpeg សរសេរ ["done"] → រក្សាទុកជា job["stage_pct"] (វឌ្ឍនភាពនៃដំណាក់កាលវីដេអូ)"""
-    def __init__(self, job):
-        self.job = job
+    """_run_ffmpeg សរសេរ ["done"] → រក្សាទុកជា job["stage_pct"] (វឌ្ឍនភាពនៃដំណាក់កាលវីដេអូ)។
+    lo–hi: ផ្នែកមួយនៃដំណាក់កាល (ឧ. ដាក់សំឡេង 0–60%, Ads 60–100%)"""
+    def __init__(self, job, lo=0, hi=100):
+        self.job, self.lo, self.hi = job, lo, hi
 
     def __setitem__(self, key, value):
         if key == "done":
-            self.job["stage_pct"] = value
+            self.job["stage_pct"] = int(self.lo + value * (self.hi - self.lo) / 100)
 
 SEARCH_BEFORE = 90   # វិនាទី — រកចន្លោះស្ងាត់មុនចំណុចកាត់
 SEARCH_AFTER = 30    # វិនាទី — ... និងក្រោយចំណុចកាត់
@@ -89,9 +91,10 @@ def cut_points(cues, duration, part_sec, kf=None):
     return points
 
 
-def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job, overlays=None):
+def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job, overlays=None, ads=None):
     """ដាក់ dub_pcm ចូលវីដេអូ (រក្សាសំឡេងដើមតាម orig_volume) ហើយកាត់ជាផ្នែកៗ។
-    overlays = Logo / Lower third (មើល overlay.py) — ត្រូវ encode វីដេអូឡើងវិញ"""
+    overlays = Logo / Lower third (មើល overlay.py) — ត្រូវ encode វីដេអូឡើងវិញ
+    ads = វីដេអូ Ads នៅកណ្តាល/ចុង (មើល ads.py) — ដាក់បន្ទាប់ពីកាត់ជាផ្នែករួច"""
     duration, has_audio = probe(video)
     overlays = [o for o in (overlays or []) if o.get("path") and os.path.isfile(o["path"])]
     tmp = tempfile.mkdtemp(prefix="vdub_")
@@ -122,7 +125,8 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
 
         job["status"] = "video"
         job["stage_pct"] = 0
-        progress = _StagePct(job)
+        with_ads = ads_mod.active(ads)
+        progress = _StagePct(job, 0, 60 if with_ads else 100)
         force = ["-force_key_frames", ",".join(map(str, points))] if points else []
         if overlays:
             info = _probe(video)
@@ -144,7 +148,7 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
                 for f in os.listdir(dest):
                     os.remove(os.path.join(dest, f))
                 _run_ffmpeg(args + ov.encoder_args("libx264") + force + output, duration, progress)
-            return folder, _collect(dest, folder, progress, job)
+            return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
 
         args = ["-i", video, "-i", dub_wav, "-filter_complex", graph, "-map", "0:v:0", "-map", "[a]",
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
@@ -159,12 +163,15 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
                 os.remove(os.path.join(dest, f))
             _run_ffmpeg(args + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] + force + output,
                         duration, progress)
-        return folder, _collect(dest, folder, progress, job)
+        return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _collect(dest, folder, progress, job):
+def _collect(dest, folder, job, cues, ads=None):
+    if ads:
+        job["stage_pct"] = 60
+        job["ads_inserted"] = ads_mod.apply(dest, cues, ads, job, _StagePct(job, 60, 100))
     job["stage_pct"] = 100
     parts = []
     for f in sorted(os.listdir(dest)):

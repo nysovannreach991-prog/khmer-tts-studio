@@ -13,6 +13,8 @@ import threading
 import time
 import traceback
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯកជន (embeddable) មិនបន្ថែមថតកម្មវិធីខ្លួនឯង
+
 from PyQt5.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPixmap
 from PyQt5.QtWidgets import (
@@ -22,6 +24,7 @@ from PyQt5.QtWidgets import (
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+import ads as ads_mod
 import app as backend
 import ffmpeg_setup
 import licensing
@@ -161,7 +164,7 @@ class OverlayConfirmDialog(QDialog):
     """បង្ហាញ Logo / Lower third លើវីដេអូពិត មុនពេលចាប់ផ្តើម — OK ទើបដំណើរការ"""
     EDIT = 2  # លទ្ធផល: ទៅកែការកំណត់
 
-    def __init__(self, parent, videos, specs):
+    def __init__(self, parent, videos, specs, ads=None):
         """videos = [(ឈ្មោះ, path), ...] — Auto មានច្រើន (Folder នីមួយៗ) អាចជ្រើសមើលម្តងមួយ"""
         super().__init__(parent)
         self.videos, self.video, self.specs, self._workers = videos, videos[0][1], specs, []
@@ -170,7 +173,7 @@ class OverlayConfirmDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
         lay.setSpacing(10)
-        title = QLabel("🎬 ពិនិត្យទីតាំង Logo / Lower third មុនចាប់ផ្តើម")
+        title = QLabel("🎬 ពិនិត្យ Logo / Lower third / Ads មុនចាប់ផ្តើម")
         title.setStyleSheet("font-size:13pt; font-weight:bold")
         lay.addWidget(title)
         top = QHBoxLayout()
@@ -199,6 +202,13 @@ class OverlayConfirmDialog(QDialog):
                           f"<span style='color:{theme.C['muted']}'>{overlay.summary(spec)}</span>")
             line.setWordWrap(True)
             lay.addWidget(line)
+        if ads:
+            where = " + ".join(w for w, on in (("កណ្តាល", ads["mid"]), ("ចុង", ads["end"])) if on)
+            scope = "ក្នុងផ្នែកនីមួយៗ" if ads["per_part"] else "នៃវីដេអូទាំងមូល"
+            line = QLabel(f"<b>📢 Ads</b> — {os.path.basename(ads['path'])}<br>"
+                          f"<span style='color:{theme.C['muted']}'>{where} {scope} · សំឡេង {ads['volume']}%</span>")
+            line.setWordWrap(True)
+            lay.addWidget(line)
 
         self.clip_status = QLabel("ចុច ▶ ដើម្បីមើលវីដេអូ Preview ខ្លី (~10វិ) — Lower third លេចនៅវិនាទីទី 1")
         self.clip_status.setProperty("role", "muted")
@@ -208,6 +218,8 @@ class OverlayConfirmDialog(QDialog):
         row = QHBoxLayout()
         self.btn_clip = QPushButton("▶ មើល Preview វីដេអូ")
         self.btn_clip.clicked.connect(self._make_clip)
+        self.btn_clip.setVisible(bool(specs))  # មានតែ Ads → គ្មានអ្វីដាក់លើវីដេអូ
+        self.clip_status.setVisible(bool(specs))
         edit = QPushButton("✏️ កែទីតាំង")
         edit.clicked.connect(lambda: self.done(self.EDIT))
         cancel = QPushButton("បោះបង់")
@@ -387,7 +399,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_text_tab(), "✍️ អត្ថបទ")
         self.tabs.addTab(self._build_srt_tab(), "🎬 SRT → វីដេអូ")
         self.overlay_tab = self._build_overlay_tab()
-        self.tabs.addTab(self.overlay_tab, "🏷 Logo")
+        self.tabs.addTab(self.overlay_tab, "🏷 Logo & Ads")
         self.tabs.addTab(self._build_stt_tab(), "🎧 សំឡេង → SRT")
         self.tabs.addTab(self._build_merge_tab(), "🧩 Merge")
         self.tabs.addTab(self._build_batch_tab(), "⚡ Auto")
@@ -732,6 +744,7 @@ class MainWindow(QMainWindow):
         self._ov_loading = False
         left.addWidget(self._overlay_card("lg", "🏷 Logo", "Logo នៅជ្រុងវីដេអូ — បង្ហាញជានិច្ច (វីដេអូនឹង loop)"))
         left.addWidget(self._overlay_card("lt", "📺 Lower third", "ផ្ទាំងអក្សរខាងក្រោម — លេចឡើងតាមពេលកំណត់"))
+        left.addWidget(self._ads_card())
         self.ov_confirm = QCheckBox("👀 បង្ហាញ Preview ឱ្យចុច OK មុនពេលចាប់ផ្តើមដំណើរការ")
         self.ov_confirm.setChecked(True)
         left.addWidget(self.ov_confirm)
@@ -852,6 +865,57 @@ class MainWindow(QMainWindow):
                 widget.toggled.connect(lambda _: self._ov_timer.start())
         self.ov[prefix] = c
         return box
+
+    def _ads_card(self):
+        box = QGroupBox("📢 Ads (វីដេអូពាណិជ្ជកម្ម)")
+        form = QFormLayout(box)
+        a = self.ad = {}
+        a["on"] = QCheckBox("សៀតវីដេអូ Ads ខ្លីចូលក្នុងវីដេអូ")
+        form.addRow(a["on"])
+        a["path"], row = self._file_row("ជ្រើសវីដេអូ Ads (.mp4, .mov ...)", VIDEO_FILTER)
+        form.addRow("ឯកសារ", row)
+        a["info"] = QLabel()
+        a["info"].setProperty("role", "muted")
+        form.addRow("", a["info"])
+        a["mid"] = QCheckBox("⏸ កណ្តាល")
+        a["mid"].setChecked(True)
+        a["mid"].setToolTip("ដាក់នៅចន្លោះស្ងាត់រវាង subtitle ជិតកណ្តាល — មិនកាត់ពាក់កណ្តាលប្រយោគ")
+        a["end"] = QCheckBox("⏹ ចុង")
+        a["end"].setChecked(True)
+        form.addRow("ដាក់នៅ", self._hrow(a["mid"], a["end"]))
+        a["per_part"] = QCheckBox("ផ្នែកនីមួយៗ")
+        a["per_part"].setChecked(True)
+        a["per_part"].setToolTip("បើក: ផ្នែក 10 នាទីនីមួយៗមាន Ads នៅកណ្តាល និងចុងរបស់វា\n"
+                                 "បិទ: តែកណ្តាល និងចុងនៃវីដេអូទាំងមូលប៉ុណ្ណោះ")
+        a["volume"] = self._spin(0, 200, 100, " %", "កម្រិតសំឡេង Ads")
+        form.addRow("ក្នុង", self._hrow(a["per_part"], QLabel("សំឡេង"), a["volume"]))
+        note = QLabel("Ads ត្រូវប្តូរទំហំឱ្យត្រូវនឹងវីដេអូដោយស្វ័យប្រវត្តិ (របារខ្មៅបើរាងខុសគ្នា) · ផ្នែកខ្លីជាង 1 នាទីមិនដាក់ Ads កណ្តាល")
+        note.setProperty("role", "muted")
+        note.setWordWrap(True)
+        form.addRow(note)
+
+        def file_changed():
+            path = a["path"].text().strip()
+            if not path:
+                return a["info"].setText("")
+            if not os.path.isfile(path):
+                return a["info"].setText("⚠ រកមិនឃើញឯកសារ")
+            try:
+                info = overlay.media_info(path)
+                a["info"].setText(f"🎞 {info['width']}×{info['height']} · {info['duration']:.1f}s")
+                if not a["on"].isChecked() and not self._ov_loading:
+                    a["on"].setChecked(True)
+            except Exception as e:  # noqa: BLE001
+                a["info"].setText("⚠ រកមិនឃើញ ffmpeg" if not ffmpeg_setup.available() else f"⚠ {e}")
+        a["path"].textChanged.connect(lambda _: file_changed())
+        return box
+
+    def ads_spec(self):
+        """ការកំណត់ Ads (សម្រាប់ video_dub.mix_and_split) ឬ None"""
+        a = self.ad
+        spec = {"path": a["path"].text().strip(), "mid": a["mid"].isChecked(), "end": a["end"].isChecked(),
+                "per_part": a["per_part"].isChecked(), "volume": a["volume"].value()}
+        return spec if a["on"].isChecked() and ads_mod.active(spec) else None
 
     @staticmethod
     def _spin(lo, hi, value, suffix, tip):
@@ -993,10 +1057,11 @@ class MainWindow(QMainWindow):
         if isinstance(videos, str):
             videos = [(os.path.basename(videos), videos)]
         videos = [(n, p) for n, p in videos if p and os.path.isfile(p)]
-        if not specs or not self.ov_confirm.isChecked() or not videos:
+        ads = self.ads_spec()
+        if not (specs or ads) or not self.ov_confirm.isChecked() or not videos:
             return True
         video = videos[0][1]
-        result = OverlayConfirmDialog(self, videos, specs).exec_()
+        result = OverlayConfirmDialog(self, videos, specs, ads).exec_()
         if result == OverlayConfirmDialog.EDIT:
             self.tabs.setCurrentWidget(self.overlay_tab)
             if os.path.isfile(video) and not self.video_path.text().strip():
@@ -1018,7 +1083,7 @@ class MainWindow(QMainWindow):
         s = self.settings
         self._ov_loading = True
         self._select_data(self.ov_aspect, s.value("ov_aspect", "auto"))
-        for prefix, c in self.ov.items():
+        for prefix, c in [*self.ov.items(), ("ad", self.ad)]:
             for key, widget in c.items():
                 name = f"ov_{prefix}_{key}"
                 if not s.contains(name) or key == "info":
@@ -1039,7 +1104,7 @@ class MainWindow(QMainWindow):
     def _ov_save(self):
         s = self.settings
         s.setValue("ov_aspect", self.ov_aspect.currentData())
-        for prefix, c in self.ov.items():
+        for prefix, c in [*self.ov.items(), ("ad", self.ad)]:
             for key, widget in c.items():
                 name = f"ov_{prefix}_{key}"
                 if isinstance(widget, QLineEdit):
@@ -1838,7 +1903,7 @@ class MainWindow(QMainWindow):
     def dub_stages(self, with_video):
         if not with_video:
             return [self.S_TTS, self.S_MIX_SAVE]
-        video = "ដាក់ចូលវីដេអូ" + (" + Logo" if self.overlays() else "")
+        video = "ដាក់ចូលវីដេអូ" + (" + Logo" if self.overlays() else "") + (" + Ads" if self.ads_spec() else "")
         return [self.S_TTS, self.S_MIX, video + (" & កាត់ជាផ្នែក" if self.part_minutes.value() else "")]
 
     def _dub_args(self, cues):
@@ -1862,10 +1927,15 @@ class MainWindow(QMainWindow):
                 self._log(f"   ⚠ {'Logo' if prefix == 'lg' else 'Lower third'}: រកមិនឃើញឯកសារ — រំលង")
         if overlays:
             self._log(f"   🏷 {len(overlays)} Logo/Lower third — encode ដោយ {overlay.pick_encoder()}")
+        ads = self.ads_spec()
+        if ads:
+            where = " + ".join(w for w, on in (("កណ្តាល", ads["mid"]), ("ចុង", ads["end"])) if on)
+            self._log(f"   📢 Ads: {os.path.basename(ads['path'])} · {where}"
+                      f" · {'ផ្នែកនីមួយៗ' if ads['per_part'] else 'វីដេអូទាំងមូល'}")
 
         def post(job, pcm):
             job["folder"], job["parts"] = video_dub.mix_and_split(
-                video, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays)
+                video, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays, ads)
 
         job = srt_dub.start_job(**args, post=post)
         self.enter_stage(stages[0])

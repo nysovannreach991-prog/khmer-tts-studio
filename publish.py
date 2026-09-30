@@ -11,7 +11,7 @@ import sys
 import updater
 
 APP_DIR = updater.APP_DIR
-INCLUDE_EXT = {".py", ".bat", ".txt", ".html", ".ttf", ".otf", ".json", ".md", ".ico", ".png"}
+INCLUDE_EXT = {".py", ".bat", ".txt", ".html", ".ttf", ".otf", ".json", ".md", ".ico", ".png", ".ps1"}
 EXCLUDE_DIRS = {"outputs", "__pycache__", ".git", ".update_pending", ".cache"}
 EXCLUDE_FILES = {"manifest.json", "gui_error.log",
                  "license_admin.py", "license_admin.bat",

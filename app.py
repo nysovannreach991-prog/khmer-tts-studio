@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -20,6 +21,8 @@ import aiohttp
 import aiohttp.abc
 import edge_tts
 from flask import Flask, jsonify, render_template, request, send_from_directory
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯកជន (embeddable) មិនបន្ថែមថតកម្មវិធីខ្លួនឯង
 
 import srt_dub
 import transcribe
