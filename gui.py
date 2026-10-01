@@ -669,11 +669,16 @@ class MainWindow(QMainWindow):
         g.addRow(row2)
         lay.addWidget(opts)
 
+        self.keep_full = QCheckBox("🎞 រក្សាទុកវីដេអូពេញផង")
+        self.keep_full.setToolTip("ពេលកាត់ជាផ្នែក — រក្សាទុកវីដេអូទាំងមូលដែលដាក់សំឡេងបកប្រែរួច "
+                                  "ជា outputs/<ឈ្មោះ>_full.mp4 (គ្មាន Ads, មិន encode បន្ថែម)")
+        self.part_minutes.valueChanged.connect(lambda v: self.keep_full.setEnabled(v > 0))
         row = QHBoxLayout()
         row.addWidget(self._run_button("🔊 បង្កើតសំឡេង / ដាក់ចូលវីដេអូ", self.run_srt))
         save = QPushButton("💾 រក្សាទុក SRT ដែលបានកែ")
         save.clicked.connect(self.save_srt)
         row.addWidget(save)
+        row.addWidget(self.keep_full)
         row.addStretch()
         lay.addLayout(row)
         return w
@@ -1582,6 +1587,12 @@ class MainWindow(QMainWindow):
 
         self.batch_keep_merged = QCheckBox("រក្សាទុកវីដេអូដែលបាន Merge (មុនដាក់សំឡេង) ក្នុង outputs/")
         lay.addWidget(self.batch_keep_merged)
+        self.batch_keep_full = QCheckBox("🎞 រក្សាទុកវីដេអូពេញដែល Merge + សំឡេងបកប្រែរួច (ក្រៅពីផ្នែកៗ)")
+        self.batch_keep_full.setToolTip(self.keep_full.toolTip())
+        self.batch_keep_full.toggled.connect(self.keep_full.setChecked)  # ការកំណត់តែមួយជាមួយផ្ទាំង SRT
+        self.keep_full.toggled.connect(self.batch_keep_full.setChecked)
+        self.part_minutes.valueChanged.connect(lambda v: self.batch_keep_full.setEnabled(v > 0))
+        lay.addWidget(self.batch_keep_full)
         note = QLabel("ប្រើការកំណត់សំឡេងខាងស្តាំ និងផ្ទាំង SRT (Mute សំឡេងដើម, កាត់ជាផ្នែក) · "
                       "SRT មួយក្នុងមួយ Part → បញ្ចូលគ្នាដោយស្វ័យប្រវត្តិ")
         note.setProperty("role", "muted")
@@ -2362,14 +2373,21 @@ class MainWindow(QMainWindow):
             self._log(f"   📢 Ads: {ads_mod.describe(ads)}"
                       f" · {'ផ្នែកនីមួយៗ' if ads['per_part'] else 'វីដេអូទាំងមូល'}")
 
+        keep_full = part_sec > 0 and self.keep_full.isChecked()
+
         def post(job, pcm):
             job["folder"], job["parts"] = video_dub.mix_and_split(
-                video, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays, ads)
+                video, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays, ads, keep_full)
+
+        def done(s):
+            if s.get("full"):
+                self._log(f"   🎞 វីដេអូពេញ: outputs/{s['full']}")
+            on_done(s)
 
         job = srt_dub.start_job(**args, post=post)
         self.enter_stage(stages[0])
         self.set_busy(True, "កំពុងចាប់ផ្តើម...")
-        self.watch_job(job, lambda s: f"កំពុងបង្កើតសំឡេង {s['done']}/{s['total']} បន្ទាត់...", on_done,
+        self.watch_job(job, lambda s: f"កំពុងបង្កើតសំឡេង {s['done']}/{s['total']} បន្ទាត់...", done,
                        lambda s: {"running": stages[0], "mixing": stages[1]}.get(s["status"], stages[2]), "បន្ទាត់")
 
     def run_srt(self, chained=False):
@@ -2595,7 +2613,7 @@ class MainWindow(QMainWindow):
 
     # ================= settings =================
     _CHECKS = ["auto_gender", "strip_parens", "fit", "orig_mute", "stt_gender", "stt_dub", "stt_video",
-               "batch_keep_merged", "ov_confirm", "brand_trim", "brand_trim_snap"]
+               "batch_keep_merged", "keep_full", "ov_confirm", "brand_trim", "brand_trim_snap"]
     _SPINS = ["max_speed", "workers", "orig_volume", "part_minutes", "brand_part"]
     # key ថ្មី → លំនាំដើមថ្មី (Mute សំឡេងដើម = បើក) មិនត្រូវជាន់ដោយតម្លៃចាស់ដែលបានរក្សាទុក
     _KEYS = {"orig_mute": "orig_mute_v2"}

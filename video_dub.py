@@ -94,11 +94,13 @@ def cut_points(cues, duration, part_sec, kf=None):
     return points
 
 
-def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job, overlays=None, ads=None):
+def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job, overlays=None, ads=None,
+                  keep_full=False):
     """ដាក់ dub_pcm ចូលវីដេអូ (រក្សាសំឡេងដើមតាម orig_volume) ហើយកាត់ជាផ្នែកៗ។
     overlays = Logo / Lower third (មើល overlay.py) — ត្រូវ encode វីដេអូឡើងវិញ
     ads = វីដេអូ Ads នៅកណ្តាល/ចុង (មើល ads.py) — ដាក់បន្ទាប់ពីកាត់ជាផ្នែករួច
-    dub_pcm = None → រក្សាសំឡេងដើម (ដាក់តែ Logo / Ads លើវីដេអូដែលមានស្រាប់)"""
+    dub_pcm = None → រក្សាសំឡេងដើម (ដាក់តែ Logo / Ads លើវីដេអូដែលមានស្រាប់)
+    keep_full = True → រក្សាទុកវីដេអូពេញ (មិនកាត់, គ្មាន Ads) ផង: out_dir/<name_base>_full.mp4 → job["full"]"""
     duration, has_audio = probe(video)
     overlays = [o for o in (overlays or []) if o.get("path") and os.path.isfile(o["path"])]
     tmp = tempfile.mkdtemp(prefix="vdub_")
@@ -157,6 +159,8 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
                 for f in os.listdir(dest):
                     os.remove(os.path.join(dest, f))
                 _run_ffmpeg(args + ov.encoder_args("libx264") + force + output, duration, progress)
+            if keep_full and points:
+                _join_parts(dest, out_dir, name_base, job)
             return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
 
         args = [*base_inputs, "-filter_complex", graph, "-map", "0:v:0", "-map", "[a]",
@@ -172,9 +176,30 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
                 os.remove(os.path.join(dest, f))
             _run_ffmpeg(args + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] + force + output,
                         duration, progress)
+        if keep_full and points:
+            _join_parts(dest, out_dir, name_base, job)
         return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _join_parts(dest, out_dir, name_base, job):
+    """ភ្ជាប់ផ្នែកទាំងអស់វិញជាវីដេអូពេញមួយ (ចម្លងផ្ទាល់ មិន encode) — មុនដាក់ Ads"""
+    names = sorted(f for f in os.listdir(dest) if f.endswith(".mp4"))
+    listing = os.path.join(dest, "_full.txt")
+    with open(listing, "w", encoding="utf-8") as f:
+        for name in names:
+            path = os.path.join(dest, name).replace("\\", "/").replace("'", "'\\''")
+            f.write(f"file '{path}'\n")
+    full = f"{name_base}_full.mp4"
+    try:
+        _run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
+              "-map", "0", "-c", "copy", "-movflags", "+faststart", os.path.join(out_dir, full)])
+        job["full"] = full
+    except RuntimeError as e:
+        job["warnings"].append(f"រក្សាទុកវីដេអូពេញមិនបាន: {str(e)[-200:]}")
+    finally:
+        os.remove(listing)
 
 
 def _collect(dest, folder, job, cues, ads=None):

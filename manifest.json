@@ -1,6 +1,6 @@
 {
-  "version": "1.0.5",
-  "notes": "បន្ថែមកន្លែងដាក់ ads និង logo ដាច់ដោយឡែក",
+  "version": "1.0.6",
+  "notes": "បន្ថែមមុខងារ Merge video",
   "files": {
     "ads.py": "994bb4fd8612bba8ba3e6ec219ad98fa4a97a12a3fd6587383882e358c960d6a",
     "app.py": "5761a661d1278fe7fc6bdf159e2898b4d466f1e855d49b06c32351958ea7cc40",
@@ -9,7 +9,7 @@
     "fonts/KantumruyPro-Bold.ttf": "464386b92203d3380b0253d67a1c02b015877160d9fd297535c53e09073e4ac5",
     "fonts/KantumruyPro-Regular.ttf": "2cd3e85c6ad5be83a4355ffcda69c9ee6437b1eb69f20061477e2cb2b2989188",
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
-    "gui.py": "798fc4f28bf84dfebb602b64f9c85a69f376d39b0ae1cd3e3ed8f0faea084c90",
+    "gui.py": "f8bec3b32a8200f4797fed5d8860d3ef0055f71a2784e464833ac6ce118d4ea8",
     "launcher.ps1": "10ff2da4f43be36c9e0be95d6cefebbe29b1840cd39581ae66ce0795cdac1e1f",
     "licensing.py": "29718be83f670cf49c2af580348fa99a6f07cbef07f61635b9f64e811d0e2e56",
     "overlay.py": "c10c9b59765b7c06a98cfefa2d2ee5fccecef6d0c0a85b14589348dbe0c5d976",
@@ -23,7 +23,7 @@
     "transcribe.py": "f85fc0e2332e0af78c41a0e0882936a756c87504e7c3b3ea455e9a048a570772",
     "update_config.json": "6cc48a30963de990ffe61c2779e9a8cf5f7bc0ff50c2901bb2ef35c4e1431dab",
     "updater.py": "e32176eaeae8c7ea5676b5d26b5e73027c28b9cb591cef5ecd26c8f4b99f5be1",
-    "video_dub.py": "db5f86a805fa2a6ddbd7bff26bee6988091bed26ed4624c9ccd7f93f3d13ba76",
+    "video_dub.py": "8f43b72ce5340d03fb6c2608ba64b16948ffc715ec0573d6711c2217c946f398",
     "video_merge.py": "b54b0eb6ed07026cffc9a59974dc349de107c88a113fee75079f014e285a68a6",
     "watermark.py": "71d4b372977b8bbf853ddd143b83c6e12395a33fae73a43c458f32811602dabb"
   }
