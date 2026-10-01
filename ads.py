@@ -1,7 +1,8 @@
 """ដាក់វីដេអូ Ads ខ្លីនៅកណ្តាល និង/ឬចុងវីដេអូ (ឬផ្នែកនីមួយៗ)។
 
 ads spec (dict):
-    path      វីដេអូ Ads
+    path      វីដេអូ Ads (កណ្តាល)
+    path_end  វីដេអូ Ads ចុង — ទុកទទេ = ប្រើដូច path
     mid       True → ដាក់នៅកណ្តាល (នៅចន្លោះស្ងាត់រវាង subtitle — មិនកាត់ពាក់កណ្តាលប្រយោគ)
     end       True → ដាក់នៅចុង
     per_part  True → ផ្នែកនីមួយៗមាន Ads ផ្ទាល់ខ្លួន, False → កណ្តាល/ចុងនៃវីដេអូទាំងមូល
@@ -17,8 +18,31 @@ MIN_PART_FOR_MID = 60   # វិនាទី — ផ្នែកខ្លីជ�
 MIN_GAP_MS = 250        # ចន្លោះស្ងាត់តិចបំផុតរវាង subtitle
 
 
+def ad_for(spec, where):
+    """វីដេអូ Ads សម្រាប់ "mid" ឬ "end" (Ads ចុងទទេ → ប្រើ Ads កណ្តាល) ឬ None បើមិនមានឯកសារ"""
+    path = (spec.get("path_end") or "").strip() if where == "end" else ""
+    path = path or (spec.get("path") or "").strip()
+    return path if path and os.path.isfile(path) else None
+
+
+def _effective(spec):
+    """spec ដែល mid/end បើកតែពេលមានឯកសារពិត"""
+    return dict(spec, mid=bool(spec.get("mid") and ad_for(spec, "mid")),
+                end=bool(spec.get("end") and ad_for(spec, "end")))
+
+
 def active(spec):
-    return bool(spec and spec.get("path") and os.path.isfile(spec["path"]) and (spec.get("mid") or spec.get("end")))
+    if not spec:
+        return False
+    eff = _effective(spec)
+    return eff["mid"] or eff["end"]
+
+
+def describe(spec):
+    """ឧ. "⏸ កណ្តាល: a.mp4 · ⏹ ចុង: b.mp4" """
+    eff = _effective(spec)
+    items = [(label, ad_for(spec, where)) for where, label in (("mid", "⏸ កណ្តាល"), ("end", "⏹ ចុង")) if eff[where]]
+    return " · ".join(f"{label}: {os.path.basename(path)}" for label, path in items)
 
 
 def quiet_point(cues, start, end):
@@ -68,34 +92,34 @@ class _Scaled:
             self.progress["done"] = min(99, int(self.offset + value * self.share / 100))
 
 
-def insert(part, ad, mid, end, volume, progress, job):
-    """ដាក់ Ads ចូលក្នុង part (ជំនួសឯកសារដើម)"""
-    info, ad_info = _probe(part), _probe(ad)
+def insert(part, mid_ad, end_ad, mid, end, volume, progress, job):
+    """ដាក់ Ads ចូលក្នុង part (ជំនួសឯកសារដើម) — mid_ad នៅវិនាទី mid, end_ad នៅចុង (បើ end)"""
+    info = _probe(part)
     w, h = info["width"] - info["width"] % 2, info["height"] - info["height"] % 2
     fps = round(info["fps"], 3)
-    segments = []  # (input args, is_ad)
+    segments = []  # (input args, ad info ឬ None)
     if mid is not None:
-        segments += [(["-t", f"{mid:.3f}", "-i", part], False), (["-i", ad], True),
-                     (["-ss", f"{mid:.3f}", "-i", part], False)]
+        segments += [(["-t", f"{mid:.3f}", "-i", part], None), (["-i", mid_ad], _probe(mid_ad)),
+                     (["-ss", f"{mid:.3f}", "-i", part], None)]
     else:
-        segments.append((["-i", part], False))
+        segments.append((["-i", part], None))
     if end:
-        segments.append((["-i", ad], True))
+        segments.append((["-i", end_ad], _probe(end_ad)))
 
     inputs, chains, labels = [], [], []
-    for i, (args, is_ad) in enumerate(segments):
+    for i, (args, ad_info) in enumerate(segments):
         inputs += args
         chains.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
                       f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},format=yuv420p,"
                       f"setpts=PTS-STARTPTS[v{i}]")
-        if is_ad and not ad_info["audio"]:
+        if ad_info and not ad_info["audio"]:
             chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{ad_info['duration']:.3f}[a{i}]")
         else:
-            vol = f",volume={volume / 100:.2f}" if is_ad and volume != 100 else ""
+            vol = f",volume={volume / 100:.2f}" if ad_info and volume != 100 else ""
             chains.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo{vol},asetpts=PTS-STARTPTS[a{i}]")
         labels.append(f"[v{i}][a{i}]")
     chains.append(f"{''.join(labels)}concat=n={len(segments)}:v=1:a=1[v][a]")
-    total = info["duration"] + ad_info["duration"] * sum(is_ad for _, is_ad in segments)
+    total = info["duration"] + sum(a["duration"] for _, a in segments if a)
 
     tmp = part[:-4] + ".ads.mp4"
     for enc in dict.fromkeys([ov.pick_encoder(), "libx264"]):  # GPU បរាជ័យ → libx264
@@ -113,17 +137,20 @@ def insert(part, ad, mid, end, volume, progress, job):
 
 def apply(dest, cues, spec, job, progress):
     """ដាក់ Ads ចូលក្នុងវីដេអូទាំងអស់ក្នុង dest (តាមលំដាប់ឈ្មោះ)"""
+    spec = _effective(spec)
     names = sorted(f for f in os.listdir(dest) if f.endswith(".mp4") and not f.endswith(".ads.mp4"))
     parts = [(os.path.join(dest, f), _probe(os.path.join(dest, f))["duration"]) for f in names]
     todo = plan(parts, cues, spec)
     if not todo:
         return 0
-    ad_len = _probe(spec["path"])["duration"]
-    weights = {i: parts[i][1] + ad_len * ((j["mid"] is not None) + j["end"]) for i, j in todo.items()}
+    mid_ad, end_ad = ad_for(spec, "mid"), ad_for(spec, "end")
+    mid_len = _probe(mid_ad)["duration"] if mid_ad and spec["mid"] else 0
+    end_len = _probe(end_ad)["duration"] if end_ad and spec["end"] else 0
+    weights = {i: parts[i][1] + mid_len * (j["mid"] is not None) + end_len * j["end"] for i, j in todo.items()}
     total, offset, count = sum(weights.values()) or 1, 0.0, 0
     for i, j in sorted(todo.items()):
         share = 100 * weights[i] / total
-        insert(parts[i][0], spec["path"], j["mid"], j["end"], float(spec.get("volume", 100)),
+        insert(parts[i][0], mid_ad, end_ad, j["mid"], j["end"], float(spec.get("volume", 100)),
                _Scaled(progress, offset, share), job)
         offset += share
         count += (j["mid"] is not None) + j["end"]

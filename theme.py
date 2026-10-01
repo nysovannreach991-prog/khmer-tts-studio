@@ -83,7 +83,7 @@ QTabWidget::pane {{ background: {c['surface']}; border: 1px solid {c['border']};
 QTabWidget > QStackedWidget > QWidget {{ background: transparent; }}
 QTabBar {{ qproperty-drawBase: 0; }}
 QTabBar::tab {{ background: transparent; color: {c['muted']}; border: none; border-radius: 12px;
-                padding: 8px 16px; margin: 0 4px 8px 0; font-weight: bold; }}
+                padding: 8px 11px; margin: 0 2px 8px 0; font-weight: bold; }}
 QTabBar::tab:hover {{ background: {c['hover']}; color: {c['text']}; }}
 QTabBar::tab:selected {{ background: {grad}; color: {c['on_accent']}; }}
 QTabBar QToolButton {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 8px; }}

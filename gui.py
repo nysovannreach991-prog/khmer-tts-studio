@@ -3,6 +3,7 @@
 ប្រើ engine ដដែលនឹងកំណែ web: edge-tts / Gemini TTS, SRT → សំឡេង/វីដេអូ,
 សំឡេង → SRT (បកប្រែ + ចាប់ភេទ), Merge វីដេអូ, Mute វីដេអូ។
 """
+import json
 import os
 import re
 import shutil
@@ -15,13 +16,13 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯកជន (embeddable) មិនបន្ថែមថតកម្មវិធីខ្លួនឯង
 
-from PyQt5.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QSettings, Qt, QThread, QTime, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFontComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
-    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QInputDialog, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
+    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTimeEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import ads as ads_mod
@@ -205,10 +206,9 @@ class OverlayConfirmDialog(QDialog):
             line.setWordWrap(True)
             lay.addWidget(line)
         if ads:
-            where = " + ".join(w for w, on in (("កណ្តាល", ads["mid"]), ("ចុង", ads["end"])) if on)
             scope = "ក្នុងផ្នែកនីមួយៗ" if ads["per_part"] else "នៃវីដេអូទាំងមូល"
-            line = QLabel(f"<b>📢 Ads</b> — {os.path.basename(ads['path'])}<br>"
-                          f"<span style='color:{theme.C['muted']}'>{where} {scope} · សំឡេង {ads['volume']}%</span>")
+            line = QLabel(f"<b>📢 Ads</b> — {ads_mod.describe(ads)}<br>"
+                          f"<span style='color:{theme.C['muted']}'>{scope} · សំឡេង {ads['volume']}%</span>")
             line.setWordWrap(True)
             lay.addWidget(line)
 
@@ -399,10 +399,12 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_text_tab(), "✍️ អត្ថបទ")
-        self.tabs.addTab(self._build_srt_tab(), "🎬 SRT → វីដេអូ")
+        self.tabs.addTab(self._build_srt_tab(), "🎬 SRT→វីដេអូ")
         self.overlay_tab = self._build_overlay_tab()
-        self.tabs.addTab(self.overlay_tab, "🏷 Logo & Ads")
-        self.tabs.addTab(self._build_stt_tab(), "🎧 សំឡេង → SRT")
+        self.tabs.addTab(self.overlay_tab, "🏷 Logo && Ads")
+        self.brand_tab = self._build_brand_tab()
+        self.tabs.addTab(self.brand_tab, "🎨 Logo ប៉ុណ្ណោះ")
+        self.tabs.addTab(self._build_stt_tab(), "🎧 សំឡេង→SRT")
         self.tabs.addTab(self._build_merge_tab(), "🧩 Merge")
         self.tabs.addTab(self._build_batch_tab(), "⚡ Auto")
         self.files_tab = self._build_files_tab()
@@ -411,6 +413,8 @@ class MainWindow(QMainWindow):
             lambda i: self.refresh_files() if self.tabs.widget(i) is self.files_tab else None)
         self.tabs.currentChanged.connect(
             lambda i: self._ov_timer.start(50) if self.tabs.widget(i) is self.overlay_tab else None)
+        self.tabs.currentChanged.connect(
+            lambda i: self._brand_summary() if self.tabs.widget(i) is self.brand_tab else None)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.tabs)
@@ -744,6 +748,7 @@ class MainWindow(QMainWindow):
         left.setContentsMargins(0, 0, 6, 0)
         self.ov = {}
         self._ov_loading = False
+        left.addWidget(self._preset_bar())
         left.addWidget(self._overlay_card("lg", "🏷 Logo", "Logo នៅជ្រុងវីដេអូ — បង្ហាញជានិច្ច (វីដេអូនឹង loop)"))
         left.addWidget(self._overlay_card("lt", "📺 Lower third", "ផ្ទាំងអក្សរខាងក្រោម — លេចឡើងតាមពេលកំណត់"))
         left.addWidget(self._watermark_card())
@@ -975,7 +980,7 @@ class MainWindow(QMainWindow):
         path = watermark.render(text, m["font"].currentFont().family(), m["bold"].isChecked(),
                                 color if QColor(color).isValid() else "#ffffff", m["outline"].isChecked())
         spec = {"path": path, "label": text, "key": "none", "mode": "always", "size": m["size"].value(),
-                "opacity": m["opacity"].value(), "watermark": True}
+                "opacity": m["opacity"].value(), "watermark": True, "kind": "wm"}
         if m["motion"].currentData() == "static":  # ដូច Logo: ជ្រុង + គម្លាត + X/Y
             spec.update(pos=m["pos"].currentData(), margin=3, x=m["x"].value(), y=m["y"].value())
         else:
@@ -990,10 +995,16 @@ class MainWindow(QMainWindow):
         a["on"] = QCheckBox("សៀតវីដេអូ Ads ខ្លីចូលក្នុងវីដេអូ")
         form.addRow(a["on"])
         a["path"], row = self._file_row("ជ្រើសវីដេអូ Ads (.mp4, .mov ...)", VIDEO_FILTER)
-        form.addRow("ឯកសារ", row)
+        form.addRow("⏸ Ads កណ្តាល", row)
         a["info"] = QLabel()
         a["info"].setProperty("role", "muted")
         form.addRow("", a["info"])
+        a["path_end"], row = self._file_row("ទុកទទេ = ប្រើវីដេអូដូច Ads កណ្តាល", VIDEO_FILTER)
+        a["path_end"].setToolTip("វីដេអូ Ads ផ្សេងសម្រាប់ដាក់នៅចុង — ទុកទទេ ដើម្បីប្រើ Ads កណ្តាលដដែល")
+        form.addRow("⏹ Ads ចុង", row)
+        a["info_end"] = QLabel()
+        a["info_end"].setProperty("role", "muted")
+        form.addRow("", a["info_end"])
         a["mid"] = QCheckBox("⏸ កណ្តាល")
         a["mid"].setChecked(True)
         a["mid"].setToolTip("ដាក់នៅចន្លោះស្ងាត់រវាង subtitle ជិតកណ្តាល — មិនកាត់ពាក់កណ្តាលប្រយោគ")
@@ -1011,26 +1022,28 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         form.addRow(note)
 
-        def file_changed():
-            path = a["path"].text().strip()
+        def file_changed(key, info_key):
+            path = a[key].text().strip()
             if not path:
-                return a["info"].setText("")
+                return a[info_key].setText("" if key == "path" else "↳ ប្រើវីដេអូដូច Ads កណ្តាល")
             if not os.path.isfile(path):
-                return a["info"].setText("⚠ រកមិនឃើញឯកសារ")
+                return a[info_key].setText("⚠ រកមិនឃើញឯកសារ")
             try:
                 info = overlay.media_info(path)
-                a["info"].setText(f"🎞 {info['width']}×{info['height']} · {info['duration']:.1f}s")
+                a[info_key].setText(f"🎞 {info['width']}×{info['height']} · {info['duration']:.1f}s")
                 if not a["on"].isChecked() and not self._ov_loading:
                     a["on"].setChecked(True)
             except Exception as e:  # noqa: BLE001
-                a["info"].setText("⚠ រកមិនឃើញ ffmpeg" if not ffmpeg_setup.available() else f"⚠ {e}")
-        a["path"].textChanged.connect(lambda _: file_changed())
+                a[info_key].setText("⚠ រកមិនឃើញ ffmpeg" if not ffmpeg_setup.available() else f"⚠ {e}")
+        a["path"].textChanged.connect(lambda _: file_changed("path", "info"))
+        a["path_end"].textChanged.connect(lambda _: file_changed("path_end", "info_end"))
+        file_changed("path_end", "info_end")
         return box
 
     def ads_spec(self):
         """ការកំណត់ Ads (សម្រាប់ video_dub.mix_and_split) ឬ None"""
         a = self.ad
-        spec = {"path": a["path"].text().strip(), "mid": a["mid"].isChecked(), "end": a["end"].isChecked(),
+        spec = {"path": a["path"].text().strip(), "path_end": a["path_end"].text().strip(), "mid": a["mid"].isChecked(), "end": a["end"].isChecked(),
                 "per_part": a["per_part"].isChecked(), "volume": a["volume"].value()}
         return spec if a["on"].isChecked() and ads_mod.active(spec) else None
 
@@ -1088,7 +1101,7 @@ class MainWindow(QMainWindow):
             spec = {"path": path, "key": c["key"].currentData(), "strength": c["strength"].value() / 100,
                     "pos": c["pos"].currentData(), "size": c["size"].value(), "margin": c["margin"].value(),
                     "opacity": c["opacity"].value(), "x": c["x"].value(), "y": c["y"].value(),
-                    "mode": "timed" if prefix == "lt" else "always"}
+                    "mode": "timed" if prefix == "lt" else "always", "kind": prefix}
             if prefix == "lt":
                 spec.update(start=c["start"].value(), every=c["every"].value() * 60, show=c["show"].value(),
                             per_part=c["per_part"].isChecked())
@@ -1170,14 +1183,14 @@ class MainWindow(QMainWindow):
         self.ov_preview_note.setText("គ្មានវីដេអូ — ប្រើផ្ទៃ 16:9 (ជ្រើស Aspect ratio ខាងលើដើម្បីប្តូរ)")
         return None, None
 
-    def confirm_overlays(self, videos):
+    def confirm_overlays(self, videos, specs=None, ads=None, use_ads=True):
         """បើមាន Logo/Lower third — បង្ហាញ Preview លើវីដេអូ ហើយចាំអ្នកប្រើចុច OK។
-        videos = path មួយ ឬ [(ឈ្មោះ, path), ...]"""
-        specs = self.overlays()
+        videos = path មួយ ឬ [(ឈ្មោះ, path), ...] · specs/ads = ជ្រើសខ្លះ (None = ទាំងអស់ដែលបានបើក)"""
+        specs = self.overlays() if specs is None else specs
         if isinstance(videos, str):
             videos = [(os.path.basename(videos), videos)]
         videos = [(n, p) for n, p in videos if p and os.path.isfile(p)]
-        ads = self.ads_spec()
+        ads = (self.ads_spec() if ads is None else ads) if use_ads else None
         if not (specs or ads) or not self.ov_confirm.isChecked() or not videos:
             return True
         video = videos[0][1]
@@ -1199,46 +1212,336 @@ class MainWindow(QMainWindow):
         if getattr(self, "_ov_pixmap", None):
             QTimer.singleShot(0, self._show_ov_pixmap)
 
+    def _ov_groups(self):
+        return [*self.ov.items(), ("ad", self.ad), ("wm", self.wm)]
+
+    def _ov_values(self):
+        """ការកំណត់ទាំងអស់ក្នុងផ្ទាំង Logo & Ads → dict {"lg_path": ..., ...} (សម្រាប់ settings និង Preset)"""
+        values = {}
+        for prefix, c in self._ov_groups():
+            for key, widget in c.items():
+                name = f"{prefix}_{key}"
+                if isinstance(widget, QFontComboBox):
+                    values[name] = widget.currentFont().family()
+                elif isinstance(widget, QLineEdit):
+                    values[name] = widget.text().strip()
+                elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                    values[name] = widget.value()
+                elif isinstance(widget, QComboBox):
+                    values[name] = widget.currentData()
+                elif isinstance(widget, QCheckBox):
+                    values[name] = widget.isChecked()
+        return values
+
+    def _ov_apply(self, values, reset=False):
+        """values ពី _ov_values() → widgets · reset=True: អ្វីដែលមិនមានក្នុង values → បិទ / ទទេ"""
+        self._ov_loading = True
+        try:
+            for prefix, c in self._ov_groups():
+                for key, widget in c.items():
+                    name = f"{prefix}_{key}"
+                    if key.startswith("info"):
+                        continue
+                    if name not in values:
+                        if reset and isinstance(widget, QLineEdit) and key.startswith("path"):
+                            widget.setText("")
+                        elif reset and key == "on":
+                            widget.setChecked(False)
+                        continue
+                    value = values[name]
+                    if isinstance(widget, QFontComboBox):
+                        widget.setCurrentFont(QFont(value))
+                    elif isinstance(widget, QLineEdit):
+                        widget.setText(value or "")
+                    elif isinstance(widget, QSpinBox):
+                        widget.setValue(int(float(value)))
+                    elif isinstance(widget, QDoubleSpinBox):
+                        widget.setValue(float(value))
+                    elif isinstance(widget, QComboBox):
+                        self._select_data(widget, value)
+                    elif isinstance(widget, QCheckBox):
+                        widget.setChecked(value in (True, "true", "1"))
+        finally:
+            self._ov_loading = False
+        self._ov_timer.start(50)
+
     def _ov_load(self):
         s = self.settings
-        self._ov_loading = True
         self._select_data(self.ov_aspect, s.value("ov_aspect", "auto"))
-        for prefix, c in [*self.ov.items(), ("ad", self.ad), ("wm", self.wm)]:
-            for key, widget in c.items():
-                name = f"ov_{prefix}_{key}"
-                if not s.contains(name) or key == "info":
-                    continue
-                value = s.value(name)
-                if isinstance(widget, QFontComboBox):
-                    widget.setCurrentFont(QFont(value))
-                elif isinstance(widget, QLineEdit):
-                    widget.setText(value or "")
-                elif isinstance(widget, QSpinBox):
-                    widget.setValue(int(float(value)))
-                elif isinstance(widget, QDoubleSpinBox):
-                    widget.setValue(float(value))
-                elif isinstance(widget, QComboBox):
-                    self._select_data(widget, value)
-                elif isinstance(widget, QCheckBox):
-                    widget.setChecked(value in (True, "true", "1"))
-        self._ov_loading = False
+        self._ov_apply({k[3:]: s.value(k) for k in s.allKeys()
+                        if k.startswith("ov_") and k not in ("ov_aspect", "ov_presets_json", "ov_preset_current")})
+        self._preset_refresh(s.value("ov_preset_current", ""))
 
     def _ov_save(self):
         s = self.settings
         s.setValue("ov_aspect", self.ov_aspect.currentData())
-        for prefix, c in [*self.ov.items(), ("ad", self.ad), ("wm", self.wm)]:
-            for key, widget in c.items():
-                name = f"ov_{prefix}_{key}"
-                if isinstance(widget, QFontComboBox):
-                    s.setValue(name, widget.currentFont().family())
-                elif isinstance(widget, QLineEdit):
-                    s.setValue(name, widget.text().strip())
-                elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                    s.setValue(name, widget.value())
-                elif isinstance(widget, QComboBox):
-                    s.setValue(name, widget.currentData())
-                elif isinstance(widget, QCheckBox):
-                    s.setValue(name, widget.isChecked())
+        for name, value in self._ov_values().items():
+            s.setValue(f"ov_{name}", value)
+        s.setValue("ov_preset_current", self.preset_combo.currentData() or "")
+
+    # ---- Preset (Brand ផ្សេងៗ) ----
+    def _preset_bar(self):
+        box = QGroupBox("💾 Preset Brand")
+        row = QHBoxLayout(box)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setMinimumWidth(180)
+        self.preset_combo.setToolTip("ជ្រើស Preset ដើម្បីប្តូរ Logo, Lower third, Watermark និង Ads ទាំងអស់ភ្លាមៗ")
+        self.preset_combo.activated.connect(lambda _: self._preset_load())
+        row.addWidget(self.preset_combo, 1)
+        save = QPushButton("💾 រក្សាទុក")
+        save.setToolTip("រក្សាទុកការកំណត់បច្ចុប្បន្នជា Preset (ដាក់ឈ្មោះ Brand)")
+        save.clicked.connect(self._preset_save)
+        row.addWidget(save)
+        delete = QPushButton("🗑")
+        delete.setToolTip("លុប Preset ដែលបានជ្រើស")
+        delete.setFixedWidth(40)
+        delete.setStyleSheet("padding:0")
+        delete.clicked.connect(self._preset_delete)
+        row.addWidget(delete)
+        self._preset_refresh()
+        return box
+
+    def _presets(self):
+        try:
+            data = json.loads(self.settings.value("ov_presets_json", "") or "{}")
+            return data if isinstance(data, dict) else {}
+        except ValueError:
+            return {}
+
+    def _preset_refresh(self, select=None):
+        current = self.preset_combo.currentData() if select is None else select
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        names = sorted(self._presets(), key=str.lower)
+        self.preset_combo.addItem("— ជ្រើស Preset —" if names else "— មិនទាន់មាន Preset —", "")
+        for name in names:
+            self.preset_combo.addItem(f"🏷 {name}", name)
+        self._select_data(self.preset_combo, current or "")
+        self.preset_combo.blockSignals(False)
+
+    def _preset_load(self):
+        name = self.preset_combo.currentData()
+        values = self._presets().get(name) if name else None
+        if values is None:
+            return
+        self._ov_apply(values, reset=True)
+        self.settings.setValue("ov_preset_current", name)
+        self.set_status(f"🏷 ប្រើ Preset “{name}”")
+
+    def _preset_save(self):
+        name, ok = QInputDialog.getText(self, "រក្សាទុក Preset", "ឈ្មោះ Preset (ឧ. ឈ្មោះ Brand / Page):",
+                                        text=self.preset_combo.currentData() or "")
+        name = name.strip()
+        if not ok or not name:
+            return
+        presets = self._presets()
+        if name in presets and name != self.preset_combo.currentData() and QMessageBox.question(
+                self, "Preset", f"មាន Preset “{name}” រួចហើយ។ ជំនួសវា?") != QMessageBox.Yes:
+            return
+        presets[name] = self._ov_values()
+        self.settings.setValue("ov_presets_json", json.dumps(presets, ensure_ascii=False))
+        self._preset_refresh(name)
+        self.settings.setValue("ov_preset_current", name)
+        self.set_status(f"💾 បានរក្សាទុក Preset “{name}”")
+
+    def _preset_delete(self):
+        name = self.preset_combo.currentData()
+        if not name:
+            return self.set_status("សូមជ្រើស Preset ដែលចង់លុប", True)
+        if QMessageBox.question(self, "លុប Preset", f"លុប Preset “{name}”?\n(ការកំណត់បច្ចុប្បន្នមិនប្រែប្រួលទេ)") \
+                != QMessageBox.Yes:
+            return
+        presets = self._presets()
+        presets.pop(name, None)
+        self.settings.setValue("ov_presets_json", json.dumps(presets, ensure_ascii=False))
+        self._preset_refresh("")
+        self.set_status(f"🗑 បានលុប Preset “{name}”")
+
+    # ================= Logo ប៉ុណ្ណោះ (វីដេអូដែលមានស្រាប់) =================
+    BRAND_KINDS = [("lg", "🏷 Logo"), ("lt", "📺 Lower third"), ("wm", "💧 Watermark"), ("ad", "📢 Ads")]
+
+    def _build_brand_tab(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        intro = QLabel("ដាក់ Logo, Lower third, Watermark, Ads ឬកាត់យកតែផ្នែកខ្លះ លើវីដេអូដែលមានស្រាប់ — "
+                       "មិនបកប្រែ មិនប្តូរសំឡេង (រក្សាសំឡេងដើម)")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("ដាក់:"))
+        self.brand_use = {}
+        for kind, label in self.BRAND_KINDS:
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            self.brand_use[kind] = cb
+            row.addWidget(cb)
+        row.addStretch()
+        edit = QPushButton("⚙ កំណត់")
+        edit.setToolTip("កំណត់ Logo, Lower third, Watermark និង Ads ក្នុងផ្ទាំង 🏷 Logo & Ads")
+        edit.clicked.connect(lambda: self.tabs.setCurrentWidget(self.overlay_tab))
+        row.addWidget(edit)
+        lay.addLayout(row)
+        self.brand_info = QLabel()
+        self.brand_info.setProperty("role", "muted")
+        self.brand_info.setWordWrap(True)
+        lay.addWidget(self.brand_info)
+
+        lay.addWidget(QLabel("វីដេអូ — អាចជ្រើសច្រើន (ដំណើរការម្តងមួយតាមលំដាប់)"))
+        self.brand_list = FileListBox("ជ្រើសវីដេអូ")
+        lay.addWidget(self.brand_list, 1)
+
+        trim = QHBoxLayout()
+        self.brand_trim = QCheckBox("✂ កាត់យកតែ")
+        self.brand_trim.setToolTip("ឧ. វីដេអូ 20 នាទី → យកតែ 10 នាទីដំបូង")
+        self.brand_trim_start = QTimeEdit(QTime(0, 0, 0))
+        self.brand_trim_len = QTimeEdit(QTime(0, 10, 0))
+        for t in (self.brand_trim_start, self.brand_trim_len):
+            t.setDisplayFormat("H:mm:ss")
+        self.brand_trim_snap = QCheckBox("បញ្ចប់នៅចន្លោះស្ងាត់")
+        self.brand_trim_snap.setChecked(True)
+        self.brand_trim_snap.setToolTip(f"បញ្ចប់នៅចន្លោះស្ងាត់មុនចំណុចបញ្ចប់ (ក្នុង {video_dub.SNAP_BACK} វិនាទី) — "
+                                        "មិនកាត់ពាក់កណ្តាលប្រយោគ")
+        for widget in (self.brand_trim, QLabel("ចាប់ពី"), self.brand_trim_start, QLabel("ប្រវែង"),
+                       self.brand_trim_len, self.brand_trim_snap):
+            trim.addWidget(widget)
+        trim.addStretch()
+        lay.addLayout(trim)
+        self.brand_trim.toggled.connect(
+            lambda on: [x.setEnabled(on) for x in (self.brand_trim_start, self.brand_trim_len, self.brand_trim_snap)])
+        self.brand_trim.toggled.emit(self.brand_trim.isChecked())
+
+        self.brand_part = QSpinBox()
+        self.brand_part.setRange(0, 120)
+        self.brand_part.setValue(0)
+        self.brand_part.setSuffix(" នាទី")
+        self.brand_part.setSpecialValueText("មិនកាត់")
+        opt = QHBoxLayout()
+        opt.addWidget(QLabel("កាត់ជាផ្នែក"))
+        opt.addWidget(self.brand_part)
+        opt.addStretch()
+        lay.addLayout(opt)
+        note = QLabel("ការកាត់ និង Ads កណ្តាលស្ថិតនៅចន្លោះស្ងាត់ក្នុងសំឡេងដើម (មិនកាត់ពាក់កណ្តាលប្រយោគ) · "
+                      "លទ្ធផលនៅក្នុង outputs/")
+        note.setProperty("role", "muted")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        row = QHBoxLayout()
+        row.addWidget(self._run_button("🎨 ចាប់ផ្តើម", self.run_brand))
+        self.btn_brand_stop = QPushButton("■ បញ្ឈប់បន្ទាប់ពីវីដេអូនេះ")
+        self.btn_brand_stop.setEnabled(False)
+        self.btn_brand_stop.clicked.connect(self._brand_request_stop)
+        row.addWidget(self.btn_brand_stop)
+        row.addStretch()
+        lay.addLayout(row)
+        for cb in self.brand_use.values():
+            cb.toggled.connect(lambda _: self._brand_summary())
+        self.brand_trim.toggled.connect(lambda _: self._brand_summary())
+        self.brand_active, self.brand_queue = False, []
+        return w
+
+    def _brand_selection(self):
+        """(overlays, ads) ដែលបានធីក ហើយបានកំណត់ក្នុងផ្ទាំង Logo & Ads"""
+        overlays = [o for o in self.overlays() if self.brand_use[o["kind"]].isChecked()]
+        ads = self.ads_spec() if self.brand_use["ad"].isChecked() else None
+        return overlays, ads
+
+    def _brand_summary(self):
+        """ធីកបានតែអ្វីដែលបានកំណត់រួច — ប្រាប់អ្វីដែលនឹងធ្វើ"""
+        ready = {o["kind"] for o in self.overlays()} | ({"ad"} if self.ads_spec() else set())
+        for kind, cb in self.brand_use.items():
+            cb.setEnabled(kind in ready)
+            cb.setToolTip("" if kind in ready else "មិនទាន់កំណត់ ឬមិនទាន់បើកក្នុងផ្ទាំង 🏷 Logo & Ads")
+        overlays, ads = self._brand_selection()
+        names = [label for kind, label in self.BRAND_KINDS
+                 if kind in ready and self.brand_use[kind].isChecked()]
+        if self.brand_trim.isChecked():
+            names.append("✂ កាត់")
+        if names:
+            self.brand_info.setText("នឹងធ្វើ: " + " · ".join(names))
+        else:
+            self.brand_info.setText("⚠ មិនទាន់ជ្រើសអ្វីទេ — ធីក Logo / Ads ឬ ✂ កាត់យកតែ "
+                                    "(កំណត់ Logo, Ads ក្នុងផ្ទាំង 🏷 Logo & Ads)")
+        return bool(names)
+
+    def _brand_trim(self):
+        if not self.brand_trim.isChecked():
+            return None
+        start = QTime(0, 0).secsTo(self.brand_trim_start.time())
+        length = QTime(0, 0).secsTo(self.brand_trim_len.time())
+        return {"start": start, "length": length, "snap": self.brand_trim_snap.isChecked()} if length > 0 else None
+
+    def run_brand(self):
+        if self.busy or self.brand_active or not self._check_ffmpeg():
+            return
+        paths = [p for p in self.brand_list.paths() if os.path.isfile(p)]
+        if not paths:
+            return self.set_status("សូមជ្រើសវីដេអូ", True)
+        if not self._brand_summary():
+            return self.set_status("សូមធីក Logo / Ads ឬ ✂ កាត់យកតែ", True)
+        trim = self._brand_trim()
+        if self.brand_trim.isChecked() and not trim:
+            return self.set_status("សូមកំណត់ប្រវែងដែលត្រូវកាត់យក", True)
+        overlays, ads = self._brand_selection()
+        if not self.confirm_overlays([(os.path.basename(p), p) for p in paths], overlays, ads, use_ads=bool(ads)):
+            return
+        self.brand_queue, self.brand_total, self.brand_done = list(paths), len(paths), []
+        self.brand_active, self.brand_stop = True, False
+        self.btn_brand_stop.setEnabled(True)
+        self.brand_t0 = time.time()
+        self.brand_specs = (overlays, ads, self.brand_part.value() * 60, trim)
+        what = self.brand_info.text().replace("នឹងធ្វើ: ", "")
+        self._log(f"🎨 {len(paths)} វីដេអូ — {what}")
+        self._brand_next()
+
+    def _brand_next(self):
+        if self.brand_stop or not self.brand_queue:
+            return self._brand_finish()
+        video = self.brand_queue.pop(0)
+        n = self.brand_total - len(self.brand_queue)
+        name = os.path.basename(video)
+        overlays, ads, part_sec, trim = self.brand_specs
+        parts = ["ដាក់ Logo" if overlays else "", "Ads" if ads else "", "កាត់ជាផ្នែក" if part_sec else ""]
+        s_video = " + ".join(x for x in parts if x) or "រក្សាទុកវីដេអូ"
+        s_scan, s_trim = "រកចន្លោះស្ងាត់", "✂ កាត់យកតែផ្នែក"
+        self.begin_stages(f"🎨 {n}/{self.brand_total}: {name}", [s_scan] + ([s_trim] if trim else []) + [s_video])
+        self.enter_stage(s_scan)
+        suffix = "_cut" if trim else ""
+        base = (backend.safe_name(os.path.splitext(name)[0]) or "video") + f"{suffix}_{time.strftime('%Y%m%d_%H%M%S')}"
+        job = video_dub.start_brand_job(video, OUTPUT_DIR, base, overlays, ads, part_sec, trim)
+        self.set_busy(True, f"{name}: កំពុងរកចន្លោះស្ងាត់...")
+
+        def done(s):
+            self.brand_done.append(os.path.join(OUTPUT_DIR, s["folder"]))
+            extra = f" · Ads {s['ads_inserted']}" if s.get("ads_inserted") else ""
+            if s.get("trimmed"):
+                extra += f" · ✂ {fmt_dur(s['trimmed'][0])}–{fmt_dur(s['trimmed'][1])}"
+            self.set_result(os.path.join(OUTPUT_DIR, s["folder"]),
+                            f"{name}: រួចរាល់ {len(s['parts'])} ផ្នែក{extra} → outputs/{s['folder']}")
+            QTimer.singleShot(200, self._brand_next)
+
+        stage = {"analyzing": s_scan, "trimming": s_trim}
+        self.watch_job(job, lambda s: f"{name}: " + ("កំពុងកាត់..." if s["status"] == "trimming"
+                                                      else "កំពុងរកចន្លោះស្ងាត់..."), done,
+                       lambda s: stage.get(s["status"], s_video))
+
+    def _brand_failed(self):
+        QTimer.singleShot(200, self._brand_next)
+
+    def _brand_request_stop(self):
+        self.brand_stop = True
+        self.btn_brand_stop.setEnabled(False)
+        self.set_status("នឹងបញ្ឈប់បន្ទាប់ពីវីដេអូនេះចប់")
+
+    def _brand_finish(self):
+        self.brand_active = False
+        self.btn_brand_stop.setEnabled(False)
+        done, left = len(self.brand_done), len(self.brand_queue)
+        msg = (f"🎨 ចប់ — ✓ {done}/{self.brand_total}" + (f" · បញ្ឈប់ (នៅសល់ {left})" if left else "") +
+               f" · សរុប {fmt_dur(time.time() - self.brand_t0)}")
+        self._log(msg)
+        self.set_status(msg, done < self.brand_total)
 
     # ================= Auto (Folder) =================
     B_ON, B_NAME, B_VIDEOS, B_SRT, B_STATUS = range(5)
@@ -1794,6 +2097,8 @@ class MainWindow(QMainWindow):
         self.finish_stages(False, msg)
         if self.batch_active:  # Auto: Folder នេះបរាជ័យ → បន្ត Folder បន្ទាប់
             self._batch_failed(msg)
+        elif getattr(self, "brand_active", False):  # Logo ប៉ុណ្ណោះ: វីដេអូនេះបរាជ័យ → បន្តវីដេអូបន្ទាប់
+            self._brand_failed()
 
     def set_result(self, path, msg, finish=True):
         """finish=False — ការងារបន្តទៅដំណាក់កាលបន្ទាប់ (ឧ. SRT → បង្កើតសំឡេង)"""
@@ -1876,7 +2181,8 @@ class MainWindow(QMainWindow):
                 self.fail(str(e))
             return
         self.set_status({"mixing": "កំពុងតម្រឹមពេលវេលា (ពន្លឿនសំឡេងដែលវែងពេក)...",
-                         "video": "កំពុងដាក់សំឡេងចូលវីដេអូ និងកាត់ជាផ្នែកៗ..."}.get(s["status"]) or label(s))
+                         "video": "កំពុងដំណើរការវីដេអូ (Logo / Ads / កាត់ជាផ្នែក)..." if self.brand_active else
+                         "កំពុងដាក់សំឡេងចូលវីដេអូ និងកាត់ជាផ្នែកៗ..."}.get(s["status"]) or label(s))
 
     def _check_ffmpeg(self):
         if ffmpeg_setup.available():
@@ -2053,8 +2359,7 @@ class MainWindow(QMainWindow):
             self._log(f"   🏷 {len(overlays)} Logo/Lower third — encode ដោយ {overlay.pick_encoder()}")
         ads = self.ads_spec()
         if ads:
-            where = " + ".join(w for w, on in (("កណ្តាល", ads["mid"]), ("ចុង", ads["end"])) if on)
-            self._log(f"   📢 Ads: {os.path.basename(ads['path'])} · {where}"
+            self._log(f"   📢 Ads: {ads_mod.describe(ads)}"
                       f" · {'ផ្នែកនីមួយៗ' if ads['per_part'] else 'វីដេអូទាំងមូល'}")
 
         def post(job, pcm):
@@ -2290,8 +2595,8 @@ class MainWindow(QMainWindow):
 
     # ================= settings =================
     _CHECKS = ["auto_gender", "strip_parens", "fit", "orig_mute", "stt_gender", "stt_dub", "stt_video",
-               "batch_keep_merged", "ov_confirm"]
-    _SPINS = ["max_speed", "workers", "orig_volume", "part_minutes"]
+               "batch_keep_merged", "ov_confirm", "brand_trim", "brand_trim_snap"]
+    _SPINS = ["max_speed", "workers", "orig_volume", "part_minutes", "brand_part"]
     # key ថ្មី → លំនាំដើមថ្មី (Mute សំឡេងដើម = បើក) មិនត្រូវជាន់ដោយតម្លៃចាស់ដែលបានរក្សាទុក
     _KEYS = {"orig_mute": "orig_mute_v2"}
 
@@ -2317,6 +2622,12 @@ class MainWindow(QMainWindow):
                 widget = getattr(self, name)
                 widget.setValue(type(widget.value())(float(s.value(name))))
         self._ov_load()
+        for kind, cb in self.brand_use.items():
+            if s.contains(f"brand_use_{kind}"):
+                cb.setChecked(s.value(f"brand_use_{kind}") in (True, "true", "1"))
+        for name in ("brand_trim_start", "brand_trim_len"):
+            if s.contains(name):
+                getattr(self, name).setTime(QTime(0, 0).addSecs(int(float(s.value(name)))))
         geom = s.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
@@ -2345,6 +2656,10 @@ class MainWindow(QMainWindow):
         for name in self._SPINS:
             s.setValue(name, getattr(self, name).value())
         self._ov_save()
+        for kind, cb in self.brand_use.items():
+            s.setValue(f"brand_use_{kind}", cb.isChecked())
+        for name in ("brand_trim_start", "brand_trim_len"):
+            s.setValue(name, QTime(0, 0).secsTo(getattr(self, name).time()))
         s.setValue("geometry", self.saveGeometry())
 
     # ================= header / theme =================
