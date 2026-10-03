@@ -1,7 +1,9 @@
 # AI Team #1 launcher - finds Python (or installs a private copy), installs libraries, starts the app.
 # Private Python goes to %LOCALAPPDATA%\AITeam1\python (no admin rights, nothing else on the PC changes).
 # Everything is logged to %LOCALAPPDATA%\AITeam1\launcher.log
-param([switch]$Web)
+# -Quiet : desktop shortcut - no console window; it only appears when setup work is needed
+# -Setup : run by the installer - prepare Python, libraries and ffmpeg, then exit (do not start the app)
+param([switch]$Web, [switch]$Quiet, [switch]$Setup)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"   # Invoke-WebRequest is very slow with the progress bar
@@ -31,6 +33,42 @@ function Disable-QuickEdit {
             [AITeam1.Con]::SetConsoleMode($h, ($mode -band (-bnot 0x40)) -bor 0x80) | Out-Null
         }
     } catch {}
+}
+
+function Set-ConsoleVisible($visible) {
+    try {
+        Add-Type -Namespace AITeam1 -Name Win -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+'@ -ErrorAction SilentlyContinue
+        [AITeam1.Win]::ShowWindow([AITeam1.Win]::GetConsoleWindow(), $(if ($visible) { 9 } else { 0 })) | Out-Null
+    } catch {}
+}
+
+function Show-Console {
+    # Quiet start but there is setup work to do - show the window so progress is visible
+    if ($script:Hidden) {
+        $script:Hidden = $false
+        Set-ConsoleVisible $true
+        Disable-QuickEdit
+        Write-Host "=== AI Team #1 ===" -ForegroundColor Yellow
+        Write-Host "Please wait and do not close this window."
+        Write-Host ""
+    }
+}
+
+function Show-Error($text) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show("$text`n`nLog: $Log", "AI Team #1",
+            [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    } catch {}
+}
+
+function Test-Ffmpeg {
+    $bin = Join-Path $Data "ffmpeg"
+    if ((Test-Path (Join-Path $bin "ffmpeg.exe")) -and (Test-Path (Join-Path $bin "ffprobe.exe"))) { return $true }
+    return [bool]((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and (Get-Command ffprobe -ErrorAction SilentlyContinue))
 }
 
 function Invoke-Timed($exe, $arguments, $seconds) {
@@ -97,20 +135,32 @@ function Install-PrivatePython {
     Set-Content (Join-Path $PyDir ".ready") $PyVersion
 }
 
+$script:Hidden = [bool]$Quiet
 try {
-    Disable-QuickEdit
-    Write-Host "=== AI Team #1 ===" -ForegroundColor Yellow
-    Write-Host "Please wait and do not close this window. First start can take several minutes."
-    Write-Host "App folder: $AppDir"
-    Write-Host ""
+    if ($script:Hidden) {
+        Set-ConsoleVisible $false
+    } else {
+        Disable-QuickEdit
+        Write-Host "=== AI Team #1 ===" -ForegroundColor Yellow
+        Write-Host "Please wait and do not close this window. First start can take several minutes."
+        Write-Host "App folder: $AppDir"
+        Write-Host ""
+    }
     Step "Checking Python ..."
     $py = Find-SystemPython
     if ($py) {
         Write-Host "    using $py"
     } else {
-        if (-not (Test-Path (Join-Path $PyDir ".ready"))) { Install-PrivatePython }
+        if (-not (Test-Path (Join-Path $PyDir ".ready"))) { Show-Console; Install-PrivatePython }
         $py = Join-Path $PyDir "python.exe"
         Write-Host "    using private Python ($py)"
+    }
+
+    # Update from GitHub before the app starts (no files in use, no questions, no restart).
+    # Offline or GitHub down -> the current version just starts.
+    if (-not $Setup) {
+        Step "Checking for updates ..."
+        & $py (Join-Path $AppDir "updater.py") --auto
     }
 
     # Libraries: install only when requirements.txt (or the Python used) changed
@@ -119,10 +169,37 @@ try {
     $marker = Join-Path $Data "requirements.stamp"
     $old = if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { "" }
     if ($old -ne $stamp) {
+        Show-Console
         Step "Installing libraries (first start only, about 100 MB) - progress is shown below ..."
         & $py -m pip install --disable-pip-version-check --no-warn-script-location --progress-bar on -r $req
         if ($LASTEXITCODE) { throw "Installing libraries failed - check the Internet connection and try again" }
         Set-Content $marker $stamp
+    }
+
+    # ffmpeg (audio / video tools) - download once so the app works right away
+    if (-not (Test-Ffmpeg)) {
+        Show-Console
+        Step "Downloading ffmpeg (about 110 MB, one time only) ..."
+        $env:AITEAM1_APPDIR = $AppDir
+        & $py -c @'
+import os, sys
+sys.path.insert(0, os.environ['AITEAM1_APPDIR'])
+import ffmpeg_setup
+last = [-1]
+def show(done, total):
+    pct = done * 100 // total if total else 0
+    if pct >= last[0] + 5:
+        last[0] = pct
+        print(f'    {pct}%  ({done / 1e6:.0f} MB)', flush=True)
+ffmpeg_setup.download(show)
+'@
+        if ($LASTEXITCODE) { Write-Host "    ffmpeg download failed - the app will offer it again later" -ForegroundColor Yellow }
+    }
+
+    if ($Setup) {
+        Step "Setup complete."
+        try { Stop-Transcript | Out-Null } catch {}
+        exit 0
     }
 
     if ($Web) {
@@ -140,6 +217,7 @@ try {
     Start-Sleep 5
     if ($proc.HasExited -and $proc.ExitCode -ne 0) {
         # The app closed immediately - run it here so the error is visible (and logged)
+        Show-Console
         Write-Host "The app closed immediately. Error details:" -ForegroundColor Red
         & $py $gui
         throw "The app could not start (see the error above)"
@@ -147,6 +225,7 @@ try {
     Step "Done - this window will close."
     try { Stop-Transcript | Out-Null } catch {}
 } catch {
+    if ($script:Hidden -or $Setup) { Show-Error "AI Team #1 could not start:`n$($_.Exception.Message)" }
     Write-Host ""
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Log file: $Log" -ForegroundColor Yellow

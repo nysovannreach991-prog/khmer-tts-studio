@@ -20,7 +20,7 @@ TIMEOUT = 20
 
 def load_config():
     try:
-        with open(CONFIG_FILE, encoding="utf-8") as f:
+        with open(CONFIG_FILE, encoding="utf-8-sig") as f:
             cfg = json.load(f)
         return cfg if cfg.get("repo") else None
     except (OSError, ValueError):
@@ -29,7 +29,7 @@ def load_config():
 
 def local_manifest():
     try:
-        with open(MANIFEST_FILE, encoding="utf-8") as f:
+        with open(MANIFEST_FILE, encoding="utf-8-sig") as f:
             return json.load(f)
     except (OSError, ValueError):
         return {"version": "0", "files": {}}
@@ -134,6 +134,35 @@ def download_and_apply(info, progress=None):
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def is_dev_copy():
+    """ថតរបស់ម្ចាស់កម្មវិធី (មាន .git) — កុំ Update ដោយស្វ័យប្រវត្តិ ក្រែងជាន់ការកែដែលមិនទាន់ publish"""
+    return os.path.isdir(os.path.join(APP_DIR, ".git"))
+
+
+def auto_update(log=print):
+    """Update ស្ងាត់ៗ មិនសួរ — launcher ហៅមុនបើកកម្មវិធី (ឯកសារមិនទាន់ប្រើ → មិនចាំបាច់បើកឡើងវិញ)។
+    គ្មានអ៊ីនធឺណិត / GitHub មិនឆ្លើយ → បើកកំណែបច្ចុប្បន្នធម្មតា។ ត្រឡប់ True បើបាន Update"""
+    apply_pending()
+    if not load_config():
+        return False
+    if is_dev_copy():
+        log("    skipped (owner's copy - publish with publish_update.bat)")
+        return False
+    try:
+        info = check()
+    except Exception:  # noqa: BLE001
+        log("    skipped (offline or GitHub not reachable)")
+        return False
+    if not info["available"]:
+        log(f"    up to date (v{info['current']})")
+        return False
+    log(f"    v{info['current']} -> v{info['latest']} ({len(info['changed'])} files)")
+    download_and_apply(info, lambda i, n, path: log(f"    [{i}/{n}] {path}"))
+    apply_pending()
+    log(f"    updated to v{info['latest']}")
+    return True
+
+
 def apply_pending():
     """ដាក់ឯកសារ Update ដែលមិនអាចជំនួសបានពេលមុន (ហៅពេលកម្មវិធីចាប់ផ្តើម មុន import អ្វីផ្សេង)"""
     if not os.path.isdir(PENDING_DIR):
@@ -148,3 +177,16 @@ def apply_pending():
             except OSError:
                 pass
     shutil.rmtree(PENDING_DIR, ignore_errors=True)
+
+
+if __name__ == "__main__":  # launcher: python updater.py --auto
+    import sys
+    if "--auto" in sys.argv:
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            auto_update()
+        except Exception as e:  # noqa: BLE001 — Update បរាជ័យ មិនរារាំងការបើកកម្មវិធីទេ
+            print(f"    update failed: {e}")

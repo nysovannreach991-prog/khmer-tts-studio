@@ -17,11 +17,11 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯកជន (embeddable) មិនបន្ថែមថតកម្មវិធីខ្លួនឯង
 
 from PyQt5.QtCore import QSettings, Qt, QThread, QTime, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPixmap
+from PyQt5.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFontComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
-    QInputDialog, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
+    QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTimeEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -37,8 +37,15 @@ import theme
 import updater
 import video_merge
 import watermark
+import whisper_srt as whisper_mod
 
-OUTPUT_DIR = backend.OUTPUT_DIR
+OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
+DEFAULT_OUTPUT_DIR = backend.OUTPUT_DIR
+
+
+def out_label():
+    """ឈ្មោះខ្លីនៃថតលទ្ធផល សម្រាប់សារ (ឧ. "outputs")"""
+    return os.path.basename(os.path.normpath(OUTPUT_DIR)) or OUTPUT_DIR
 GENDER_KM = {"female": "ស្រី", "male": "ប្រុស"}
 VIDEO_EXT = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".ts"}
 VIDEO_FILTER = "វីដេអូ (*.mp4 *.mkv *.mov *.avi *.webm *.flv *.m4v *.ts);;ឯកសារទាំងអស់ (*)"
@@ -405,6 +412,7 @@ class MainWindow(QMainWindow):
         self.brand_tab = self._build_brand_tab()
         self.tabs.addTab(self.brand_tab, "🎨 Logo ប៉ុណ្ណោះ")
         self.tabs.addTab(self._build_stt_tab(), "🎧 សំឡេង→SRT")
+        self.tabs.addTab(self._build_vsrt_tab(), "📝 វីដេអូ→SRT")
         self.tabs.addTab(self._build_merge_tab(), "🧩 Merge")
         self.tabs.addTab(self._build_batch_tab(), "⚡ Auto")
         self.files_tab = self._build_files_tab()
@@ -440,6 +448,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self._check_revoked)
         QTimer.singleShot(1200, lambda: self.offer_ffmpeg(startup=True))
         QTimer.singleShot(3000, lambda: self.check_update(silent=True))  # ពិនិត្យ Update ស្ងាត់ៗ
+        self._update_timer = QTimer(self)  # បើកកម្មវិធីយូរ → ពិនិត្យរៀងរាល់ 1 ម៉ោង
+        self._update_timer.timeout.connect(lambda: self.check_update(silent=True))
+        self._update_timer.start(60 * 60 * 1000)
 
     # ================= UI: voice settings (right) =================
     def _build_voice_panel(self):
@@ -638,8 +649,10 @@ class MainWindow(QMainWindow):
         self.max_speed.setValue(1.5)
         self.max_speed.setSuffix(" x")
         self.workers = QSpinBox()
-        self.workers.setRange(1, 16)
-        self.workers.setValue(12)
+        self.workers.setRange(1, 64)
+        self.workers.setValue(32)
+        self.workers.setToolTip("ចំនួនបន្ទាត់ដែលបង្កើតសំឡេងក្នុងពេលតែមួយ — ច្រើន = លឿន "
+                                "(Edge: 32–48 ល្អ · Gemini: ប្រើត្រឹម 16)")
         self.audio_format = QComboBox()
         self.audio_format.addItems(["mp3", "wav"])
         row1 = QHBoxLayout()
@@ -671,7 +684,7 @@ class MainWindow(QMainWindow):
 
         self.keep_full = QCheckBox("🎞 រក្សាទុកវីដេអូពេញផង")
         self.keep_full.setToolTip("ពេលកាត់ជាផ្នែក — រក្សាទុកវីដេអូទាំងមូលដែលដាក់សំឡេងបកប្រែរួច "
-                                  "ជា outputs/<ឈ្មោះ>_full.mp4 (គ្មាន Ads, មិន encode បន្ថែម)")
+                                  "ជា <ឈ្មោះ>_full.mp4 ក្នុងថត Output (គ្មាន Ads, មិន encode បន្ថែម)")
         self.part_minutes.valueChanged.connect(lambda v: self.keep_full.setEnabled(v > 0))
         row = QHBoxLayout()
         row.addWidget(self._run_button("🔊 បង្កើតសំឡេង / ដាក់ចូលវីដេអូ", self.run_srt))
@@ -707,7 +720,7 @@ class MainWindow(QMainWindow):
         self.stt_video.setChecked(True)
         form.addRow(self.stt_video)
         lay.addLayout(form)
-        note = QLabel("Gemini ស្តាប់ បកប្រែ និងចាប់ភេទក្នុងពេលតែមួយ។ សំឡេងវែងត្រូវបំបែកជាផ្នែក 10 នាទី។\n"
+        note = QLabel("Gemini ស្តាប់ បកប្រែ និងចាប់ភេទក្នុងពេលតែមួយ។ សំឡេងវែងត្រូវបំបែកជាផ្នែក 5 នាទី (ផ្ញើស្របគ្នា)។\n"
                       "ឯកសារដើមរបស់អ្នកមិនត្រូវបានកែប្រែ ឬលុបទេ។")
         note.setProperty("role", "muted")
         lay.addWidget(note)
@@ -717,6 +730,182 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         lay.addStretch()
         return w
+
+    def _build_vsrt_tab(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        intro = QLabel("Folder នីមួយៗ = រឿងមួយ (វីដេអូ Part) → Merge → បង្កើត .srt មួយ ហើយទុកក្នុង Folder នោះ · "
+                       "មិនបង្កើតសំឡេង មិនកែវីដេអូ")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        buttons = QHBoxLayout()
+        for text, fn in [("➕ បន្ថែម Folder", self._vsrt_add_folder),
+                         ("➕ Folder មេ (Folder រងទាំងអស់)", self._vsrt_add_parent),
+                         ("➕ វីដេអូ", self._vsrt_add_videos),
+                         ("✕ លុប", self._vsrt_remove), ("សម្អាត", self._vsrt_clear)]:
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            buttons.addWidget(b)
+        buttons.addStretch()
+        lay.addLayout(buttons)
+        self.vsrt_rows = []
+        t = self.vsrt_table = QTableWidget(0, 5)
+        t.setHorizontalHeaderLabels(["", "រឿង (Folder)", "វីដេអូ", "SRT ដែលនឹងបង្កើត", "ស្ថានភាព"])
+        hdr = t.horizontalHeader()
+        for col, rmode in [(0, QHeaderView.ResizeToContents), (1, QHeaderView.Stretch),
+                           (2, QHeaderView.ResizeToContents), (3, QHeaderView.Stretch), (4, QHeaderView.Stretch)]:
+            hdr.setSectionResizeMode(col, rmode)
+        t.verticalHeader().setVisible(False)
+        t.verticalHeader().setDefaultSectionSize(34)
+        t.setAlternatingRowColors(True)
+        t.setShowGrid(False)
+        t.setMinimumHeight(150)
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        lay.addWidget(t, 1)
+
+        form = QFormLayout()
+        self.vsrt_mode = QComboBox()
+        for key, label in [("auto", "🤖 Auto — subtitle ស្រាប់ក្នុងវីដេអូ បើគ្មាន → Whisper (ឥតគិតថ្លៃ)"),
+                           ("whisper", "🎙 Whisper — ស្តាប់លើកុំព្យូទ័រ (ឥតគិតថ្លៃ, គ្មាន API Key)"),
+                           ("embedded", "📄 ទាញ subtitle ដែលមានស្រាប់ក្នុងវីដេអូ (លឿនបំផុត)"),
+                           ("gemini", "✨ Gemini — បកប្រែ + ចាប់ភេទស្រី/ប្រុស (ត្រូវការ API Key)")]:
+            self.vsrt_mode.addItem(label, key)
+        form.addRow("វិធី", self.vsrt_mode)
+
+        # Whisper: model + ភាសាដើម + GPU
+        self.vsrt_wbox = QWidget()
+        self.vsrt_wmodel = QComboBox()
+        for key, label, mb in whisper_mod.MODELS:
+            self.vsrt_wmodel.addItem(f"{label} (~{mb / 1000:.1f} GB)", key)
+        self.vsrt_wmodel.setToolTip("model ទាញយកតែម្តងពេលប្រើលើកដំបូង · turbo / large ត្រូវការ GPU ទើបលឿន")
+        self.vsrt_wlang = QComboBox()
+        for code, label in whisper_mod.LANGUAGES:
+            self.vsrt_wlang.addItem(label, code)
+        self.vsrt_wlang.setToolTip("ភាសាដែលនិយាយក្នុងវីដេអូ — ជ្រើសឱ្យត្រូវ ល្អជាងរកឃើញខ្លួនឯង")
+        self.vsrt_gpu = QLabel("…")
+        self.btn_vsrt_gpu = QPushButton("⚡ បើក GPU (~1.5 GB)")
+        self.btn_vsrt_gpu.setToolTip("ដំឡើង NVIDIA CUDA library (ម្តងគត់) — Whisper លឿនជាង CPU 10–30 ដង")
+        self.btn_vsrt_gpu.clicked.connect(self._vsrt_install_gpu)
+        self.btn_vsrt_gpu.hide()
+        wrow = self._hrow(QLabel("Model"), self.vsrt_wmodel, QLabel("ភាសាដើម"), self.vsrt_wlang,
+                          self.vsrt_gpu, self.btn_vsrt_gpu)
+        wrow.setContentsMargins(0, 0, 0, 0)
+        self.vsrt_wbox.setLayout(wrow)
+        form.addRow(self.vsrt_wbox)
+
+        # Gemini: ភាសា SRT + model + ភេទ
+        self.vsrt_gbox = QWidget()
+        self.vsrt_target = QComboBox()
+        for code, label in [("km", "ភាសាខ្មែរ (+ SRT ភាសាដើម)"), ("", "ភាសាដើមប៉ុណ្ណោះ (មិនបកប្រែ)"),
+                            ("en", "English"), ("th", "ថៃ"), ("vi", "វៀតណាម"), ("zh", "ចិន")]:
+            self.vsrt_target.addItem(label, code)
+        self.vsrt_model = QComboBox()
+        self.vsrt_model.addItems(transcribe.MODELS)
+        self.vsrt_gender = QCheckBox("សម្គាល់ភេទ (ស្រី)/(ប្រុស) — សម្រាប់ Dub (បិទ = subtitle ស្អាតសម្រាប់មើល)")
+        self.vsrt_gender.setChecked(True)
+        grow = QVBoxLayout()
+        grow.setContentsMargins(0, 0, 0, 0)
+        grow.addLayout(self._hrow(QLabel("ភាសា SRT"), self.vsrt_target, QLabel("Model"), self.vsrt_model))
+        grow.addWidget(self.vsrt_gender)
+        self.vsrt_gbox.setLayout(grow)
+        form.addRow(self.vsrt_gbox)
+        self.vsrt_mode.currentIndexChanged.connect(lambda _: self._vsrt_mode_changed())
+        self.vsrt_beside = QRadioButton("ក្នុង Folder រឿង (ផ្ទាំង ⚡ Auto ស្គាល់ភ្លាម)")
+        self.vsrt_outdir = QRadioButton("ថត Output")
+        self.vsrt_beside.setChecked(True)
+        group = QButtonGroup(w)
+        group.addButton(self.vsrt_beside)
+        group.addButton(self.vsrt_outdir)
+        form.addRow("រក្សាទុក", self._hrow(self.vsrt_beside, self.vsrt_outdir))
+        lay.addLayout(form)
+        self.vsrt_note = QLabel()
+        self.vsrt_note.setProperty("role", "muted")
+        self.vsrt_note.setWordWrap(True)
+        lay.addWidget(self.vsrt_note)
+
+        row = QHBoxLayout()
+        row.addWidget(self._run_button("📝 បង្កើត SRT", self.run_vsrt))
+        self.btn_vsrt_stop = QPushButton("■ បញ្ឈប់បន្ទាប់ពីរឿងនេះ")
+        self.btn_vsrt_stop.setEnabled(False)
+        self.btn_vsrt_stop.clicked.connect(self._vsrt_request_stop)
+        row.addWidget(self.btn_vsrt_stop)
+        row.addStretch()
+        lay.addLayout(row)
+        self.vsrt_active, self.vsrt_queue, self.vsrt_tmp, self.vsrt_cur = False, [], None, None
+        self._vsrt_mode_changed()
+        self._vsrt_gpu_refresh()
+        return w
+
+    VSRT_NOTES = {
+        "auto": "Part មាន subtitle ក្នុងខ្លួន (.mkv ច្រើនតែមាន) → ទាញ ហើយភ្ជាប់ភ្លាម · គ្មាន → Merge → Whisper ស្តាប់ "
+                "· Folder រឿងA → រឿងA.srt (ភាសាដើម) ក្នុង Folder នោះ",
+        "whisper": "Whisper ស្តាប់សំឡេងលើកុំព្យូទ័រផ្ទាល់ — ឥតគិតថ្លៃ គ្មាន API Key · ដំឡើងម្តង (~100 MB) + model ពេលប្រើលើកដំបូង "
+                   "· មិនបកប្រែ មិនចាប់ភេទ",
+        "embedded": "ទាញតែ subtitle ដែលមានស្រាប់ក្នុងឯកសារវីដេអូ (subtitle track) — 1–2 វិនាទី · "
+                    "subtitle ដែលដុតជាប់លើរូបភាព ទាញមិនបានទេ",
+        "gemini": "Merge → Gemini · Folder រឿងA → រឿងA.srt (ភាសាខ្មែរ) ក្នុង Folder នោះ, SRT ភាសាដើមក្នុង "
+                  "SRT_ភាសាដើម · ត្រូវការ Gemini API Key (ខាងស្តាំ)",
+    }
+
+    def _vsrt_mode_changed(self):
+        mode = self.vsrt_mode.currentData()
+        self.vsrt_wbox.setVisible(mode in ("auto", "whisper"))
+        self.vsrt_gbox.setVisible(mode == "gemini")
+        self.vsrt_note.setText(self.VSRT_NOTES[mode])
+
+    def _vsrt_gpu_refresh(self):
+        """ពិនិត្យ GPU នៅខាងក្រោយ (nvidia-smi អាចចំណាយពេលបន្តិច)"""
+        def check():
+            return whisper_mod.has_nvidia(), whisper_mod.gpu_ready()
+
+        def show(result):
+            self.vsrt_has_nvidia, self.vsrt_gpu_ok = result
+            if self.vsrt_gpu_ok:
+                self.vsrt_gpu.setText("⚡ GPU")
+                self.vsrt_gpu.setToolTip("Whisper ប្រើកាត NVIDIA — លឿន")
+            else:
+                self.vsrt_gpu.setText("💻 CPU")
+                self.vsrt_gpu.setToolTip("Whisper ប្រើ CPU — model ⚡ small ល្អបំផុតសម្រាប់ CPU")
+            self.btn_vsrt_gpu.setVisible(self.vsrt_has_nvidia and not self.vsrt_gpu_ok)
+            if not self.settings.contains("vsrt_wmodel"):  # លំនាំដើម: GPU → turbo, CPU → small
+                self._select_data(self.vsrt_wmodel, "large-v3-turbo" if self.vsrt_gpu_ok else "small")
+        self.vsrt_has_nvidia, self.vsrt_gpu_ok = False, False
+        worker = Worker(check)
+        worker.done.connect(show)
+        self._start_worker(worker)
+
+    def _vsrt_install_gpu(self):
+        if self.busy:
+            return
+        if QMessageBox.question(self, "បើក GPU សម្រាប់ Whisper",
+                                "ទាញយក NVIDIA CUDA library (~1.5 GB, ម្តងគត់)។\n"
+                                "បន្ទាប់មក Whisper នឹងលឿនជាង CPU ច្រើនដង។\n\nទាញយកឥឡូវនេះ?") != QMessageBox.Yes:
+            return
+        self._vsrt_pip(whisper_mod.GPU_PACKAGES, "NVIDIA CUDA (~1.5 GB)", self._vsrt_gpu_refresh)
+
+    def _vsrt_pip(self, packages, label, then):
+        """pip install នៅខាងក្រោយ — បង្ហាញបន្ទាត់ចុងក្រោយនៃ pip ក្នុងរបារស្ថានភាព"""
+        last = {"line": ""}
+        self.begin_stages(f"ដំឡើង {label}", [f"ដំឡើង {label}"])
+        self.enter_stage(f"ដំឡើង {label}")
+        poll = QTimer(self)
+
+        def tick():
+            if not self.busy:  # ចប់ ឬបរាជ័យ → ឈប់សរសេរជាន់សារ
+                return poll.stop()
+            self.set_status(f"កំពុងដំឡើង {label}... {last['line'][:90]}")
+        poll.timeout.connect(tick)
+        poll.start(500)
+
+        def work():
+            whisper_mod.pip_install(packages, lambda line: last.__setitem__("line", line))
+
+        def done(_):
+            poll.stop()
+            self.set_result(None, f"✓ ដំឡើង {label} រួចរាល់")
+            then()
+        self.run_sync(work, f"កំពុងដំឡើង {label}...", done)
 
     def _build_merge_tab(self):
         w = QWidget()
@@ -1427,7 +1616,7 @@ class MainWindow(QMainWindow):
         opt.addStretch()
         lay.addLayout(opt)
         note = QLabel("ការកាត់ និង Ads កណ្តាលស្ថិតនៅចន្លោះស្ងាត់ក្នុងសំឡេងដើម (មិនកាត់ពាក់កណ្តាលប្រយោគ) · "
-                      "លទ្ធផលនៅក្នុង outputs/")
+                      "លទ្ធផលនៅក្នុងថត Output (ប៊ូតុង 💾 ខាងក្រោម)")
         note.setProperty("role", "muted")
         note.setWordWrap(True)
         lay.addWidget(note)
@@ -1523,7 +1712,7 @@ class MainWindow(QMainWindow):
             if s.get("trimmed"):
                 extra += f" · ✂ {fmt_dur(s['trimmed'][0])}–{fmt_dur(s['trimmed'][1])}"
             self.set_result(os.path.join(OUTPUT_DIR, s["folder"]),
-                            f"{name}: រួចរាល់ {len(s['parts'])} ផ្នែក{extra} → outputs/{s['folder']}")
+                            f"{name}: រួចរាល់ {len(s['parts'])} ផ្នែក{extra} → {out_label()}/{s['folder']}")
             QTimer.singleShot(200, self._brand_next)
 
         stage = {"analyzing": s_scan, "trimming": s_trim}
@@ -1585,7 +1774,7 @@ class MainWindow(QMainWindow):
         t.cellDoubleClicked.connect(self._batch_pick_srt)
         lay.addWidget(t, 1)
 
-        self.batch_keep_merged = QCheckBox("រក្សាទុកវីដេអូដែលបាន Merge (មុនដាក់សំឡេង) ក្នុង outputs/")
+        self.batch_keep_merged = QCheckBox("រក្សាទុកវីដេអូដែលបាន Merge (មុនដាក់សំឡេង) ក្នុងថត Output")
         lay.addWidget(self.batch_keep_merged)
         self.batch_keep_full = QCheckBox("🎞 រក្សាទុកវីដេអូពេញដែល Merge + សំឡេងបកប្រែរួច (ក្រៅពីផ្នែកៗ)")
         self.batch_keep_full.setToolTip(self.keep_full.toolTip())
@@ -1777,8 +1966,7 @@ class MainWindow(QMainWindow):
         n = self.batch_total - len(self.batch_queue)
         dub = self.dub_stages(True)
         merge = len(row["videos"]) > 1
-        self.begin_stages(f"Auto {n}/{self.batch_total}: {name}",
-                          ["អាន SRT"] + (["Merge វីដេអូ"] if merge else []) + dub)
+        self.begin_stages(f"Auto {n}/{self.batch_total}: {name}", ["អាន SRT"] + dub)
         self.enter_stage("អាន SRT")
 
         def start_dub(video, cues):
@@ -1796,14 +1984,23 @@ class MainWindow(QMainWindow):
                 return start_dub(row["videos"][0], cues)
             out_dir = OUTPUT_DIR if self.batch_keep_merged.isChecked() else tempfile.mkdtemp(prefix="auto_merge_")
             self.batch_tmp = None if out_dir == OUTPUT_DIR else out_dir
-            job = video_merge.start_job(row["videos"], out_dir, base, False, [])
-            self.enter_stage("Merge វីដេអូ")
-            self.set_busy(True)
-            self.watch_job(job, lambda s: f"{name}: កំពុង Merge {len(row['videos'])} Part {s['done']}%...",
-                           lambda s: start_dub(os.path.join(out_dir, s["file"]), cues), lambda s: "Merge វីដេអូ")
+            # Merge ស្របពេលជាមួយការបង្កើតសំឡេង (សំឡេងមិនត្រូវការវីដេអូទេ) — ដាក់សំឡេងចូលពេល Merge ចប់
+            merge_job = video_merge.start_job(row["videos"], out_dir, base, False, [])
+            self._log(f"   🧩 Merge {len(row['videos'])} Part ស្របពេលជាមួយការបង្កើតសំឡេង")
+
+            def merged_video(tts_job):
+                while True:
+                    m = srt_dub.jobs[merge_job]
+                    if m["status"] == "done":
+                        return os.path.join(out_dir, m["file"])
+                    if m["status"] == "error":
+                        raise RuntimeError(f"Merge: {m['error']}")
+                    tts_job["status"] = "merging"
+                    time.sleep(0.3)
+            start_dub(merged_video, cues)
 
         def done(s):
-            row.update(status="done", msg=f"{len(s['parts'])} ផ្នែក → outputs/{s['folder']}")
+            row.update(status="done", msg=f"{len(s['parts'])} ផ្នែក → {out_label()}/{s['folder']}")
             self._batch_cleanup_tmp()
             self._batch_render()
             self.set_result(os.path.join(OUTPUT_DIR, s["folder"]), f"{name}: រួចរាល់ {len(s['parts'])} ផ្នែក")
@@ -1851,7 +2048,7 @@ class MainWindow(QMainWindow):
         for text, fn in [("↻ ផ្ទុកឡើងវិញ", self.refresh_files), ("▶ បើក", self._files_open),
                          ("📂 បង្ហាញក្នុងថត", self._files_reveal), ("🎬 Merge", self._files_merge),
                          ("🔇 Mute", self._files_mute), ("📝 ប្រើ SRT នេះ", self._files_use_srt),
-                         ("📁 ថត outputs", lambda: open_path(OUTPUT_DIR))]:
+                         ("📁 ថត Output", lambda: open_path(OUTPUT_DIR))]:
             b = QPushButton(text)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -1894,6 +2091,15 @@ class MainWindow(QMainWindow):
             b.setEnabled(False)
             row.addWidget(b)
         self.btn_open_last.clicked.connect(lambda: open_path(self.last_result))
+        self.btn_outdir = QPushButton()
+        menu = QMenu(self.btn_outdir)
+        menu.addAction("📂 ជ្រើសថតថ្មី...", self._choose_output_dir)
+        menu.addAction("📁 បើកថត", lambda: open_path(OUTPUT_DIR))
+        menu.addAction(f"↺ ប្រើថតដើម ({os.path.basename(DEFAULT_OUTPUT_DIR)})", lambda: self.set_output_dir(DEFAULT_OUTPUT_DIR))
+        self.btn_outdir.setMenu(menu)
+        self.btn_outdir.setObjectName("ghost")
+        row.addWidget(self.btn_outdir)
+        self._sync_outdir_button()
         self.btn_reveal_last.clicked.connect(lambda: reveal(self.last_result))
         lay.addLayout(row)
 
@@ -2110,6 +2316,8 @@ class MainWindow(QMainWindow):
             self._batch_failed(msg)
         elif getattr(self, "brand_active", False):  # Logo ប៉ុណ្ណោះ: វីដេអូនេះបរាជ័យ → បន្តវីដេអូបន្ទាប់
             self._brand_failed()
+        elif getattr(self, "vsrt_active", False):  # វីដេអូ→SRT: រឿងនេះបរាជ័យ → បន្តរឿងបន្ទាប់
+            self._vsrt_failed(msg)
 
     def set_result(self, path, msg, finish=True):
         """finish=False — ការងារបន្តទៅដំណាក់កាលបន្ទាប់ (ឧ. SRT → បង្កើតសំឡេង)"""
@@ -2166,7 +2374,7 @@ class MainWindow(QMainWindow):
             return self.fail("រកមិនឃើញការងារ")
         if stage_of:
             self.enter_stage(stage_of(s))
-        if s["status"] == "mixing":  # មិនដឹងភាគរយ → progress bar រត់ទៅមក
+        if s["status"] in ("mixing", "merging"):  # មិនដឹងភាគរយ → progress bar រត់ទៅមក
             self.progress.setRange(0, 0)
         elif s["status"] == "video":
             self.progress.setRange(0, 100)
@@ -2191,7 +2399,8 @@ class MainWindow(QMainWindow):
             except Exception as e:  # noqa: BLE001
                 self.fail(str(e))
             return
-        self.set_status({"mixing": "កំពុងតម្រឹមពេលវេលា (ពន្លឿនសំឡេងដែលវែងពេក)...",
+        self.set_status({"mixing": "កំពុងដាក់សំឡេងតាមពេលវេលា...",
+                         "merging": "សំឡេងរួចរាល់ — កំពុងរង់ចាំ Merge វីដេអូចប់...",
                          "video": "កំពុងដំណើរការវីដេអូ (Logo / Ads / កាត់ជាផ្នែក)..." if self.brand_active else
                          "កំពុងដាក់សំឡេងចូលវីដេអូ និងកាត់ជាផ្នែកៗ..."}.get(s["status"]) or label(s))
 
@@ -2376,12 +2585,14 @@ class MainWindow(QMainWindow):
         keep_full = part_sec > 0 and self.keep_full.isChecked()
 
         def post(job, pcm):
+            # video អាចជា function ដែលរង់ចាំ Merge (Auto: Merge ស្របពេលជាមួយការបង្កើតសំឡេង)
+            src = video(job) if callable(video) else video
             job["folder"], job["parts"] = video_dub.mix_and_split(
-                video, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays, ads, keep_full)
+                src, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays, ads, keep_full)
 
         def done(s):
             if s.get("full"):
-                self._log(f"   🎞 វីដេអូពេញ: outputs/{s['full']}")
+                self._log(f"   🎞 វីដេអូពេញ: {out_label()}/{s['full']}")
             on_done(s)
 
         job = srt_dub.start_job(**args, post=post)
@@ -2434,7 +2645,7 @@ class MainWindow(QMainWindow):
             folder = os.path.join(OUTPUT_DIR, s["folder"])
             first = os.path.join(OUTPUT_DIR, s["parts"][0]["path"]) if s["parts"] else folder
             self.set_result(first if len(s["parts"]) == 1 else folder,
-                            f"រួចរាល់ — {len(s['parts'])} ផ្នែក ({time.time() - t0:.1f}s) — outputs/{s['folder']}")
+                            f"រួចរាល់ — {len(s['parts'])} ផ្នែក ({time.time() - t0:.1f}s) — {out_label()}/{s['folder']}")
 
         self._start_video_dub(args, video, f"{base}_dub_{time.strftime('%Y%m%d_%H%M%S')}", stages, done)
 
@@ -2461,20 +2672,13 @@ class MainWindow(QMainWindow):
                           [s_prep, s_gemini, "រក្សាទុក SRT"] + (self.dub_stages(with_video) if dub else []))
         self.enter_stage(s_prep)
 
-        def copy_source():
-            # transcribe លុបឯកសារ input ពេលចប់ → ផ្តល់ច្បាប់ចម្លង មិនមែនឯកសារដើមទេ
-            fd, tmp = tempfile.mkstemp(suffix=os.path.splitext(src)[1] or ".bin")
-            os.close(fd)
-            shutil.copyfile(src, tmp)
-            return tmp
-
         def start(tmp):
             base = backend.safe_name(os.path.splitext(os.path.basename(src))[0]) or "audio"
             job = transcribe.start_job(tmp, key, self.stt_model.currentText(), self.stt_gender.isChecked(),
                                        target, OUTPUT_DIR, base, backend.gemini_post)
             self.set_busy(True)
             action = "ស្តាប់ និងបកប្រែ" if target else "ស្តាប់"
-            self.watch_job(job, lambda s: f"Gemini កំពុង{action} {s['done']}/{s['total']} ផ្នែក (10 នាទី/ផ្នែក)...",
+            self.watch_job(job, lambda s: f"Gemini កំពុង{action} {s['done']}/{s['total']} ផ្នែក (5 នាទី/ផ្នែក)...",
                            done, lambda s: s_gemini, "ផ្នែក")
 
         def done(s):
@@ -2490,7 +2694,334 @@ class MainWindow(QMainWindow):
             if dub:
                 QTimer.singleShot(300, lambda: self.run_srt(chained=True))
 
-        self.run_sync(copy_source, "កំពុងរៀបចំឯកសារ...", start)
+        self.run_sync(lambda: self._audio_for_gemini(src), "កំពុងរៀបចំឯកសារ...", start)
+
+    @staticmethod
+    def _audio_for_gemini(src):
+        """transcribe លុប input ពេលចប់ → ផ្តល់ច្បាប់ចម្លង។ វីដេអូ → ចម្លងតែសំឡេង (មិន decode, តូច ហើយលឿន
+        ជាងចម្លងវីដេអូទាំងមូល)"""
+        if os.path.splitext(src)[1].lower() not in VIDEO_EXT:
+            fd, tmp = tempfile.mkstemp(suffix=os.path.splitext(src)[1] or ".bin")
+            os.close(fd)
+            shutil.copyfile(src, tmp)
+            return tmp
+        fd, tmp = tempfile.mkstemp(suffix=".mka")
+        os.close(fd)
+        proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-map", "0:a:0",
+                               "-vn", "-sn", "-dn", "-c:a", "copy", tmp],
+                              capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if proc.returncode != 0:
+            os.remove(tmp)
+            err = proc.stderr.decode("utf-8", "replace")
+            if "matches no streams" in err or "does not contain any stream" in err:
+                raise RuntimeError(f"{os.path.basename(src)} គ្មានសំឡេង")
+            raise RuntimeError(f"អានសំឡេងពី {os.path.basename(src)} មិនបាន: {err[-200:]}")
+        return tmp
+
+    # ---- វីដេអូ → SRT ----
+    # ---- បញ្ជីរឿង (Folder) ----
+    def _vsrt_add(self, items):
+        """items = [(folder, [videos], ឈ្មោះ SRT)]"""
+        known = {(r["folder"], tuple(r["videos"])) for r in self.vsrt_rows}
+        added = 0
+        for folder, videos, stem in items:
+            if videos and (folder, tuple(videos)) not in known:
+                self.vsrt_rows.append({"folder": folder, "videos": videos, "stem": stem, "status": "waiting",
+                                       "msg": ""})
+                known.add((folder, tuple(videos)))
+                added += 1
+        self._vsrt_render()
+        self.set_status(f"បានបន្ថែម {added} រឿង" if added else "រកមិនឃើញ Folder ដែលមានវីដេអូ", not added)
+
+    def _vsrt_folders(self, folders):
+        items = []
+        for folder in folders:
+            folder = os.path.normpath(folder)
+            videos, _ = self._scan_folder(folder)
+            items.append((folder, videos, os.path.basename(folder) or "video"))
+        self._vsrt_add(items)
+
+    def _vsrt_add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "ជ្រើស Folder រឿង")
+        if folder:
+            self._vsrt_folders([folder])
+
+    def _vsrt_add_parent(self):
+        parent = QFileDialog.getExistingDirectory(self, "ជ្រើស Folder មេ (ដែលមាន Folder រឿងនៅខាងក្នុង)")
+        if parent:
+            subs = sorted((os.path.join(parent, d) for d in os.listdir(parent)
+                           if os.path.isdir(os.path.join(parent, d))), key=lambda p: natural_key(os.path.basename(p)))
+            self._vsrt_folders([parent] + subs)
+
+    def _vsrt_add_videos(self):
+        """វីដេអូនីមួយៗ = រឿងមួយ (មិន Merge) → <ឈ្មោះវីដេអូ>.srt"""
+        paths, _ = QFileDialog.getOpenFileNames(self, "ជ្រើសវីដេអូ", "", VIDEO_FILTER)
+        self._vsrt_add([(os.path.dirname(p), [p], os.path.splitext(os.path.basename(p))[0])
+                        for p in sorted(paths, key=lambda p: natural_key(os.path.basename(p)))])
+
+    def _vsrt_remove(self):
+        if self.vsrt_active:
+            return
+        for r in sorted({i.row() for i in self.vsrt_table.selectedIndexes()}, reverse=True):
+            del self.vsrt_rows[r]
+        self._vsrt_render()
+
+    def _vsrt_clear(self):
+        if not self.vsrt_active:
+            self.vsrt_rows = []
+            self._vsrt_render()
+
+    def _vsrt_render(self):
+        t = self.vsrt_table
+        checked = [t.item(r, 0).checkState() == Qt.Checked if t.item(r, 0) else True for r in range(t.rowCount())]
+        t.setRowCount(len(self.vsrt_rows))
+        for r, row in enumerate(self.vsrt_rows):
+            on = QTableWidgetItem()
+            on.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            on.setCheckState(Qt.Checked if (checked[r] if r < len(checked) else True) else Qt.Unchecked)
+            n = len(row["videos"])
+            srt = os.path.join(row["folder"], row["stem"] + ".srt")
+            text, color = self._STATUS[row["status"]]
+            items = [on, QTableWidgetItem(os.path.basename(row["folder"]) if n > 1 or row["stem"] ==
+                                          os.path.basename(row["folder"]) else os.path.basename(row["videos"][0])),
+                     QTableWidgetItem(f"{n} Part → Merge" if n > 1 else "1 វីដេអូ"),
+                     QTableWidgetItem(("⚠ ជំនួស " if os.path.exists(srt) and row["status"] == "waiting" else "")
+                                      + row["stem"] + ".srt"),
+                     QTableWidgetItem(f"{text} {row['msg']}".strip())]
+            items[1].setToolTip(row["folder"])
+            items[2].setToolTip("\n".join(os.path.basename(v) for v in row["videos"]))
+            items[3].setToolTip(srt)
+            items[4].setForeground(QColor(theme.C[color]))
+            items[4].setToolTip(row["msg"])
+            for col, item in enumerate(items):
+                t.setItem(r, col, item)
+
+    # ---- ដំណើរការ ----
+    def run_vsrt(self):
+        if self.busy or self.vsrt_active or not self._check_ffmpeg():
+            return
+        t = self.vsrt_table
+        queue = [r for r in range(len(self.vsrt_rows)) if t.item(r, 0) and t.item(r, 0).checkState() == Qt.Checked]
+        if not queue:
+            return self.set_status("សូមបន្ថែម Folder រឿង (ឬវីដេអូ) ហើយធីកយ៉ាងហោចណាស់មួយ", True)
+        mode = self.vsrt_mode.currentData()
+        key = ""
+        if mode == "gemini":
+            key = self.gemini_key()
+            if not key:
+                return self.set_status("សូមបញ្ចូល Gemini API Key (ខាងស្តាំ) — ឬប្រើវិធី Whisper (ឥតគិតថ្លៃ)", True)
+        beside = self.vsrt_beside.isChecked()
+        if beside:
+            exist = [r for r in queue if os.path.exists(self._vsrt_target(self.vsrt_rows[r]))]
+            if exist:
+                names = "\n".join("• " + self._vsrt_target(self.vsrt_rows[r]) for r in exist[:8])
+                more = f"\n... និង {len(exist) - 8} ទៀត" if len(exist) > 8 else ""
+                answer = QMessageBox.question(
+                    self, "មាន SRT រួចហើយ",
+                    f"រឿង {len(exist)} មាន .srt រួចហើយ:\n{names}{more}\n\n"
+                    "Yes = ជំនួសឯកសារចាស់ · No = រំលងរឿងទាំងនោះ",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+                if answer == QMessageBox.Cancel:
+                    return
+                if answer == QMessageBox.No:
+                    for r in exist:
+                        self.vsrt_rows[r].update(status="skipped", msg="មាន SRT រួចហើយ")
+                    queue = [r for r in queue if r not in exist]
+                    self._vsrt_render()
+                    if not queue:
+                        return self.set_status("រឿងទាំងអស់មាន SRT រួចហើយ")
+        lang = self.vsrt_wlang.currentData()
+        need_whisper = mode == "whisper" or (mode == "auto" and any(
+            not whisper_mod.pick_track(whisper_mod.embedded_tracks(v), lang)
+            for r in queue for v in self.vsrt_rows[r]["videos"]))
+        if need_whisper and not whisper_mod.installed():
+            if QMessageBox.question(self, "ដំឡើង Whisper",
+                                    "Whisper (ស្តាប់សំឡេងលើកុំព្យូទ័រ ឥតគិតថ្លៃ) ត្រូវដំឡើងម្តង (~100 MB)។\n"
+                                    "Model នឹងទាញយកពេលប្រើលើកដំបូង (0.5–3 GB តាមកម្រិតដែលជ្រើស)។\n\n"
+                                    "ដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
+                return
+            return self._vsrt_pip(whisper_mod.WHISPER_PACKAGES, "Whisper", self.run_vsrt)
+        for r in queue:
+            self.vsrt_rows[r].update(status="waiting", msg="")
+        self.vsrt_queue, self.vsrt_total, self.vsrt_done = list(queue), len(queue), []
+        self.vsrt_active, self.vsrt_stop, self.vsrt_cur = True, False, None
+        self.vsrt_opts = {"mode": mode, "key": key, "model": self.vsrt_model.currentText(),
+                          "target": self.vsrt_target.currentData(), "gender": self.vsrt_gender.isChecked(),
+                          "beside": beside, "wmodel": self.vsrt_wmodel.currentData(), "wlang": lang,
+                          "gpu": self.vsrt_gpu_ok}
+        self.btn_vsrt_stop.setEnabled(True)
+        self.vsrt_t0 = time.time()
+        how = {"auto": "Auto", "whisper": f"Whisper {self.vsrt_wmodel.currentData()} · "
+                                          f"{'GPU' if self.vsrt_gpu_ok else 'CPU'}",
+               "embedded": "subtitle ស្រាប់", "gemini": "Gemini"}[mode]
+        self._log(f"📝 វីដេអូ→SRT — {len(queue)} រឿង ({how})")
+        self._vsrt_render()
+        self._vsrt_next()
+
+    @staticmethod
+    def _vsrt_target(row):
+        return os.path.join(row["folder"], row["stem"] + ".srt")
+
+    def _vsrt_next(self):
+        self._vsrt_cleanup()
+        if self.vsrt_stop or not self.vsrt_queue:
+            return self._vsrt_finish()
+        r = self.vsrt_cur = self.vsrt_queue.pop(0)
+        row = self.vsrt_rows[r]
+        row.update(status="running", msg="")
+        self._vsrt_render()
+        videos, stem = row["videos"], row["stem"]
+        name = os.path.basename(row["folder"]) if len(videos) > 1 else os.path.basename(videos[0])
+        n = self.vsrt_total - len(self.vsrt_queue)
+        o = self.vsrt_opts
+        mode, multi = o["mode"], len(videos) > 1
+        s_save, s_emb, s_whisper, s_merge = "រក្សាទុក SRT", "subtitle ស្រាប់", "Whisper ស្តាប់", "Merge វីដេអូ"
+        s_gemini = "Gemini ស្តាប់ & បកប្រែ" if o["target"] else "Gemini ស្តាប់"
+        merge = [s_merge] if multi else []
+        stages = {"auto": [s_emb] + merge + [s_whisper, s_save], "whisper": merge + [s_whisper, s_save],
+                  "embedded": [s_emb, s_save], "gemini": merge + ["ទាញសំឡេងចេញ", s_gemini, s_save]}[mode]
+        self.begin_stages(f"📝 {n}/{self.vsrt_total}: {name}" + (f" ({len(videos)} Part)" if multi else ""), stages)
+        self.vsrt_tmp = tempfile.mkdtemp(prefix="vsrt_")
+        out_name = f"{stem}.srt"
+        out_tmp = os.path.join(self.vsrt_tmp, out_name)
+
+        def done(s):
+            self.enter_stage(s_save)
+            saved = self._vsrt_save(row["folder"], stem, s, o["beside"])
+            self.vsrt_done.append(saved[0])
+            row.update(status="done", msg=f"{s['lines']} បន្ទាត់")
+            self._vsrt_render()
+            for path in saved:
+                self._log(f"   💾 {path}")
+            self.set_result(saved[0], f"{name}: បាន SRT {s['lines']} បន្ទាត់ → {os.path.basename(saved[0])}")
+            QTimer.singleShot(200, self._vsrt_next)
+
+        def with_source(then):
+            """វីដេអូតែមួយ → ប្រើផ្ទាល់ · ច្រើន Part → Merge (ចម្លងផ្ទាល់ ដូចផ្ទាំង Auto) ជាមុនសិន"""
+            if not multi:
+                return then(videos[0])
+            self.enter_stage(s_merge)
+            job = video_merge.start_job(videos, self.vsrt_tmp, backend.safe_name(stem) or "story", False, [])
+            self.set_busy(True)
+            self.watch_job(job, lambda s: f"{name}: កំពុង Merge {len(videos)} Part {s['done']}%...",
+                           lambda s: then(os.path.join(self.vsrt_tmp, s["file"])), lambda s: s_merge)
+
+        def start_whisper(src):
+            self.enter_stage(s_whisper)
+            job = whisper_mod.start_job(src, out_tmp, o["wmodel"], o["wlang"], o["gpu"])
+            self.set_busy(True)
+
+            def label(s):
+                if s["status"] == "download":
+                    return f"កំពុងទាញយក model Whisper {o['wmodel']} (ម្តងគត់) {s['done']}%..."
+                return (f"{name}: Whisper កំពុងស្តាប់ ({s.get('device') or '...'}) "
+                        f"{fmt_dur(s['done'])} / {fmt_dur(s['total'])}")
+
+            def finished(s):
+                if s.get("language"):
+                    self._log(f"   🎙 ភាសា: {s['language']} · {s.get('device')}")
+                done({"file": out_name, "lines": s["lines"]})
+            self.watch_job(job, label, finished, lambda s: s_whisper)
+
+        def start_gemini(src):
+            self.enter_stage("ទាញសំឡេងចេញ")
+            base = backend.safe_name(stem) or "video"
+
+            def start(audio):
+                job = transcribe.start_job(audio, o["key"], o["model"], o["gender"], o["target"], self.vsrt_tmp,
+                                           base, backend.gemini_post)
+                self.set_busy(True)
+                self.watch_job(job, lambda s: f"{name}: Gemini កំពុងស្តាប់ {s['done']}/{s['total']} ផ្នែក...",
+                               lambda s: done(dict(s, lines=len(s["cues"]))), lambda s: s_gemini, "ផ្នែក")
+            self.run_sync(lambda: self._audio_for_gemini(src), f"{name}: កំពុងទាញសំឡេងចេញ...", start)
+
+        if mode in ("auto", "embedded"):
+            self.enter_stage(s_emb)
+
+            def after(result):
+                if result:
+                    count, tracks = result
+                    self._log(f"   📄 subtitle ស្រាប់: {tracks}" + (f" · ភ្ជាប់ {len(videos)} Part" if multi else ""))
+                    return done({"file": out_name, "lines": count})
+                if mode == "embedded":
+                    raise RuntimeError(f"{name}: គ្មាន subtitle (អក្សរ) ក្នុងវីដេអូ"
+                                       + (" គ្រប់ Part" if multi else "") + " — សាកវិធី Whisper")
+                self._log("   គ្មាន subtitle ស្រាប់ → " + ("Merge → " if multi else "") + "Whisper")
+                with_source(start_whisper)
+            return self.run_sync(lambda: self._vsrt_embedded(videos, o["wlang"], out_tmp),
+                                 f"{name}: កំពុងរក subtitle ក្នុងវីដេអូ...", after)
+        with_source(start_whisper if mode == "whisper" else start_gemini)
+
+    @staticmethod
+    def _vsrt_embedded(videos, lang, out_srt):
+        """subtitle ស្រាប់ក្នុង Part នីមួយៗ → SRT តែមួយ (រំកិលពេលតាមរយៈពេល Part មុនៗ ដូច Merge)។
+        Part ណាមួយគ្មាន → None (ត្រូវប្រើ Whisper)"""
+        cues, offset, used = [], 0.0, []
+        tmp = out_srt + ".part.srt"
+        for video in videos:
+            track = whisper_mod.pick_track(whisper_mod.embedded_tracks(video), lang)
+            if not track:
+                return None
+            whisper_mod.extract_embedded(video, track, tmp)
+            with open(tmp, encoding="utf-8-sig", errors="replace") as f:
+                for c in srt_dub.parse_srt(f.read()):
+                    cues.append((c["start"] / 1000 + offset, c["end"] / 1000 + offset, c["text"]))
+            used.append(track["lang"] or f"track {track['index'] + 1}")
+            offset += video_dub.probe(video)[0]
+        os.remove(tmp)
+        if not cues:
+            return None
+        with open(out_srt, "w", encoding="utf-8") as f:
+            for i, (a, b, text) in enumerate(cues, 1):
+                f.write(f"{i}\n{whisper_mod._fmt(a)} --> {whisper_mod._fmt(b)}\n{text}\n\n")
+        return len(cues), ", ".join(dict.fromkeys(used))
+
+    def _vsrt_save(self, folder, stem, s, beside):
+        """ចម្លង SRT ពីថតបណ្តោះអាសន្នទៅ Folder រឿង → [SRT ចម្បង, SRT ភាសាដើម]"""
+        files = [s["file"]] + ([s["original_file"]] if s.get("original_file") else [])
+        targets = [os.path.join(folder, stem + ".srt"), os.path.join(folder, "SRT_ភាសាដើម", stem + ".srt")]
+        if beside:
+            try:
+                return [self._copy_srt(os.path.join(self.vsrt_tmp, f), dst) for f, dst in zip(files, targets)]
+            except OSError as e:  # Folder សរសេរមិនបាន (ឧ. USB ការពារ) → ថត Output
+                self._log(f"   ⚠ រក្សាទុកក្នុង Folder រឿងមិនបាន ({e}) — ប្រើថត Output ជំនួស")
+        return [self._copy_srt(os.path.join(self.vsrt_tmp, f), os.path.join(OUTPUT_DIR, f"{stem}.srt" if i == 0
+                                                                             else f"{stem}_orig.srt"))
+                for i, f in enumerate(files)]
+
+    @staticmethod
+    def _copy_srt(src, dst):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+        return dst
+
+    def _vsrt_cleanup(self):
+        if self.vsrt_tmp:
+            shutil.rmtree(self.vsrt_tmp, ignore_errors=True)
+            self.vsrt_tmp = None
+
+    def _vsrt_failed(self, msg=""):
+        if self.vsrt_cur is not None:
+            self.vsrt_rows[self.vsrt_cur].update(status="failed", msg=msg)
+            self._vsrt_render()
+        QTimer.singleShot(200, self._vsrt_next)
+
+    def _vsrt_request_stop(self):
+        self.vsrt_stop = True
+        self.btn_vsrt_stop.setEnabled(False)
+        self.set_status("នឹងបញ្ឈប់បន្ទាប់ពីវីដេអូនេះចប់")
+
+    def _vsrt_finish(self):
+        self.vsrt_active = False
+        self.btn_vsrt_stop.setEnabled(False)
+        done, left = len(self.vsrt_done), len(self.vsrt_queue)
+        self.vsrt_cur = None
+        msg = (f"📝 ចប់ — ✓ {done}/{self.vsrt_total} SRT" + (f" · បញ្ឈប់ (នៅសល់ {left})" if left else "") +
+               f" · សរុប {fmt_dur(time.time() - self.vsrt_t0)}")
+        self._log(msg)
+        self.set_status(msg, done < self.vsrt_total)
+        if self.vsrt_done:
+            self.last_result = self.vsrt_done[-1]
 
     # ---- Merge / Mute ----
     def run_merge(self, paths=None):
@@ -2534,6 +3065,37 @@ class MainWindow(QMainWindow):
                             f"រួចរាល់ — {len(s['files'])} {what} ({time.time() - t0:.1f}s)")
         self.set_busy(True, "កំពុង Mute...")
         self.watch_job(job, lambda s: f"កំពុង Mute {s['done']}%...", done)
+
+    # ================= ថតលទ្ធផល =================
+    def _sync_outdir_button(self):
+        self.btn_outdir.setText(f"💾 Output: {out_label()} ▾")
+        self.btn_outdir.setToolTip(f"ថតរក្សាទុកលទ្ធផលទាំងអស់:\n{OUTPUT_DIR}")
+
+    def _choose_output_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "ជ្រើសថតរក្សាទុកលទ្ធផល", OUTPUT_DIR)
+        if path:
+            self.set_output_dir(path)
+
+    def set_output_dir(self, path, save=True):
+        """ប្តូរថតលទ្ធផលសម្រាប់ការងារទាំងអស់ (GUI + backend) — ត្រឡប់ False បើប្រើមិនបាន"""
+        global OUTPUT_DIR
+        path = os.path.normpath(os.path.abspath(path))
+        try:
+            os.makedirs(path, exist_ok=True)
+            probe = os.path.join(path, ".aiteam1_write_test")
+            with open(probe, "w"):
+                pass
+            os.remove(probe)
+        except OSError as e:
+            self.set_status(f"ប្រើថតនេះមិនបាន: {e}", True)
+            return False
+        OUTPUT_DIR = backend.OUTPUT_DIR = path
+        if save:
+            self.settings.setValue("output_dir", "" if path == os.path.normpath(DEFAULT_OUTPUT_DIR) else path)
+            self.set_status(f"💾 លទ្ធផលនឹងរក្សាទុកក្នុង: {path}")
+        self._sync_outdir_button()
+        self.refresh_files()
+        return True
 
     # ================= files tab =================
     def refresh_files(self):
@@ -2612,7 +3174,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(1)
 
     # ================= settings =================
-    _CHECKS = ["auto_gender", "strip_parens", "fit", "orig_mute", "stt_gender", "stt_dub", "stt_video",
+    _CHECKS = ["auto_gender", "strip_parens", "fit", "orig_mute", "stt_gender", "stt_dub", "stt_video", "vsrt_gender",
                "batch_keep_merged", "keep_full", "ov_confirm", "brand_trim", "brand_trim_snap"]
     _SPINS = ["max_speed", "workers", "orig_volume", "part_minutes", "brand_part"]
     # key ថ្មី → លំនាំដើមថ្មី (Mute សំឡេងដើម = បើក) មិនត្រូវជាន់ដោយតម្លៃចាស់ដែលបានរក្សាទុក
@@ -2630,6 +3192,13 @@ class MainWindow(QMainWindow):
         self.stt_model.setCurrentText(s.value("stt_model", transcribe.MODELS[0]))
         i = self.stt_target.findData(s.value("stt_target", "km"))
         self.stt_target.setCurrentIndex(max(i, 0))
+        self._select_data(self.vsrt_target, s.value("vsrt_target", "km"))
+        self._select_data(self.vsrt_mode, s.value("vsrt_mode", "auto"))
+        self._select_data(self.vsrt_wlang, s.value("vsrt_wlang", ""))
+        if s.contains("vsrt_wmodel"):
+            self._select_data(self.vsrt_wmodel, s.value("vsrt_wmodel"))
+        self.vsrt_model.setCurrentText(s.value("vsrt_model", transcribe.MODELS[0]))
+        (self.vsrt_outdir if s.value("vsrt_place", "beside") == "output" else self.vsrt_beside).setChecked(True)
         self.audio_format.setCurrentText(s.value("audio_format", "mp3"))
         for name in self._CHECKS:
             key = self._KEYS.get(name, name)
@@ -2639,6 +3208,9 @@ class MainWindow(QMainWindow):
             if s.contains(name):
                 widget = getattr(self, name)
                 widget.setValue(type(widget.value())(float(s.value(name))))
+        if not s.contains("workers_v2"):  # ម្តងគត់: លំនាំដើមចាស់ (12) → 32 ដើម្បីលឿនជាងមុន
+            self.workers.setValue(max(self.workers.value(), 32))
+            s.setValue("workers_v2", True)
         self._ov_load()
         for kind, cb in self.brand_use.items():
             if s.contains(f"brand_use_{kind}"):
@@ -2646,9 +3218,13 @@ class MainWindow(QMainWindow):
         for name in ("brand_trim_start", "brand_trim_len"):
             if s.contains(name):
                 getattr(self, name).setTime(QTime(0, 0).addSecs(int(float(s.value(name)))))
+        saved = s.value("output_dir", "")
+        if saved and not self.set_output_dir(saved, save=False):
+            self._log(f"⚠ ថត Output “{saved}” ប្រើមិនបាន (ឧ. ដោត USB/Drive មិនទាន់) — ប្រើថតដើមជំនួស")
         geom = s.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
+        self._fit_to_screen()
 
     def _save_settings(self):
         s = self.settings
@@ -2668,6 +3244,12 @@ class MainWindow(QMainWindow):
                 s.setValue(f"voice_{gender}_{self.engine()}", combo.currentData())
         s.setValue("stt_model", self.stt_model.currentText())
         s.setValue("stt_target", self.stt_target.currentData())
+        s.setValue("vsrt_target", self.vsrt_target.currentData())
+        s.setValue("vsrt_mode", self.vsrt_mode.currentData())
+        s.setValue("vsrt_wlang", self.vsrt_wlang.currentData())
+        s.setValue("vsrt_wmodel", self.vsrt_wmodel.currentData())
+        s.setValue("vsrt_model", self.vsrt_model.currentText())
+        s.setValue("vsrt_place", "output" if self.vsrt_outdir.isChecked() else "beside")
         s.setValue("audio_format", self.audio_format.currentText())
         for name in self._CHECKS:
             s.setValue(self._KEYS.get(name, name), getattr(self, name).isChecked())
@@ -2713,7 +3295,13 @@ class MainWindow(QMainWindow):
         self.btn_theme = QPushButton()
         self.btn_update = QPushButton("🔄 Update")
         about = QPushButton("ⓘ")
-        for b in (self.btn_theme, self.btn_update, about):
+        self.btn_scale = QPushButton(f"🔍 {self._scale_label(self.settings.value('ui_scale', 'auto'))} ▾")
+        self.btn_scale.setToolTip("ទំហំកម្មវិធី — Auto ប្តូរតាមទំហំអេក្រង់ និង Windows Scale")
+        menu = QMenu(self.btn_scale)
+        for key, label in UI_SCALES:
+            menu.addAction(label, lambda k=key: self._set_ui_scale(k))
+        self.btn_scale.setMenu(menu)
+        for b in (self.btn_scale, self.btn_theme, self.btn_update, about):
             b.setObjectName("ghost")
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
@@ -2725,6 +3313,30 @@ class MainWindow(QMainWindow):
         about.clicked.connect(self._about)
         self._sync_theme_button()
         return header
+
+    @staticmethod
+    def _scale_label(key):
+        return "Auto" if key == "auto" else f"{key}%"
+
+    def _set_ui_scale(self, key):
+        if key == self.settings.value("ui_scale", "auto"):
+            return
+        self.settings.setValue("ui_scale", key)
+        self.btn_scale.setText(f"🔍 {self._scale_label(key)} ▾")
+        if self.busy:
+            return self.set_status("ទំហំថ្មីនឹងប្រើពេលបើកកម្មវិធីលើកក្រោយ")
+        if QMessageBox.question(self, "ទំហំកម្មវិធី", "ត្រូវបើកកម្មវិធីឡើងវិញ ដើម្បីប្តូរទំហំ។ បើកឡើងវិញឥឡូវនេះ?") \
+                == QMessageBox.Yes:
+            self._restart()
+
+    def _fit_to_screen(self):
+        """កុំឱ្យបង្អួចធំជាងអេក្រង់ (ឧ. ទំហំដែលបានរក្សាទុកពី Scale ផ្សេង)"""
+        screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        if self.width() > avail.width() - 16 or self.height() > avail.height() - 40:
+            self.resize(min(self.width(), avail.width() - 16), min(self.height(), avail.height() - 40))
+        if not avail.contains(self.frameGeometry().topLeft()):
+            self.move(avail.left() + 8, avail.top() + 8)
 
     def _sync_theme_button(self):
         self.btn_theme.setText("☀️ Light" if theme.mode == "dark" else "🌙 Dark")
@@ -2797,6 +3409,10 @@ class MainWindow(QMainWindow):
                 self.set_status(f"កម្មវិធីនេះជាកំណែចុងក្រោយហើយ (v{info['current']})")
                 QMessageBox.information(self, "Update", f"អ្នកកំពុងប្រើកំណែចុងក្រោយហើយ (v{info['current']})។")
             return
+        if silent:  # Update ស្វ័យប្រវត្តិ: ទាញយកនៅខាងក្រោយ → បើកឡើងវិញពេលទំនេរ
+            if updater.is_dev_copy():
+                return self.set_status(f"🔔 GitHub មាន v{info['latest']} (ថតម្ចាស់ — មិន Update ស្វ័យប្រវត្តិ)")
+            return self._auto_update(info)
         if self.busy:
             self.set_status(f"🔔 មាន Update v{info['latest']} — នឹងសួរម្តងទៀតពេលការងារចប់ (ជំនួយ → ពិនិត្យ Update)")
             return
@@ -2809,17 +3425,74 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.Yes:
             self._install_update(info)
 
+    @staticmethod
+    def _apply_update(info):
+        count = updater.download_and_apply(info)
+        if "requirements.txt" in info["changed"]:  # library ថ្មី
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r",
+                            os.path.join(updater.APP_DIR, "requirements.txt")],
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return count
+
+    def _auto_update(self, info):
+        """ទាញយកនៅខាងក្រោយ (មិនរំខានការងារកំពុងដំណើរការ) ហើយបើកឡើងវិញពេលកម្មវិធីទំនេរ"""
+        if getattr(self, "_auto_updating", False):
+            return
+        self._auto_updating = True
+        self._log(f"🔄 កំពុង Update ស្វ័យប្រវត្តិ v{info['current']} → v{info['latest']}...")
+        worker = Worker(lambda: self._apply_update(info))
+
+        def done(count):
+            self._auto_updating = False
+            self._log(f"✅ Update v{info['latest']} រួចរាល់ ({count} ឯកសារ)")
+            self._update_ready = info["latest"]
+            self._idle_timer = QTimer(self)
+            self._idle_timer.timeout.connect(self._restart_when_idle)
+            self._idle_timer.start(2000)
+
+        def failed(e):
+            self._auto_updating = False
+            self._log(f"⚠ Update ស្វ័យប្រវត្តិមិនបាន: {e[-200:]} — នឹងព្យាយាមម្តងទៀតពេលក្រោយ")
+        worker.done.connect(done)
+        worker.failed.connect(failed)
+        self._start_worker(worker)
+
+    def _restart_when_idle(self):
+        if self.busy or any(getattr(self, a, False) for a in ("batch_active", "brand_active", "vsrt_active")):
+            return  # រង់ចាំការងារចប់សិន (កុំសរសេរជាន់សារវឌ្ឍនភាព)
+        self._idle_timer.stop()
+        box = QMessageBox(self)
+        box.setWindowTitle("Update រួចរាល់")
+        box.setIcon(QMessageBox.Information)
+        now = box.addButton("🔄 បើកឡើងវិញឥឡូវ", QMessageBox.AcceptRole)
+        box.addButton("ពេលក្រោយ", QMessageBox.RejectRole)
+        left = [10]
+
+        def tick():
+            box.setText(f"កម្មវិធីបាន Update ទៅ v{self._update_ready} ហើយ។\n\n"
+                        f"នឹងបើកឡើងវិញដោយស្វ័យប្រវត្តិក្នុង {left[0]} វិនាទី...")
+            if left[0] <= 0:
+                countdown.stop()
+                box.done(0)
+                self._restart()
+            left[0] -= 1
+        countdown = QTimer(box)
+        countdown.timeout.connect(tick)
+        tick()
+        countdown.start(1000)
+        box.exec_()
+        countdown.stop()
+        if box.clickedButton() is now:
+            self._restart()
+        else:
+            self.set_status(f"✅ Update v{self._update_ready} — នឹងប្រើពេលបើកកម្មវិធីលើកក្រោយ")
+
     def _install_update(self, info):
         self.begin_stages(f"Update v{info['current']} → v{info['latest']}", ["ទាញយក", "ដំឡើង"])
         self.enter_stage("ទាញយក")
 
         def work():
-            count = updater.download_and_apply(info)
-            if "requirements.txt" in info["changed"]:  # library ថ្មី
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r",
-                                os.path.join(updater.APP_DIR, "requirements.txt")],
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            return count
+            return self._apply_update(info)
 
         def done(count):
             self.enter_stage("ដំឡើង")
@@ -2868,13 +3541,64 @@ def setup_font(qt_app):
     return font
 
 
+UI_SCALES = [("auto", "🔍 Auto (តាមអេក្រង់)"), ("70", "70%"), ("80", "80%"), ("90", "90%"), ("100", "100%"),
+             ("110", "110%"), ("125", "125%")]
+DESIGN_SIZE = (1320, 880)  # ទំហំបង្អួចដែលកម្មវិធីត្រូវការ (px ឡូជីខល) — Auto បង្រួមបើអេក្រង់តូចជាងនេះ
+
+
+def _work_area():
+    """ផ្ទៃអេក្រង់ដែលប្រើបាន (គ្មាន taskbar) ជា px ឡូជីខល (បន្ទាប់ពី Windows Scale) — មុនបង្កើត QApplication"""
+    try:
+        import ctypes
+
+        class Rect(ctypes.Structure):
+            _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long), ("r", ctypes.c_long), ("b", ctypes.c_long)]
+        user32 = ctypes.windll.user32
+        r = Rect()
+        if not user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0):  # SPI_GETWORKAREA
+            return None
+        k = 96 / (user32.GetDpiForSystem() or 96)  # process មិនទាន់ DPI-aware → 96 (តម្លៃជាឡូជីខលស្រាប់)
+        return (r.r - r.l) * k, (r.b - r.t) * k
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def ui_scale(choice):
+    """កត្តាទំហំ UI: Auto = 100% បើអេក្រង់ធំគ្រប់គ្រាន់ បើមិនដូច្នោះទេ បង្រួមឱ្យសមនឹងអេក្រង់ (មិនតូចជាង 65%)"""
+    if choice and choice != "auto":
+        try:
+            return min(max(int(choice) / 100, 0.5), 2.0)
+        except ValueError:
+            pass
+    area = _work_area()
+    if not area:
+        return 1.0
+    return max(0.65, min(1.0, area[0] / DESIGN_SIZE[0], area[1] / DESIGN_SIZE[1]))
+
+
+def setup_scaling(choice):
+    """ត្រូវហៅមុនបង្កើត QApplication — ប្រើ Windows Scale ពិត (150% = 1.5, មិនបង្គត់ទៅ 2) × ទំហំ UI"""
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    if hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    os.environ["QT_SCALE_FACTOR"] = f"{ui_scale(choice):.3f}"
+
+
 def main():
     updater.apply_pending()  # ឯកសារ Update ដែលមិនទាន់បានដាក់ពីលើកមុន
     ffmpeg_setup.add_to_path()  # ffmpeg ដែលកម្មវិធីបានទាញយក
     sys.excepthook = _excepthook
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    setup_scaling(QSettings("KhmerTTS", "Studio").value("ui_scale", "auto"))
+    try:  # taskbar បង្ហាញ icon របស់កម្មវិធី (មិនមែន icon Python)
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AITeam1.App")
+    except Exception:  # noqa: BLE001
+        pass
     qt_app = QApplication(sys.argv)
+    icon = os.path.join(backend.BASE_DIR, "icon.ico")
+    if os.path.isfile(icon):
+        qt_app.setWindowIcon(QIcon(icon))
     qt_app.setStyle("Fusion")
     setup_font(qt_app)
     theme.apply(qt_app, QSettings("KhmerTTS", "Studio").value("theme", "dark"))

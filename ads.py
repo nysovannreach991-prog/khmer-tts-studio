@@ -92,6 +92,39 @@ class _Scaled:
             self.progress["done"] = min(99, int(self.offset + value * self.share / 100))
 
 
+def ad_chains(idx, label, info, w, h, fps, volume):
+    """filter សម្រាប់ Ads (input idx) → [v{label}][a{label}]: ទំហំ/fps/សំឡេងដូចវីដេអូមេ"""
+    chains = [f"[{idx}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+              f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},format=yuv420p,"
+              f"setpts=PTS-STARTPTS[v{label}]"]
+    if info["audio"]:
+        vol = f",volume={volume / 100:.2f}" if volume != 100 else ""
+        chains.append(f"[{idx}:a]aresample=48000,aformat=channel_layouts=stereo{vol},asetpts=PTS-STARTPTS[a{label}]")
+    else:
+        chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['duration']:.3f}[a{label}]")
+    return chains
+
+
+def layout(bounds, cues, spec):
+    """គម្រោង Ads សម្រាប់ការ encode តែម្តង (មិនបាច់ encode វីដេអូទាំងមូលម្តងទៀត)។
+    bounds = [(a, b), ...] ផ្នែកដើម (វិនាទី) → [[("main", t0, t1) | ("ad", path), ...] ក្នុងផ្នែកនីមួយៗ], ចំនួន Ads"""
+    spec = _effective(spec)
+    todo = plan([(None, b - a) for a, b in bounds], cues, spec)
+    mid_ad, end_ad = ad_for(spec, "mid"), ad_for(spec, "end")
+    parts, count = [], 0
+    for i, (a, b) in enumerate(bounds):
+        j = todo.get(i, {"mid": None, "end": False})
+        if j["mid"] is not None:
+            parts.append([("main", a, a + j["mid"]), ("ad", mid_ad), ("main", a + j["mid"], b)])
+            count += 1
+        else:
+            parts.append([("main", a, b)])
+        if j["end"]:
+            parts[-1].append(("ad", end_ad))
+            count += 1
+    return parts, count
+
+
 def insert(part, mid_ad, end_ad, mid, end, volume, progress, job):
     """ដាក់ Ads ចូលក្នុង part (ជំនួសឯកសារដើម) — mid_ad នៅវិនាទី mid, end_ad នៅចុង (បើ end)"""
     info = _probe(part)

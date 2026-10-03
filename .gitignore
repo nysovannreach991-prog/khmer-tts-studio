@@ -6,3 +6,5 @@ __pycache__/
 license_admin.py
 license_admin.bat
 *.key
+build/
+dist/

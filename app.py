@@ -30,7 +30,16 @@ import video_dub
 import video_merge
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
+_LOCAL = os.environ.get("LOCALAPPDATA", "")
+# ដំឡើងដោយ Setup (.exe) → កម្មវិធីនៅក្នុង AppData (មើលមិនឃើញ) → លទ្ធផលទៅ Videos\AI Team 1 ដែលងាយរក
+INSTALLED = bool(_LOCAL) and os.path.normcase(BASE_DIR).startswith(os.path.normcase(os.path.join(_LOCAL, "AITeam1")))
+if INSTALLED:
+    _home = os.path.expanduser("~")
+    _videos = next((d for d in (os.path.join(_home, "Videos"), os.path.join(_home, "OneDrive", "Videos"),
+                                os.path.join(_home, "Documents")) if os.path.isdir(d)), _home)
+    OUTPUT_DIR = os.path.join(_videos, "AI Team 1")
+else:
+    OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -54,9 +63,10 @@ GEMINI_VOICES = [{"name": v, "gender": "Female"} for v in _GEMINI_FEMALE] + \
 GEMINI_CHUNK_CHARS = 3000
 
 EDGE_CHUNK_CHARS = 800      # ទំហំផ្នែកនីមួយៗសម្រាប់បង្កើតស្របគ្នា
-EDGE_CONCURRENCY = 8        # ចំនួនការភ្ជាប់ទៅ Edge ក្នុងពេលតែមួយ
+EDGE_CONCURRENCY = 16       # ចំនួនការភ្ជាប់ទៅ Edge ក្នុងពេលតែមួយ
 EDGE_RETRIES = 5          # រង់ចាំ 1+2+4+8 វិនាទី ពេលបណ្តាញដាច់មួយភ្លែត
-EDGE_CACHE_DIR = os.path.join(OUTPUT_DIR, ".cache", "edge")
+EDGE_CACHE_DIR = (os.path.join(_LOCAL, "AITeam1", "cache", "edge") if INSTALLED
+                  else os.path.join(OUTPUT_DIR, ".cache", "edge"))
 os.makedirs(EDGE_CACHE_DIR, exist_ok=True)
 
 app = Flask(__name__)
@@ -375,7 +385,8 @@ def _dub_setup(p):
         fmt="mp3" if p.get("format") == "mp3" else "wav",
         fit=bool(p.get("fit", True)),
         max_speed=min(max(float(p.get("max_speed", 1.5)), 1.0), 3.0),
-        workers=min(max(int(p.get("workers", 8)), 1), 16),
+        # Edge ទ្រាំបាន 32–48 ស្របគ្នា (រង់ចាំបណ្តាញ) · Gemini មានកម្រិត rate limit → មិនលើស 16
+        workers=min(max(int(p.get("workers", 32)), 1), 16 if engine == "gemini" else 64),
         edge_audio=edge_audio, gemini_call=_gemini_call,
     )
 

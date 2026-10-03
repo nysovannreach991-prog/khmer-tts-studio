@@ -122,8 +122,13 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
             else:
                 graph = f"{dub}[a]"
 
-        # encode ឡើងវិញ (Logo) → កាត់បានគ្រប់ទីកន្លែង មិនចាំបាច់រក keyframe
-        points = cut_points(cues, duration, part_sec, keyframes(video) if part_sec > 0 and not overlays else None)
+        with_ads = ads_mod.active(ads)
+        # Ads → encode តែម្តង (វីដេអូ + Ads ក្នុង ffmpeg តែមួយ) ជំនួស copy/encode ហើយ encode ផ្នែកនីមួយៗម្តងទៀត។
+        # លើកលែង: រក្សាទុកវីដេអូពេញ (គ្មាន Ads) → ប្រើវិធីចាស់ 2 ជំហាន
+        single_pass = with_ads and not keep_full
+        # encode ឡើងវិញ (Logo / Ads) → កាត់បានគ្រប់ទីកន្លែង មិនចាំបាច់រក keyframe
+        encode = bool(overlays) or single_pass
+        points = cut_points(cues, duration, part_sec, keyframes(video) if part_sec > 0 and not encode else None)
         folder = f"{name_base}_parts" if points else name_base
         dest = os.path.join(out_dir, folder)
         os.makedirs(dest, exist_ok=True)
@@ -136,7 +141,10 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
 
         job["status"] = "video"
         job["stage_pct"] = 0
-        with_ads = ads_mod.active(ads)
+        if single_pass:
+            _encode_with_ads(video, base_inputs, graph, overlays, duration, points, cues, ads, dest, name_base,
+                             job, tmp)
+            return folder, _collect(dest, folder, job, cues)
         progress = _StagePct(job, 0, 60 if with_ads else 100)
         force = ["-force_key_frames", ",".join(map(str, points))] if points else []
         if overlays:
@@ -146,9 +154,9 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
                                               list(zip(bounds, bounds[1:])), len(base_inputs) // 2)
             enc = ov.pick_encoder()
             job["encoder"] = enc
-            args = [*base_inputs, *inputs, "-filter_complex", ";".join(chains + [graph]),
-                    "-map", vlabel, "-map", "[a]", "-t", f"{duration:.3f}",
-                    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+            args = ov.compact_args([*base_inputs, *inputs, "-filter_complex", ";".join(chains + [graph]),
+                                    "-map", vlabel, "-map", "[a]", "-t", f"{duration:.3f}",
+                                    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"], tmp)
             try:
                 _run_ffmpeg(args + ov.encoder_args(enc) + force + output, duration, progress)
             except RuntimeError:
@@ -181,6 +189,77 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
         return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _encode_with_ads(video, base_inputs, graph, overlays, duration, points, cues, ads, dest, name_base, job, tmp):
+    """វីដេអូ (+ Logo) + សំឡេង + Ads → encode តែម្តង ហើយកាត់ជាផ្នែក។
+    វីដេអូមេត្រូវកាត់ជាដុំៗ (trim) នៅចំណុច Ads ហើយភ្ជាប់ជាមួយ Ads ដោយ concat"""
+    info = _probe(video)
+    w, h = info["width"] - info["width"] % 2, info["height"] - info["height"] % 2
+    fps = round(info["fps"], 3)
+    bounds = list(zip([0.0] + points, points + [duration]))
+    inputs, chains, vlabel = [], [], "[0:v]"
+    if overlays:
+        inputs, chains, vlabel = ov.build(overlays, info["width"], info["fps"], duration, bounds,
+                                          len(base_inputs) // 2)
+    chains = chains + [graph]
+    parts, count = ads_mod.layout(bounds, cues, ads)
+    segs = [s for part in parts for s in part]
+    k = sum(s[0] == "main" for s in segs)
+    fix = f"scale={w}:{h}," if (w, h) != (info["width"], info["height"]) else ""
+    chains.append(f"{vlabel}{fix}setsar=1,format=yuv420p,split={k}" + "".join(f"[m{i}]" for i in range(k)))
+    chains.append(f"[a]asplit={k}" + "".join(f"[n{i}]" for i in range(k)))
+    idx = (base_inputs + inputs).count("-i")
+    volume = float(ads.get("volume", 100))
+    labels, lengths, ad_info, mi, ai = [], [], {}, 0, 0
+    for seg in segs:
+        if seg[0] == "main":
+            t0, t1 = seg[1], seg[2]
+            end = f":end={t1:.3f}" if t1 < duration - 0.001 else ""
+            chains.append(f"[m{mi}]trim=start={t0:.3f}{end},setpts=PTS-STARTPTS[mv{mi}]")
+            chains.append(f"[n{mi}]atrim=start={t0:.3f}{end},asetpts=PTS-STARTPTS[ma{mi}]")
+            labels.append(f"[mv{mi}][ma{mi}]")
+            lengths.append(t1 - t0)
+            mi += 1
+        else:
+            a_info = ad_info.setdefault(seg[1], _probe(seg[1]))
+            inputs += ["-i", seg[1]]
+            chains += ads_mod.ad_chains(idx, f"ad{ai}", a_info, w, h, fps, volume)
+            labels.append(f"[vad{ai}][aad{ai}]")
+            lengths.append(a_info["duration"])
+            idx += 1
+            ai += 1
+    chains.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=1[vc][ac]")
+
+    # ចំណុចកាត់ថ្មី (បន្ទាប់ពីបញ្ចូល Ads) = ចុងនៃផ្នែកនីមួយៗ
+    new_points, t, pos = [], 0.0, 0
+    for part in parts[:-1]:
+        t += sum(lengths[pos:pos + len(part)])
+        pos += len(part)
+        new_points.append(round(t, 3))
+    total = sum(lengths)
+    if new_points:
+        output = ["-force_key_frames", ",".join(map(str, new_points)),
+                  "-f", "segment", "-segment_times", ",".join(map(str, new_points)),
+                  "-reset_timestamps", "1", "-segment_start_number", "1", os.path.join(dest, "part%02d.mp4")]
+    else:
+        output = [os.path.join(dest, f"{name_base}.mp4")]
+    args = ov.compact_args([*base_inputs, *inputs, "-filter_complex", ";".join(chains),
+                            "-map", "[vc]", "-map", "[ac]", "-t", f"{total:.3f}",
+                            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"], tmp)
+    progress = _StagePct(job, 0, 100)
+    for enc in dict.fromkeys([ov.pick_encoder(), "libx264"]):
+        job["encoder"] = enc
+        try:
+            _run_ffmpeg(args + ov.encoder_args(enc) + output, total, progress)
+            break
+        except RuntimeError:
+            if enc == "libx264":
+                raise
+            job["warnings"].append(f"{enc} បរាជ័យ — ប្រើ libx264 ជំនួស (យឺតជាង)")
+            for f in os.listdir(dest):
+                os.remove(os.path.join(dest, f))
+    job["ads_inserted"] = count
 
 
 def _join_parts(dest, out_dir, name_base, job):

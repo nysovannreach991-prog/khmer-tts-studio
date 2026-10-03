@@ -75,6 +75,7 @@ QLabel#pill {{ background: {c['hover']}; color: {c['accent']}; border: 1px solid
                border-radius: 11px; padding: 2px 10px; font-weight: bold; font-size: 9pt; }}
 QPushButton#ghost {{ background: transparent; border: 1px solid {c['border']}; border-radius: 12px;
                      padding: 6px 14px; }}
+QPushButton#ghost::menu-indicator {{ image: none; width: 0; }}
 QPushButton#ghost:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
 
 /* ---------- tabs ---------- */

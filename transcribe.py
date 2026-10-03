@@ -14,7 +14,9 @@ from srt_dub import jobs
 
 MODELS = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-2.5-flash"]
 FALLBACK_MODEL = "gemini-3.5-flash"
-CHUNK_SEC = 600          # បំបែកសំឡេងវែងជាផ្នែក 10 នាទី
+CHUNK_SEC = 300          # បំបែកសំឡេងវែងជាផ្នែក 5 នាទី — ផ្នែកខ្លី + ស្របគ្នាច្រើន = Gemini ឆ្លើយលឿនជាង
+SNAP_SEC = 25            # រំកិលចំណុចកាត់ទៅចន្លោះស្ងាត់ក្បែរនោះ (± វិនាទី) — កុំកាត់ពាក់កណ្តាលប្រយោគ
+WORKERS = 8              # ផ្នែកដែលផ្ញើទៅ Gemini ក្នុងពេលតែមួយ
 GENDER_LABEL = {"female": "ស្រី", "male": "ប្រុស"}
 # ភាសាដែលអាចបកប្រែទៅ ("" = រក្សាភាសាដើម)
 LANGUAGES = {"km": "Khmer", "en": "English", "th": "Thai", "vi": "Vietnamese", "zh": "Simplified Chinese"}
@@ -106,6 +108,27 @@ def _transcribe_chunk(path, api_key, model, gemini_post, target):
             delay = min(delay * 2, 60)
 
 
+def _chunks(src, duration):
+    """[(ចាប់ផ្តើម, ប្រវែង), ...] ប្រហែល CHUNK_SEC ម្តងៗ — ចំណុចកាត់នៅចន្លោះស្ងាត់ (បើរកឃើញ)"""
+    if duration <= CHUNK_SEC * 1.2:
+        return [(0.0, duration)]
+    gaps = []
+    try:
+        from video_dub import speech_segments  # silencedetect លើសំឡេងដើម
+        speech = speech_segments(src, duration)
+        gaps = [(a["end"] + b["start"]) / 2000 for a, b in zip(speech, speech[1:]) if b["start"] - a["end"] >= 300]
+    except Exception:  # noqa: BLE001 — រកមិនឃើញ → កាត់តាមពេលវេលាធម្មតា
+        pass
+    cuts, t = [], 0.0
+    while duration - t > CHUNK_SEC * 1.2:
+        target = t + CHUNK_SEC
+        near = [g for g in gaps if abs(g - target) <= SNAP_SEC]
+        t = min(near, key=lambda g: abs(g - target)) if near else target
+        cuts.append(t)
+    bounds = [0.0] + cuts + [duration]
+    return [(a, b - a) for a, b in zip(bounds, bounds[1:])]
+
+
 def _fmt(sec):
     ms = int(round(max(sec, 0) * 1000))
     h, ms = divmod(ms, 3600000)
@@ -142,7 +165,7 @@ def _clean(segments, duration):
     return segs
 
 
-def start_job(src_path, api_key, model, with_gender, target, out_dir, base_name, gemini_post, workers=3):
+def start_job(src_path, api_key, model, with_gender, target, out_dir, base_name, gemini_post, workers=WORKERS):
     job_id = uuid.uuid4().hex[:12]
     jobs[job_id] = {"status": "running", "done": 0, "total": 1, "error": None,
                     "file": None, "original_file": None, "warnings": [], "cues": None}
@@ -159,19 +182,19 @@ def _run_job(job_id, src_path, api_key, model, with_gender, target, out_dir, bas
     tmp_dir = tempfile.mkdtemp(prefix="stt_")
     try:
         duration = _duration(src_path)
-        starts = [float(s) for s in range(0, int(duration) + 1, CHUNK_SEC) if s < duration]
-        job["total"] = len(starts)
+        chunks = _chunks(src_path, duration)
+        job["total"] = len(chunks)
 
-        def work(offset):
-            chunk = os.path.join(tmp_dir, f"{int(offset)}.mp3")
-            _extract_chunk(src_path, offset, CHUNK_SEC, chunk)
-            segs = _clean(_transcribe_chunk(chunk, api_key, model, gemini_post, target),
-                          min(CHUNK_SEC, duration - offset))
+        def work(chunk_spec):
+            offset, length = chunk_spec
+            chunk = os.path.join(tmp_dir, f"{int(offset * 1000)}.mp3")
+            _extract_chunk(src_path, offset, length, chunk)
+            segs = _clean(_transcribe_chunk(chunk, api_key, model, gemini_post, target), length)
             job["done"] += 1
             return [dict(s, start=s["start"] + offset, end=s["end"] + offset) for s in segs]
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            segments = [s for part in pool.map(work, starts) for s in part]
+            segments = [s for part in pool.map(work, chunks) for s in part]
         if not segments:
             raise RuntimeError("រកមិនឃើញការនិយាយក្នុងសំឡេងនេះទេ")
 

@@ -12,12 +12,13 @@ import updater
 
 APP_DIR = updater.APP_DIR
 INCLUDE_EXT = {".py", ".bat", ".txt", ".html", ".ttf", ".otf", ".json", ".md", ".ico", ".png", ".ps1"}
-EXCLUDE_DIRS = {"outputs", "__pycache__", ".git", ".update_pending", ".cache"}
+EXCLUDE_DIRS = {"outputs", "__pycache__", ".git", ".update_pending", ".cache", "build", "dist"}
 EXCLUDE_FILES = {"manifest.json", "gui_error.log",
                  "license_admin.py", "license_admin.bat",
-                 "publish.py", "publish_update.bat"}  # ឧបករណ៍ម្ចាស់ — មិនផ្តល់ឱ្យមិត្តភក្តិ
+                 "publish.py", "publish_update.bat",
+                 "build_installer.py", "build_installer.bat"}  # ឧបករណ៍ម្ចាស់ — មិនផ្តល់ឱ្យមិត្តភក្តិ
 GITIGNORE = ("outputs/\n__pycache__/\n.update_pending/\n*.log\n*.ini\n"
-             "license_admin.py\nlicense_admin.bat\n*.key\n")
+             "license_admin.py\nlicense_admin.bat\n*.key\nbuild/\ndist/\n")
 
 
 def git(*args, check=True):
@@ -141,8 +142,8 @@ def main():
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     print(f"\n✓ manifest.json — v{version} · {len(files)} ឯកសារ")
 
+    git("add", "-A")  # មុន renormalize — បើមិនដូច្នេះ ឯកសារដែលបានលុប (run.bat) ធ្វើឲ្យ git បរាជ័យ
     git("add", "--renormalize", ".")
-    git("add", "-A")
     git("commit", "-m", f"v{version}: {notes}", check=False)
     if not push(cfg):
         return 1

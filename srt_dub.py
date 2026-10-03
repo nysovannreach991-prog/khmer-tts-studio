@@ -162,31 +162,35 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
     synth_fn = _synth_gemini if engine == "gemini" else _synth_edge
     backend = gemini_call if engine == "gemini" else edge_audio
 
-    def synth(cue):
+    def synth(i):
         # cue["voice"] = សំឡេងស្រី/ប្រុសដែលជ្រើសដោយស្វ័យប្រវត្តិ
-        return synth_fn(cue["text"], cue.get("voice") or opts["voice"], opts, backend)
+        # decode + កាត់ស្ងាត់ + ពន្លឿន ធ្វើក្នុង thread ដដែល (ស្របគ្នា) — មិនរង់ចាំដល់ចុងបញ្ចប់
+        cue = cues[i]
+        clip = trim_silence(synth_fn(cue["text"], cue.get("voice") or opts["voice"], opts, backend))
+        next_start = cues[i + 1]["start"] if i + 1 < len(cues) else cue["end"]
+        slot = (max(cue["end"], next_start) - cue["start"]) * SAMPLE_RATE // 1000
+        if fit and slot > 0 and len(clip) > slot:
+            clip = speed_up(clip, min(len(clip) / slot, max_speed))
+        return clip
 
     clips = [None] * len(cues)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(synth, c): i for i, c in enumerate(cues)}
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {pool.submit(synth, i): i for i in range(len(cues))}
         for fut in as_completed(futures):
             i = futures[fut]
             try:
-                clips[i] = trim_silence(fut.result())
+                clips[i] = fut.result()
             except Exception as e:
-                for f in futures:
-                    f.cancel()
                 raise RuntimeError(f"បន្ទាត់ទី {cues[i]['index']}: {e}") from None
             job["done"] += 1
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)  # បរាជ័យ → កុំរង់ចាំបន្ទាត់ដែលនៅសល់
 
     job["status"] = "mixing"
     pieces, cursor = [], 0  # cursor = ចុងបញ្ចប់នៃ clip មុន (គិតជា sample)
-    for i, (cue, clip) in enumerate(zip(cues, clips)):
+    for cue, clip in zip(cues, clips):
         start = cue["start"] * SAMPLE_RATE // 1000
-        next_start = cues[i + 1]["start"] if i + 1 < len(cues) else cue["end"]
-        slot = max(cue["end"], next_start) * SAMPLE_RATE // 1000 - start
-        if fit and slot > 0 and len(clip) > slot:
-            clip = speed_up(clip, min(len(clip) / slot, max_speed))
         if cursor > start:
             job["warnings"].append(
                 f"បន្ទាត់ទី {cue['index']} ត្រូវបានពន្យារ {(cursor - start) / SAMPLE_RATE:.1f}s")

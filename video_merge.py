@@ -61,7 +61,7 @@ def _concat_copy(paths, out, total, job, tmp):
                  "-c", "copy", "-movflags", "+faststart", out], total, job)
 
 
-def _concat_reencode(paths, infos, out, total, job):
+def _concat_reencode(paths, infos, out, total, job, tmp):
     w, h = infos[0]["width"], infos[0]["height"]
     w, h = w - w % 2, h - h % 2
     fps = round(infos[0]["fps"], 3)
@@ -76,9 +76,10 @@ def _concat_reencode(paths, infos, out, total, job):
             chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['duration']:.3f}[a{i}]")
         labels.append(f"[v{i}][a{i}]")
     graph = ";".join(chains) + f";{''.join(labels)}concat=n={len(paths)}:v=1:a=1[v][a]"
-    _run_ffmpeg([*inputs, "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
-                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out], total, job)
+    import overlay as ov  # នៅទីនេះ — ads.py នាំចូល video_merge
+    _run_ffmpeg(ov.compact_args([*inputs, "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
+                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out], tmp), total, job)
 
 
 def start_mute_job(paths, bases, out_dir, temp_files=(), audio=None):
@@ -192,12 +193,12 @@ def _run_job(job_id, paths, out_dir, name_base, force_reencode, temp_files):
             except RuntimeError:
                 job["warnings"].append("ការចម្លងផ្ទាល់បរាជ័យ — កំពុង encode ឡើងវិញ")
                 job["mode"] = "reencode"
-                _concat_reencode(paths, infos, out, total, job)
+                _concat_reencode(paths, infos, out, total, job, tmp)
         else:
             job["mode"] = "reencode"
             if not same:
                 job["warnings"].append("វីដេអូមានទម្រង់ខុសគ្នា (ទំហំ/codec/fps) — ត្រូវ encode ឡើងវិញ (យឺតជាង)")
-            _concat_reencode(paths, infos, out, total, job)
+            _concat_reencode(paths, infos, out, total, job, tmp)
         job.update(file=name, duration=total, size=os.path.getsize(out), parts=len(paths),
                    seconds=round(time.time() - t0, 1), done=100, status="done")
     except Exception as e:

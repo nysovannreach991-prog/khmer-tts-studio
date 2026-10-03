@@ -24,8 +24,47 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 OVERLAY_FILTER = ("Logo / Lower third (*.png *.jpg *.jpeg *.webp *.mp4 *.mov *.webm *.mkv *.avi);;"
                   "រូបភាព (*.png *.jpg *.jpeg *.webp);;វីដេអូ (*.mp4 *.mov *.webm *.mkv *.avi);;ឯកសារទាំងអស់ (*)")
 KEY_COLOR = {"green": "0x00FF00", "blue": "0x0047BB"}
-MAX_SHOWS = 300  # ការពារកុំឱ្យមាន input ច្រើនពេក
+MAX_SHOWS = 200  # ការពារកុំឱ្យមាន input ច្រើនពេក
 FADE = 0.4       # វិនាទី — fade in/out សម្រាប់ Lower third ជារូបភាព
+
+
+@functools.lru_cache(maxsize=1)
+def _script_option():
+    """ffmpeg 7+: "-/filter_complex <file>" · ចាស់ជាងនេះ: "-filter_complex_script <file>" """
+    import tempfile
+    probe = os.path.join(tempfile.gettempdir(), "aiteam1_graph_probe.txt")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("null")
+        proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "nullsrc=d=0.04",
+                               "-/vf", probe, "-f", "null", "-"], capture_output=True, creationflags=_NO_WINDOW)
+        return "-/filter_complex" if proc.returncode == 0 else "-filter_complex_script"
+    except OSError:
+        return "-filter_complex_script"
+
+
+def compact_args(args, workdir):
+    """Windows កំណត់បន្ទាត់ពាក្យបញ្ជាត្រឹម 32767 តួអក្សរ (WinError 206) — Lower third ច្រើនដង = input និង filter វែង។
+    filter_complex → ឯកសារ script, ឯកសារដែលប្រើច្រើនដង → ឈ្មោះខ្លីក្នុង workdir"""
+    args = list(args)
+    if "-filter_complex" in args:
+        i = args.index("-filter_complex")
+        script = os.path.join(workdir, "graph.txt")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(args[i + 1])
+        args[i:i + 2] = [_script_option(), script]
+    inputs = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-i"]
+    too_long = sum(len(a) + 3 for a in args) > 24000  # នៅតែវែង (ឧ. Merge ផ្នែកច្រើន) → ខ្លីទាំងអស់
+    short = {}
+    for path in dict.fromkeys(p for p in inputs if (too_long or inputs.count(p) > 1) and os.path.isfile(p)):
+        link = os.path.join(workdir, f"in{len(short)}{os.path.splitext(path)[1].lower()}")
+        try:
+            os.link(path, link)
+        except OSError:  # ដ្រាយផ្សេងគ្នា → ចម្លង
+            import shutil
+            shutil.copyfile(path, link)
+        short[path] = link
+    return [short.get(a, a) if i and args[i - 1] == "-i" else a for i, a in enumerate(args)]
 
 
 @functools.lru_cache(maxsize=32)
