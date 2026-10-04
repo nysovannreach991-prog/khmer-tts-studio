@@ -1,6 +1,6 @@
 {
-  "version": "1.0.10",
-  "notes": "fixbug",
+  "version": "1.0.12",
+  "notes": "កែលម្អ និងជួសជុលកំហុស",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
     "app.py": "4573ff5028cdaadf327983596d0955bdd637f851f7c8a239a90e24c9f46f1fda",
