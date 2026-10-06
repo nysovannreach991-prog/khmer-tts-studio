@@ -62,24 +62,33 @@ def _concat_copy(paths, out, total, job, tmp):
 
 
 def _concat_reencode(paths, infos, out, total, job, tmp):
+    """encode ផ្នែកនីមួយៗដាច់ដោយឡែកឱ្យទម្រង់ដូចគ្នា (ទំហំ/fps/សំឡេង PCM) រួចភ្ជាប់ដោយចម្លងផ្ទាល់ —
+    ពាក្យបញ្ជាខ្លីជានិច្ច ទោះមានផ្នែករាប់រយ (ពីមុន input ទាំងអស់ក្នុងពាក្យបញ្ជាមួយ → WinError 206)"""
     w, h = infos[0]["width"], infos[0]["height"]
     w, h = w - w % 2, h - h % 2
     fps = round(infos[0]["fps"], 3)
-    inputs, chains, labels = [], [], []
+    vf = (f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
+          f"setsar=1,fps={fps},format=yuv420p")
+    parts, offset = [], 0.0
     for i, (p, info) in enumerate(zip(paths, infos)):
-        inputs += ["-i", p]
-        chains.append(f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                      f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p[v{i}]")
-        if info["audio"]:
-            chains.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
+        dur = f"{info['duration']:.3f}"
+        if info["audio"]:  # apad + -t → សំឡេងវែងស្មើវីដេអូ (កុំឱ្យលឿន/យឺតជាងរូបភាពពេលភ្ជាប់)
+            src = ["-i", p, "-map", "0:v:0", "-map", "0:a:0", "-af", "aresample=48000,apad"]
         else:  # ផ្នែកគ្មានសំឡេង → បំពេញដោយភាពស្ងាត់
-            chains.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{info['duration']:.3f}[a{i}]")
-        labels.append(f"[v{i}][a{i}]")
-    graph = ";".join(chains) + f";{''.join(labels)}concat=n={len(paths)}:v=1:a=1[v][a]"
-    import overlay as ov  # នៅទីនេះ — ads.py នាំចូល video_merge
-    _run_ffmpeg(ov.compact_args([*inputs, "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
-                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out], tmp), total, job)
+            src = ["-i", p, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]
+        part = os.path.join(tmp, f"p{i:04d}.mkv")
+        share = 95 * info["duration"] / (total or 1)
+        _run_ffmpeg([*src, "-t", dur, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                     "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", part], info["duration"],
+                    _Scaled(job, offset, share))
+        parts.append(part)
+        offset += share
+    lst = os.path.join(tmp, "list.txt")
+    with open(lst, "w", encoding="utf-8") as f:
+        f.writelines(f"file '{os.path.basename(p)}'\n" for p in parts)
+    _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", lst, "-map", "0:v:0", "-map", "0:a:0",
+                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out],
+                total, _Scaled(job, offset, 100 - offset))
 
 
 def start_mute_job(paths, bases, out_dir, temp_files=(), audio=None):
