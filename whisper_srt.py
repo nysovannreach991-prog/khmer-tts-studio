@@ -165,6 +165,21 @@ def split_words(words):
     return lines
 
 
+def _load_audio(media):
+    """ទាញសំឡេង 16 kHz mono ដោយ ffmpeg (មិនប្រើ PyAV របស់ faster-whisper — កំណែ av ខ្លះមិនត្រូវគ្នា
+    ដូចជា "open() got an unexpected keyword argument 'metadata_errors'")"""
+    import numpy as np
+    import ffmpeg_setup
+    ffmpeg_setup.add_to_path()
+    try:
+        out = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", media,
+                              "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                             capture_output=True, check=True, creationflags=_NO_WINDOW).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return media  # ffmpeg មិនបាន → ឲ្យ faster-whisper អានខ្លួនឯង
+    return np.frombuffer(out, np.float32).copy()
+
+
 def _transcribe(media, out_srt, model_name, lang, device):
     """ដំណើរការក្នុង process កូន — បោះពុម្ព JSON មួយបន្ទាត់ៗសម្រាប់វឌ្ឍនភាព"""
     for d in gpu_dll_dirs():  # cuBLAS / cuDNN ពី pip (nvidia-*-cu12)
@@ -183,7 +198,7 @@ def _transcribe(media, out_srt, model_name, lang, device):
                          download_root=MODEL_DIR)
     say(phase="listen", device=device)
     segments, info = model.transcribe(
-        media, language=lang or None, vad_filter=True, word_timestamps=True,
+        _load_audio(media), language=lang or None, vad_filter=True, word_timestamps=True,
         condition_on_previous_text=False,  # កុំឱ្យជាប់ធ្វើដដែលៗ (hallucination) ក្នុងរឿងវែង
         initial_prompt="以下是普通话的句子。" if lang == "zh" else None)  # ចិនអក្សរសាមញ្ញ
     say(phase="listen", total=round(info.duration, 1), language=info.language)

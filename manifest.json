@@ -1,6 +1,6 @@
 {
-  "version": "1.0.12",
-  "notes": "កែលម្អ និងជួសជុលកំហុស",
+  "version": "1.0.14",
+  "notes": "fixbug whisphear",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
     "app.py": "4573ff5028cdaadf327983596d0955bdd637f851f7c8a239a90e24c9f46f1fda",
@@ -26,6 +26,6 @@
     "video_dub.py": "9cf08ddc9a9aed2eb179b19c934428d054edd55b6a3f74898d8060a568d1a119",
     "video_merge.py": "c42e6d74cdd2da4aa2d49b0ae4b65f17d43ec88843b2c83d56f0d18729f69440",
     "watermark.py": "71d4b372977b8bbf853ddd143b83c6e12395a33fae73a43c458f32811602dabb",
-    "whisper_srt.py": "bb7643e515e650b72932de5a36fdc928ac2098a75a854378aa5e04dbdcf3e9b0"
+    "whisper_srt.py": "00e02a883ea67329b3aec86565cd9e83025d83908e759e81584de7062669007e"
   }
 }
