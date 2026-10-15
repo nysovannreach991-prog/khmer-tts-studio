@@ -1,6 +1,6 @@
 {
-  "version": "1.0.16",
-  "notes": "កែលម្អ និងជួសជុលកំហុស",
+  "version": "1.1",
+  "notes": "ggwp",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
     "app.py": "4573ff5028cdaadf327983596d0955bdd637f851f7c8a239a90e24c9f46f1fda",
@@ -9,12 +9,12 @@
     "fonts/KantumruyPro-Bold.ttf": "464386b92203d3380b0253d67a1c02b015877160d9fd297535c53e09073e4ac5",
     "fonts/KantumruyPro-Regular.ttf": "2cd3e85c6ad5be83a4355ffcda69c9ee6437b1eb69f20061477e2cb2b2989188",
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
-    "gui.py": "f751cb9178a70dbf5064837f87d7cb5269627c43b7d98345fe0c7dfa920d53aa",
+    "gui.py": "cf3d9c7f084fed4b0c14a7d12476ad362701dbbdd5dc0ed2e11e81d4fa5d5dbf",
     "icon.ico": "e2821240052669d6f57f687ce40c1e0442d2c84c5aeeb93574036fc8d66f2462",
     "launcher.ps1": "0b5ca98aa5b43d63a1f77e9962ba5309120614668623b7fe2a16659b0752d0c4",
     "licensing.py": "29718be83f670cf49c2af580348fa99a6f07cbef07f61635b9f64e811d0e2e56",
     "overlay.py": "667d23dc40b25520fdebb16d5bbd90fe65fc5dfb8e55ddbae7f0366c75de157c",
-    "requirements.txt": "8d177bfbe734f6a2d1af9efaa50160a1aa641ca2b0a58bd308fc1aaf8c7733a3",
+    "requirements.txt": "932bf739c651e39df36ad3dac833e79aaedb8cdddcc27b95e285f1d9a3269d9c",
     "revoked.json": "ebfd160c88d4fe237113c5f5a270228d97ae5707b8bd78fac0e65669a8f18133",
     "run_gui.bat": "57445400acd656f2309497efdab766097058d102ba2d319a7ae153ab3a2e0e5f",
     "srt_dub.py": "330b990b0243f95fb71064b6e5ca6b8499c33cea90f2701ee53ec8cf32db3b72",

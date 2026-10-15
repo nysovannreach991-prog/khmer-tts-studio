@@ -622,6 +622,42 @@ class MainWindow(QMainWindow):
         form.addRow("វីដេអូ", video_row)
         lay.addLayout(form)
 
+        # ---- ដាក់ច្រើនឯកសារ (.srt + វីដេអូ) → ធ្វើម្តងមួយៗ ----
+        qbar = QHBoxLayout()
+        for text, fn in [("📚 ដាក់ច្រើន (.srt + វីដេអូ)", self._srtq_add_files),
+                         ("📂 ពី Folder", self._srtq_add_folder)]:
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            qbar.addWidget(b)
+        self.srtq_tools = []
+        for text, fn in [("✕ លុប", self._srtq_remove), ("សម្អាត", self._srtq_clear)]:
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            qbar.addWidget(b)
+            self.srtq_tools.append(b)
+        self.srtq_summary = QLabel("ផ្គូផ្គងតាមឈ្មោះ: EP01.srt ↔ EP01.mp4")
+        self.srtq_summary.setProperty("role", "muted")
+        qbar.addWidget(self.srtq_summary)
+        qbar.addStretch()
+        lay.addLayout(qbar)
+        self.srtq_rows, self.srtq_queue, self.srtq_cur = [], [], None
+        self.srtq_active = False
+        t = self.srtq_table = QTableWidget(0, 4)
+        t.setHorizontalHeaderLabels(["", "SRT", "វីដេអូ", "ស្ថានភាព"])
+        hdr = t.horizontalHeader()
+        for col, rmode in [(0, QHeaderView.ResizeToContents), (1, QHeaderView.Stretch),
+                           (2, QHeaderView.Stretch), (3, QHeaderView.Stretch)]:
+            hdr.setSectionResizeMode(col, rmode)
+        t.verticalHeader().setVisible(False)
+        t.verticalHeader().setDefaultSectionSize(30)
+        t.setAlternatingRowColors(True)
+        t.setShowGrid(False)
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        t.setMaximumHeight(190)
+        t.cellDoubleClicked.connect(self._srtq_open)
+        lay.addWidget(t)
+
         self.cue_info = QLabel("ចុចពីរដងលើ 'ភេទ' ដើម្បីប្តូរ · អាចកែអត្ថបទក្នុងតារាងបាន")
         self.cue_info.setProperty("role", "muted")
         lay.addWidget(self.cue_info)
@@ -687,13 +723,19 @@ class MainWindow(QMainWindow):
                                   "ជា <ឈ្មោះ>_full.mp4 ក្នុងថត Output (គ្មាន Ads, មិន encode បន្ថែម)")
         self.part_minutes.valueChanged.connect(lambda v: self.keep_full.setEnabled(v > 0))
         row = QHBoxLayout()
-        row.addWidget(self._run_button("🔊 បង្កើតសំឡេង / ដាក់ចូលវីដេអូ", self.run_srt))
+        self.btn_srt_run = self._run_button("🔊 បង្កើតសំឡេង / ដាក់ចូលវីដេអូ", self.run_srt)
+        row.addWidget(self.btn_srt_run)
+        self.btn_srtq_stop = QPushButton("■ បញ្ឈប់បន្ទាប់ពីឯកសារនេះ")
+        self.btn_srtq_stop.clicked.connect(self._srtq_request_stop)
+        self.btn_srtq_stop.hide()
+        row.addWidget(self.btn_srtq_stop)
         save = QPushButton("💾 រក្សាទុក SRT ដែលបានកែ")
         save.clicked.connect(self.save_srt)
         row.addWidget(save)
         row.addWidget(self.keep_full)
         row.addStretch()
         lay.addLayout(row)
+        self._srtq_render()
         return w
 
     def _build_stt_tab(self):
@@ -2318,6 +2360,8 @@ class MainWindow(QMainWindow):
             self._brand_failed()
         elif getattr(self, "vsrt_active", False):  # វីដេអូ→SRT: រឿងនេះបរាជ័យ → បន្តរឿងបន្ទាប់
             self._vsrt_failed(msg)
+        elif getattr(self, "srtq_active", False):  # SRT ច្រើនឯកសារ: ឯកសារនេះបរាជ័យ → បន្តឯកសារបន្ទាប់
+            self._srtq_failed(msg)
 
     def set_result(self, path, msg, finish=True):
         """finish=False — ការងារបន្តទៅដំណាក់កាលបន្ទាប់ (ឧ. SRT → បង្កើតសំឡេង)"""
@@ -2607,6 +2651,8 @@ class MainWindow(QMainWindow):
         error = self.fail if chained else (lambda m: self.set_status(m, True))
         if self.busy or not self._check_ffmpeg():
             return
+        if self.srtq_rows and not chained:  # មានបញ្ជីច្រើនឯកសារ → ធ្វើបញ្ជីនោះ
+            return self.run_srtq()
         if not self.cues:
             return error("សូមជ្រើសរើសឯកសារ .srt")
         try:
@@ -2648,6 +2694,220 @@ class MainWindow(QMainWindow):
                             f"រួចរាល់ — {len(s['parts'])} ផ្នែក ({time.time() - t0:.1f}s) — {out_label()}/{s['folder']}")
 
         self._start_video_dub(args, video, f"{base}_dub_{time.strftime('%Y%m%d_%H%M%S')}", stages, done)
+
+    # ---- SRT ច្រើនឯកសារ (ម្តងមួយៗ) ----
+    @staticmethod
+    def _pair_srt_videos(paths):
+        """ផ្គូផ្គង .srt ↔ វីដេអូ តាមឈ្មោះ: EP01.srt ↔ EP01.mp4, EP01_km.srt ↔ EP01.mp4 (EP1 មិនចាប់ EP10)
+        → [(srt|None, video|None)] — srt គ្មានវីដេអូ = បង្កើតតែសំឡេង"""
+        srts = sorted({os.path.normpath(p) for p in paths if p.lower().endswith(".srt")},
+                      key=lambda p: natural_key(os.path.basename(p)))
+        videos = sorted({os.path.normpath(p) for p in paths if os.path.splitext(p)[1].lower() in VIDEO_EXT},
+                        key=lambda p: natural_key(os.path.basename(p)))
+        key = lambda p: os.path.splitext(os.path.basename(p))[0].strip().lower()  # noqa: E731
+        free, pairs = list(videos), []
+        for srt in srts:
+            k, match = key(srt), None
+            for v in sorted(free, key=lambda v: -len(key(v))):  # ឈ្មោះវែងជាងមុន (EP10 មុន EP1)
+                kv = key(v)
+                if k == kv or (k.startswith(kv) and not k[len(kv)].isalnum()) or \
+                        (kv.startswith(k) and not kv[len(k)].isalnum()):
+                    match = v
+                    break
+            if match:
+                free.remove(match)
+            pairs.append([srt, match])
+        lone = [p for p in pairs if not p[1]]
+        if len(lone) == 1 and len(free) == 1:  # SRT មួយ + វីដេអូមួយ ឈ្មោះខុសគ្នា → ផ្គូគ្នា
+            lone[0][1] = free.pop()
+        return [tuple(p) for p in pairs] + [(None, v) for v in free]
+
+    def _srtq_add(self, paths):
+        if self.srtq_active:
+            return
+        known = {(r["srt"], r["video"]) for r in self.srtq_rows}
+        added = 0
+        for srt, video in self._pair_srt_videos(paths):
+            if (srt, video) not in known:
+                self.srtq_rows.append({"srt": srt, "video": video, "status": "waiting", "msg": ""})
+                added += 1
+        self._srtq_render()
+        self.set_status(f"បានបន្ថែម {added} ឯកសារ" if added else "គ្មាន .srt ឬវីដេអូថ្មី", not added)
+
+    def _srtq_add_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "ជ្រើស .srt និងវីដេអូច្រើន (Ctrl / Shift)",
+                                                os.path.dirname(self.srt_path.text()),
+                                                f"SRT + វីដេអូ (*.srt {' '.join('*' + e for e in sorted(VIDEO_EXT))})"
+                                                ";;ឯកសារទាំងអស់ (*)")
+        if paths:
+            self._srtq_add(paths)
+
+    def _srtq_add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "ជ្រើស Folder ដែលមាន .srt និងវីដេអូ")
+        if folder:
+            self._srtq_add([os.path.join(folder, f) for f in os.listdir(folder)
+                            if os.path.isfile(os.path.join(folder, f))])
+
+    def _srtq_remove(self):
+        if self.srtq_active:
+            return
+        for r in sorted({i.row() for i in self.srtq_table.selectedIndexes()}, reverse=True):
+            del self.srtq_rows[r]
+        self._srtq_render()
+
+    def _srtq_clear(self):
+        if not self.srtq_active:
+            self.srtq_rows = []
+            self._srtq_render()
+
+    def _srtq_open(self, r, _col):
+        """ចុចពីរដង → បើក SRT នោះក្នុងតារាងខាងក្រោម (មើល/កែ)"""
+        row = self.srtq_rows[r]
+        if row["srt"] and not self.srtq_active:
+            self.srt_path.setText(row["srt"])
+            self.load_srt_file(row["srt"])
+            self.video_path.setText(row["video"] or "")
+
+    def _srtq_render(self):
+        t = self.srtq_table
+        checked = [t.item(r, 0).checkState() == Qt.Checked if t.item(r, 0) else True for r in range(t.rowCount())]
+        t.setRowCount(len(self.srtq_rows))
+        for r, row in enumerate(self.srtq_rows):
+            on = QTableWidgetItem()
+            on.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            on.setCheckState(Qt.Checked if (checked[r] if r < len(checked) else True) else Qt.Unchecked)
+            text, color = self._STATUS[row["status"]]
+            items = [on, QTableWidgetItem(os.path.basename(row["srt"]) if row["srt"] else "⚠ គ្មាន SRT"),
+                     QTableWidgetItem(os.path.basename(row["video"]) if row["video"] else "— (បង្កើតតែសំឡេង)"),
+                     QTableWidgetItem(f"{text} {row['msg']}".strip())]
+            items[1].setToolTip(row["srt"] or "")
+            items[2].setToolTip(row["video"] or "")
+            if not row["srt"]:
+                items[1].setForeground(QColor(theme.C["warn"]))
+            if not row["video"]:
+                items[2].setForeground(QColor(theme.C["muted"]))
+            items[3].setForeground(QColor(theme.C[color]))
+            items[3].setToolTip(row["msg"])
+            for col, item in enumerate(items):
+                t.setItem(r, col, item)
+        t.setVisible(bool(self.srtq_rows))
+        for b in self.srtq_tools:
+            b.setVisible(bool(self.srtq_rows))
+        n = len(self.srtq_rows)
+        if n:
+            done = sum(r["status"] == "done" for r in self.srtq_rows)
+            failed = sum(r["status"] == "failed" for r in self.srtq_rows)
+            self.srtq_summary.setText(f"{n} ឯកសារ · ✓ {done} · ✕ {failed} · ចុចពីរដងដើម្បីមើល/កែ")
+            self.btn_srt_run.setText(f"🔊 ធ្វើទាំងអស់ ({n}) ម្តងមួយៗ")
+        else:
+            self.srtq_summary.setText("ផ្គូផ្គងតាមឈ្មោះ: EP01.srt ↔ EP01.mp4")
+            self.btn_srt_run.setText("🔊 បង្កើតសំឡេង / ដាក់ចូលវីដេអូ")
+
+    def run_srtq(self):
+        if self.busy or self.srtq_active or not self._check_ffmpeg():
+            return
+        t, queue = self.srtq_table, []
+        for r, row in enumerate(self.srtq_rows):
+            if t.item(r, 0).checkState() != Qt.Checked:
+                continue
+            if not row["srt"] or not os.path.isfile(row["srt"]):
+                row.update(status="skipped", msg="គ្មាន SRT")
+                continue
+            if row["video"] and not os.path.isfile(row["video"]):
+                row.update(status="skipped", msg="រកមិនឃើញវីដេអូ")
+                continue
+            row.update(status="waiting", msg="")
+            queue.append(r)
+        self._srtq_render()
+        if not queue:
+            return self.set_status("គ្មានឯកសារដែលត្រៀមរួច (ត្រូវមាន .srt)", True)
+        try:  # ពិនិត្យការកំណត់សំឡេង (API key ...) មុនចាប់ផ្តើម
+            self._dub_args([{"index": 1, "start": 0, "end": 1000, "text": "ក"}])
+        except backend.BadRequest as e:
+            return self.set_status(str(e), True)
+        videos = [(os.path.basename(self.srtq_rows[r]["video"]), self.srtq_rows[r]["video"])
+                  for r in queue if self.srtq_rows[r]["video"]]
+        if videos and not self.confirm_overlays(videos):
+            return
+        self.srtq_queue, self.srtq_total, self.srtq_done = queue, len(queue), 0
+        self.srtq_active, self.srtq_stop = True, False
+        self.btn_srtq_stop.setEnabled(True)
+        self.btn_srtq_stop.show()
+        self.srtq_t0 = time.time()
+        self._log(f"🎬 SRT ច្រើនឯកសារ — {len(queue)} ឯកសារ (ម្តងមួយៗ)")
+        self._srtq_next()
+
+    def _srtq_next(self):
+        if self.srtq_stop or not self.srtq_queue:
+            return self._srtq_finish()
+        r = self.srtq_cur = self.srtq_queue.pop(0)
+        row = self.srtq_rows[r]
+        row.update(status="running", msg="")
+        self._srtq_render()
+        self.srtq_table.scrollToItem(self.srtq_table.item(r, 0))
+        srt, video = row["srt"], row["video"]
+        name = os.path.basename(video or srt)
+        n = self.srtq_total - len(self.srtq_queue)
+        t0 = time.time()
+        stages = self.dub_stages(bool(video))
+        self.begin_stages(f"🎬 {n}/{self.srtq_total}: {name}", stages)
+        try:
+            with open(srt, encoding="utf-8-sig", errors="replace") as f:
+                cues = srt_dub.parse_srt(f.read())
+            if not cues:
+                raise RuntimeError("SRT គ្មាន subtitle")
+            args = self._dub_args(cues)
+            if video:
+                video_dub.probe(video)
+        except Exception as e:  # noqa: BLE001
+            return self.fail(str(e))
+        self._log(f"🎬 {n}/{self.srtq_total}: {os.path.basename(srt)}" +
+                  (f" + {os.path.basename(video)}" if video else "") + f" · {len(args['cues'])} បន្ទាត់")
+        base = backend.safe_name(os.path.splitext(name)[0]) or "video"
+
+        def done(s):
+            self.srtq_done += 1
+            if video:
+                path = os.path.join(OUTPUT_DIR, s["folder"])
+                msg = f"{len(s['parts'])} ផ្នែក → {out_label()}/{s['folder']}"
+            else:
+                path = os.path.join(OUTPUT_DIR, s["file"])
+                msg = f"→ {s['file']}"
+            row.update(status="done", msg=f"{msg} ({fmt_dur(time.time() - t0)})")
+            self._srtq_render()
+            self.set_result(path, f"{name}: រួចរាល់ {msg}")
+            QTimer.singleShot(200, self._srtq_next)
+
+        if video:
+            return self._start_video_dub(args, video, f"{base}_dub_{time.strftime('%Y%m%d_%H%M%S')}", stages, done)
+        job = srt_dub.start_job(**args)
+        self.enter_stage(stages[0])
+        self.set_busy(True, "កំពុងចាប់ផ្តើម...")
+        self.watch_job(job, lambda s: f"{name}: កំពុងបង្កើតសំឡេង {s['done']}/{s['total']} បន្ទាត់...", done,
+                       lambda s: stages[0] if s["status"] == "running" else stages[1], "បន្ទាត់")
+
+    def _srtq_failed(self, msg):
+        """ហៅពី fail() — ឯកសារនេះបរាជ័យ → បន្តឯកសារបន្ទាប់"""
+        if self.srtq_cur is not None:
+            self.srtq_rows[self.srtq_cur].update(status="failed", msg=msg)
+            self._srtq_render()
+        QTimer.singleShot(200, self._srtq_next)
+
+    def _srtq_request_stop(self):
+        self.srtq_stop = True
+        self.btn_srtq_stop.setEnabled(False)
+        self.set_status("នឹងបញ្ឈប់បន្ទាប់ពីឯកសារនេះចប់")
+
+    def _srtq_finish(self):
+        self.srtq_active, self.srtq_cur = False, None
+        self.btn_srtq_stop.hide()
+        left = sum(r["status"] == "waiting" for r in self.srtq_rows)
+        failed = sum(r["status"] == "failed" for r in self.srtq_rows)
+        msg = (f"🎬 ចប់ — ✓ {self.srtq_done}/{self.srtq_total}" + (f" · ✕ {failed}" if failed else "") +
+               (f" · បញ្ឈប់ (នៅសល់ {left})" if left else "") + f" · សរុប {fmt_dur(time.time() - self.srtq_t0)}")
+        self._log(msg)
+        self.set_status(msg, self.srtq_done < self.srtq_total)
+        self._srtq_render()
 
     # ---- សំឡេង → SRT ----
     def run_stt(self):
@@ -3458,7 +3718,7 @@ class MainWindow(QMainWindow):
         self._start_worker(worker)
 
     def _restart_when_idle(self):
-        if self.busy or any(getattr(self, a, False) for a in ("batch_active", "brand_active", "vsrt_active")):
+        if self.busy or any(getattr(self, a, False) for a in ("batch_active", "brand_active", "vsrt_active", "srtq_active")):
             return  # រង់ចាំការងារចប់សិន (កុំសរសេរជាន់សារវឌ្ឍនភាព)
         self._idle_timer.stop()
         box = QMessageBox(self)

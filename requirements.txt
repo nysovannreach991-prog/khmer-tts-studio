@@ -1,4 +1,4 @@
-edge-tts>=7.0
+edge-tts>=7.3.1
 Flask>=3.0
 numpy
 PyQt5>=5.15
