@@ -314,10 +314,13 @@ def summary(spec):
 
 
 def render_preview_clip(video, overlays, out_mp4, start=None, canvas=None):
-    """វីដេអូ Preview ខ្លី (~10វិ): Logo + Lower third លេចនៅវិនាទីទី 1។ ត្រឡប់ out_mp4"""
-    timed = [clip_length(o) for o in overlays if o.get("mode") == "timed"]
-    dur = min(30.0, max(8.0, max(timed, default=0) + 3))
-    specs = [dict(o, start=1.0, every=0, per_part=False) if o.get("mode") == "timed" else o for o in overlays]
+    """វីដេអូ Preview ខ្លី (~10វិ): Logo + Lower third លេចនៅវិនាទីទី 1។
+    Lower third ដែលលេចម្តងទៀត → បង្ហាញ 2 ដង (ចន្លោះ 2វិ ជំនួសចន្លោះពិត) ដើម្បីឃើញថាវាលេចម្តងទៀត។ ត្រឡប់ out_mp4"""
+    timed = [(clip_length(o), bool(o.get("every"))) for o in overlays if o.get("mode") == "timed"]
+    need = max((1 + n + (n + 2 if again else 0) for n, again in timed), default=0)  # ចប់ការបង្ហាញចុងក្រោយ
+    dur = min(40.0, max(8.0, need + 2))
+    specs = [dict(o, start=1.0, every=(clip_length(o) + 2) if o.get("every") else 0, per_part=False)
+             if o.get("mode") == "timed" else o for o in overlays]
     if video and os.path.isfile(video) and not canvas:
         info = media_info(video)
         w, fps = info["width"] or 1280, info["fps"]

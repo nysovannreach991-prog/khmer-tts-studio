@@ -1,6 +1,6 @@
 {
-  "version": "1.1",
-  "notes": "ggwp",
+  "version": "1.1.2",
+  "notes": "កែលម្អ និងជួសជុលកំហុស",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
     "app.py": "4573ff5028cdaadf327983596d0955bdd637f851f7c8a239a90e24c9f46f1fda",
@@ -9,11 +9,11 @@
     "fonts/KantumruyPro-Bold.ttf": "464386b92203d3380b0253d67a1c02b015877160d9fd297535c53e09073e4ac5",
     "fonts/KantumruyPro-Regular.ttf": "2cd3e85c6ad5be83a4355ffcda69c9ee6437b1eb69f20061477e2cb2b2989188",
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
-    "gui.py": "cf3d9c7f084fed4b0c14a7d12476ad362701dbbdd5dc0ed2e11e81d4fa5d5dbf",
+    "gui.py": "d859e6d13851c5f80c7e88ea8a9f50b133aeec0339bd080bfbfae49e0c20834e",
     "icon.ico": "e2821240052669d6f57f687ce40c1e0442d2c84c5aeeb93574036fc8d66f2462",
     "launcher.ps1": "0b5ca98aa5b43d63a1f77e9962ba5309120614668623b7fe2a16659b0752d0c4",
     "licensing.py": "29718be83f670cf49c2af580348fa99a6f07cbef07f61635b9f64e811d0e2e56",
-    "overlay.py": "667d23dc40b25520fdebb16d5bbd90fe65fc5dfb8e55ddbae7f0366c75de157c",
+    "overlay.py": "bfb66cfcbd60c2b9a1281c954f4557eed617e282a74a9850b12dff11327b52ca",
     "requirements.txt": "932bf739c651e39df36ad3dac833e79aaedb8cdddcc27b95e285f1d9a3269d9c",
     "revoked.json": "ebfd160c88d4fe237113c5f5a270228d97ae5707b8bd78fac0e65669a8f18133",
     "run_gui.bat": "57445400acd656f2309497efdab766097058d102ba2d319a7ae153ab3a2e0e5f",
@@ -23,7 +23,7 @@
     "transcribe.py": "d5f1062900e0143cdadd0bbfb0493036fad51059220140190cf7a4784d8e8401",
     "update_config.json": "6cc48a30963de990ffe61c2779e9a8cf5f7bc0ff50c2901bb2ef35c4e1431dab",
     "updater.py": "c149749440f81764ab40079fe3eaaf60dfde5fc8be804ae3ec5fd6ec1a65fc89",
-    "video_dub.py": "9cf08ddc9a9aed2eb179b19c934428d054edd55b6a3f74898d8060a568d1a119",
+    "video_dub.py": "92b09a8286f4a5440d83b9afc63055e44ca652230046c97eb6213010cd70eef6",
     "video_merge.py": "acfb10d064bfdfaee4e3546cfd2809273877ac4cba3f2da15be69ed100a79417",
     "watermark.py": "71d4b372977b8bbf853ddd143b83c6e12395a33fae73a43c458f32811602dabb",
     "whisper_srt.py": "00e02a883ea67329b3aec86565cd9e83025d83908e759e81584de7062669007e"

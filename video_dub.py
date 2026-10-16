@@ -129,6 +129,7 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
         # encode ឡើងវិញ (Logo / Ads) → កាត់បានគ្រប់ទីកន្លែង មិនចាំបាច់រក keyframe
         encode = bool(overlays) or single_pass
         points = cut_points(cues, duration, part_sec, keyframes(video) if part_sec > 0 and not encode else None)
+        _warn_single_show(overlays, duration, points, job)
         folder = f"{name_base}_parts" if points else name_base
         dest = os.path.join(out_dir, folder)
         os.makedirs(dest, exist_ok=True)
@@ -189,6 +190,26 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
         return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _warn_single_show(overlays, duration, points, job):
+    """Lower third កំណត់ឱ្យលេចម្តងទៀត ប៉ុន្តែវីដេអូ (ឬផ្នែក) ខ្លីពេក → វាលេចតែម្តង — ប្រាប់អ្នកប្រើ"""
+    bounds = [0.0] + list(points) + [duration]
+    ranges = list(zip(bounds, bounds[1:]))
+    for spec in overlays:
+        if spec.get("mode") != "timed" or not spec.get("every"):
+            continue
+        try:
+            times, _ = ov.show_times(spec, duration, ranges)
+        except Exception:  # noqa: BLE001
+            continue
+        groups = len(ranges) if spec.get("per_part") and len(ranges) > 1 else 1
+        if len(times) <= groups:
+            span = (ranges[0][1] - ranges[0][0]) if groups > 1 else duration
+            job["warnings"].append(
+                f"Lower third លេចតែម្តង — {'ផ្នែកនីមួយៗ' if groups > 1 else 'វីដេអូ'}វែងតែ {span / 60:.1f} នាទី "
+                f"តែកំណត់ 'ម្តងទៀតរៀងរាល់' {spec['every'] / 60:g} នាទី (ចាប់ផ្តើមនៅ {spec.get('start', 0):g}វិ) — "
+                "បន្ថយពេល 'ម្តងទៀតរៀងរាល់' (ឧ. 0.5 = 30វិ)")
 
 
 def _encode_with_ads(video, base_inputs, graph, overlays, duration, points, cues, ads, dest, name_base, job, tmp):

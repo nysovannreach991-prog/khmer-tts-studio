@@ -1090,7 +1090,8 @@ class MainWindow(QMainWindow):
 
         if prefix == "lt":
             c["start"] = self._spin(0, 3600, d["start"], " វិ", "លេចឡើងលើកដំបូងនៅវិនាទីទី...")
-            c["every"] = self._spin(0, 120, d["every"], " នាទី", "លេចម្តងទៀតរៀងរាល់... (0 = តែម្តង)")
+            c["every"] = self._dspin(0, 120, d["every"], " នាទី",
+                                     "លេចម្តងទៀតរៀងរាល់... (0 = តែម្តង · 0.5 = 30 វិនាទី)")
             c["every"].setSpecialValueText("តែម្តង")
             form.addRow("ចាប់ផ្តើម", self._hrow(c["start"], QLabel("ម្តងទៀតរៀងរាល់"), c["every"]))
             c["show"] = self._spin(1, 120, d["show"], " វិ", "រយៈពេលបង្ហាញ (សម្រាប់រូបភាព — វីដេអូលេងដល់ចប់)")
@@ -1655,6 +1656,17 @@ class MainWindow(QMainWindow):
         opt = QHBoxLayout()
         opt.addWidget(QLabel("កាត់ជាផ្នែក"))
         opt.addWidget(self.brand_part)
+        opt.addSpacing(16)
+        self.brand_one_dir = QCheckBox("📁 ដាក់វីដេអូទាំងអស់ក្នុង Folder តែមួយ")
+        self.brand_one_dir.setToolTip("វីដេអូទាំងអស់ដែលដាក់ Logo រួច → Folder តែមួយក្នុងថត Output\n"
+                                      "(ឈ្មោះដូចវីដេអូដើម · កាត់ជាផ្នែក → <ឈ្មោះ>_part01.mp4 ...)")
+        self.brand_dir_name = QLineEdit()
+        self.brand_dir_name.setPlaceholderText("ឈ្មោះ Folder (ទទេ = Logo_ថ្ងៃខែ_ម៉ោង)")
+        self.brand_dir_name.setMaximumWidth(300)
+        self.brand_one_dir.toggled.connect(self.brand_dir_name.setEnabled)
+        self.brand_dir_name.setEnabled(False)
+        opt.addWidget(self.brand_one_dir)
+        opt.addWidget(self.brand_dir_name)
         opt.addStretch()
         lay.addLayout(opt)
         note = QLabel("ការកាត់ និង Ads កណ្តាលស្ថិតនៅចន្លោះស្ងាត់ក្នុងសំឡេងដើម (មិនកាត់ពាក់កណ្តាលប្រយោគ) · "
@@ -1727,6 +1739,12 @@ class MainWindow(QMainWindow):
         self.btn_brand_stop.setEnabled(True)
         self.brand_t0 = time.time()
         self.brand_specs = (overlays, ads, self.brand_part.value() * 60, trim)
+        self.brand_dir = None
+        if self.brand_one_dir.isChecked():  # លទ្ធផលទាំងអស់ → Folder តែមួយ
+            name = backend.safe_name(self.brand_dir_name.text().strip()) or f"Logo_{time.strftime('%Y%m%d_%H%M')}"
+            self.brand_dir = os.path.join(OUTPUT_DIR, name)
+            os.makedirs(self.brand_dir, exist_ok=True)
+            self._log(f"   📁 លទ្ធផលទាំងអស់ → {out_label()}/{name}")
         what = self.brand_info.text().replace("នឹងធ្វើ: ", "")
         self._log(f"🎨 {len(paths)} វីដេអូ — {what}")
         self._brand_next()
@@ -1749,6 +1767,8 @@ class MainWindow(QMainWindow):
         self.set_busy(True, f"{name}: កំពុងរកចន្លោះស្ងាត់...")
 
         def done(s):
+            if self.brand_dir:
+                s["folder"] = self._brand_gather(os.path.join(OUTPUT_DIR, s["folder"]), os.path.splitext(name)[0])
             self.brand_done.append(os.path.join(OUTPUT_DIR, s["folder"]))
             extra = f" · Ads {s['ads_inserted']}" if s.get("ads_inserted") else ""
             if s.get("trimmed"):
@@ -1761,6 +1781,23 @@ class MainWindow(QMainWindow):
         self.watch_job(job, lambda s: f"{name}: " + ("កំពុងកាត់..." if s["status"] == "trimming"
                                                       else "កំពុងរកចន្លោះស្ងាត់..."), done,
                        lambda s: stage.get(s["status"], s_video))
+
+    def _brand_gather(self, src_dir, stem):
+        """ផ្លាស់ឯកសារពី Folder ផ្ទាល់ខ្លួនរបស់វីដេអូ → Folder តែមួយ (self.brand_dir) · ត្រឡប់ path ធៀប OUTPUT_DIR"""
+        stem = backend.safe_name(stem) or "video"
+        files = sorted(f for f in os.listdir(src_dir) if f.lower().endswith(".mp4"))
+
+        def free(name):
+            base, ext = os.path.splitext(name)
+            path, k = os.path.join(self.brand_dir, name), 2
+            while os.path.exists(path):
+                path, k = os.path.join(self.brand_dir, f"{base}_{k}{ext}"), k + 1
+            return path
+
+        for i, f in enumerate(files, 1):
+            shutil.move(os.path.join(src_dir, f), free(f"{stem}.mp4" if len(files) == 1 else f"{stem}_part{i:02d}.mp4"))
+        shutil.rmtree(src_dir, ignore_errors=True)
+        return os.path.relpath(self.brand_dir, OUTPUT_DIR)
 
     def _brand_failed(self):
         QTimer.singleShot(200, self._brand_next)
@@ -1776,6 +1813,11 @@ class MainWindow(QMainWindow):
         done, left = len(self.brand_done), len(self.brand_queue)
         msg = (f"🎨 ចប់ — ✓ {done}/{self.brand_total}" + (f" · បញ្ឈប់ (នៅសល់ {left})" if left else "") +
                f" · សរុប {fmt_dur(time.time() - self.brand_t0)}")
+        if getattr(self, "brand_dir", None) and done:
+            msg += f" → {out_label()}/{os.path.basename(self.brand_dir)}"
+            self.last_result = self.brand_dir
+            for b in (self.btn_open_last, self.btn_reveal_last):
+                b.setEnabled(True)
         self._log(msg)
         self.set_status(msg, done < self.brand_total)
 
@@ -3435,7 +3477,7 @@ class MainWindow(QMainWindow):
 
     # ================= settings =================
     _CHECKS = ["auto_gender", "strip_parens", "fit", "orig_mute", "stt_gender", "stt_dub", "stt_video", "vsrt_gender",
-               "batch_keep_merged", "keep_full", "ov_confirm", "brand_trim", "brand_trim_snap"]
+               "batch_keep_merged", "keep_full", "ov_confirm", "brand_trim", "brand_trim_snap", "brand_one_dir"]
     _SPINS = ["max_speed", "workers", "orig_volume", "part_minutes", "brand_part"]
     # key ថ្មី → លំនាំដើមថ្មី (Mute សំឡេងដើម = បើក) មិនត្រូវជាន់ដោយតម្លៃចាស់ដែលបានរក្សាទុក
     _KEYS = {"orig_mute": "orig_mute_v2"}
