@@ -84,7 +84,7 @@ QTabWidget::pane {{ background: {c['surface']}; border: 1px solid {c['border']};
 QTabWidget > QStackedWidget > QWidget {{ background: transparent; }}
 QTabBar {{ qproperty-drawBase: 0; }}
 QTabBar::tab {{ background: transparent; color: {c['muted']}; border: none; border-radius: 12px;
-                padding: 8px 11px; margin: 0 2px 8px 0; font-weight: bold; }}
+                padding: 8px 7px; margin: 0 1px 8px 0; font-weight: bold; }}
 QTabBar::tab:hover {{ background: {c['hover']}; color: {c['text']}; }}
 QTabBar::tab:selected {{ background: {grad}; color: {c['on_accent']}; }}
 QTabBar QToolButton {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 8px; }}
@@ -150,13 +150,13 @@ QSlider::handle:horizontal {{ background: white; border: 3px solid {c['accent']}
                               margin: -6px 0; border-radius: 9px; }}
 
 /* ---------- tables / lists ---------- */
-QTableWidget, QTreeWidget, QListWidget {{ background: {c['input']}; alternate-background-color: {c['card']};
+QTableWidget, QTreeWidget, QTreeView, QListWidget {{ background: {c['input']}; alternate-background-color: {c['card']};
     border: 1px solid {c['border']}; border-radius: 12px; gridline-color: {c['border']};
     selection-background-color: {c['selection']}; selection-color: {c['text']}; }}
 QListWidget::item {{ padding: 6px 8px; border-radius: 8px; margin: 1px 4px; }}
-QListWidget::item:hover, QTreeWidget::item:hover {{ background: {c['hover']}; }}
-QListWidget::item:selected, QTreeWidget::item:selected {{ background: {c['selection']}; color: {c['text']}; }}
-QTreeWidget::item {{ padding: 4px 0; }}
+QListWidget::item:hover, QTreeWidget::item:hover, QTreeView::item:hover {{ background: {c['hover']}; }}
+QListWidget::item:selected, QTreeWidget::item:selected, QTreeView::item:selected {{ background: {c['selection']}; color: {c['text']}; }}
+QTreeWidget::item, QTreeView::item {{ padding: 4px 0; }}
 QHeaderView {{ background: transparent; }}
 QHeaderView::section {{ background: {c['card']}; color: {c['muted']}; border: none;
     border-bottom: 1px solid {c['border']}; padding: 7px 8px; font-weight: bold; }}

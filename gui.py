@@ -16,7 +16,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯកជន (embeddable) មិនបន្ថែមថតកម្មវិធីខ្លួនឯង
 
-from PyQt5.QtCore import QSettings, Qt, QThread, QTime, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTime, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 import ads as ads_mod
+import explorer as explorer_mod
 import app as backend
 import ffmpeg_setup
 import licensing
@@ -387,12 +388,38 @@ def ensure_license(parent=None):
     return ok or ActivationDialog(parent, error).exec_() == QDialog.Accepted
 
 
+class _DropFilter(QObject):
+    """អូសឯកសារ (ពី 📂 Explorer ឬ Windows Explorer) ទម្លាក់ចូលផ្ទាំង → MainWindow._explorer_use"""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+
+    def watch(self, root):
+        for w in [root, *root.findChildren(QWidget)]:
+            if w is root or isinstance(w, (QLineEdit, QListWidget, QTableWidget, QPlainTextEdit)):
+                target = w.viewport() if hasattr(w, "viewport") else w
+                target.setAcceptDrops(True)
+                target.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind in (QEvent.DragEnter, QEvent.DragMove, QEvent.Drop) and event.mimeData().hasUrls():
+            if kind == QEvent.Drop:
+                paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+                target = obj if isinstance(obj, QLineEdit) else None
+                QTimer.singleShot(0, lambda: self.win._explorer_use(paths, target))  # បន្ទាប់ពី drag ចប់
+            event.acceptProposedAction()
+            return True
+        return False
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         version = updater.local_version()
         self.setWindowTitle("AI Team #1" + (f"  v{version}" if version != "0" else ""))
-        self.resize(1280, 820)
+        self.resize(*DESIGN_SIZE)
         self.settings = QSettings("KhmerTTS", "Studio")
         self.edge_voices = list(FALLBACK_EDGE_VOICES)
         self.cues = []
@@ -405,16 +432,19 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._poll_job)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_text_tab(), "✍️ អត្ថបទ")
-        self.tabs.addTab(self._build_srt_tab(), "🎬 SRT→វីដេអូ")
+        self.text_tab, self.srt_tab = self._build_text_tab(), self._build_srt_tab()
+        self.tabs.addTab(self.text_tab, "✍️ អត្ថបទ")
+        self.tabs.addTab(self.srt_tab, "🎬 SRT→វីដេអូ")
         self.overlay_tab = self._build_overlay_tab()
         self.tabs.addTab(self.overlay_tab, "🏷 Logo && Ads")
         self.brand_tab = self._build_brand_tab()
         self.tabs.addTab(self.brand_tab, "🎨 Logo ប៉ុណ្ណោះ")
-        self.tabs.addTab(self._build_stt_tab(), "🎧 សំឡេង→SRT")
-        self.tabs.addTab(self._build_vsrt_tab(), "📝 វីដេអូ→SRT")
-        self.tabs.addTab(self._build_merge_tab(), "🧩 Merge")
-        self.tabs.addTab(self._build_batch_tab(), "⚡ Auto")
+        self.stt_tab, self.vsrt_tab = self._build_stt_tab(), self._build_vsrt_tab()
+        self.merge_tab, self.batch_tab = self._build_merge_tab(), self._build_batch_tab()
+        self.tabs.addTab(self.stt_tab, "🎧 សំឡេង→SRT")
+        self.tabs.addTab(self.vsrt_tab, "📝 វីដេអូ→SRT")
+        self.tabs.addTab(self.merge_tab, "🧩 Merge")
+        self.tabs.addTab(self.batch_tab, "⚡ Auto")
         self.files_tab = self._build_files_tab()
         self.tabs.addTab(self.files_tab, "📁 ឯកសារ")
         self.tabs.currentChanged.connect(
@@ -424,12 +454,24 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(
             lambda i: self._brand_summary() if self.tabs.widget(i) is self.brand_tab else None)
 
-        splitter = QSplitter(Qt.Horizontal)
+        # 📂 Explorer ខាងឆ្វេង — ជ្រើសវីដេអូផ្ទាល់ (ចុចពីរដង / ➕ / អូសទម្លាក់)
+        self.explorer = explorer_mod.ExplorerPanel(self.settings.value("explorer_dir", ""))
+        self.explorer.use.connect(self._explorer_use)
+        self.explorer.folder_changed.connect(lambda d: self.settings.setValue("explorer_dir", d))
+        self.tabs.currentChanged.connect(lambda _: self._explorer_sync_target())
+        self._drop_filter = _DropFilter(self)
+        for i in range(self.tabs.count()):
+            self._drop_filter.watch(self.tabs.widget(i))
+
+        splitter = self.splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(self.explorer)
         splitter.addWidget(self.tabs)
         splitter.addWidget(self._build_voice_panel())
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([820, 440])
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([215, 860, 440])
 
         central = QWidget()
         lay = QVBoxLayout(central)
@@ -441,6 +483,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._load_settings()
+        explorer_on = self.settings.value("explorer_on", "true") in (True, "true")
+        self.btn_explorer.setChecked(explorer_on)
+        self.explorer.setVisible(explorer_on)  # (isVisible() = False មុនបង្អួចបង្ហាញ — ប្រើតម្លៃផ្ទាល់)
+        self._explorer_sync_target()
         self._update_engine()
         self.load_edge_voices()
         if ffmpeg_setup.available():
@@ -3523,7 +3569,7 @@ class MainWindow(QMainWindow):
         saved = s.value("output_dir", "")
         if saved and not self.set_output_dir(saved, save=False):
             self._log(f"⚠ ថត Output “{saved}” ប្រើមិនបាន (ឧ. ដោត USB/Drive មិនទាន់) — ប្រើថតដើមជំនួស")
-        geom = s.value("geometry")
+        geom = s.value("geometry_v2")  # v2: បង្អួចធំជាងមុន (មាន 📂 Explorer) — ទំហំចាស់មិនប្រើ
         if geom is not None:
             self.restoreGeometry(geom)
         self._fit_to_screen()
@@ -3562,9 +3608,124 @@ class MainWindow(QMainWindow):
             s.setValue(f"brand_use_{kind}", cb.isChecked())
         for name in ("brand_trim_start", "brand_trim_len"):
             s.setValue(name, QTime(0, 0).secsTo(getattr(self, name).time()))
-        s.setValue("geometry", self.saveGeometry())
+        s.setValue("geometry_v2", self.saveGeometry())
 
     # ================= header / theme =================
+    # ================= 📂 Explorer =================
+    def _toggle_explorer(self, on):
+        self.explorer.setVisible(on)
+        self.settings.setValue("explorer_on", on)
+
+    def _tab_kind(self, widget=None):
+        widget = widget or self.tabs.currentWidget()
+        return {self.text_tab: "text", self.srt_tab: "srt", self.overlay_tab: "overlay", self.brand_tab: "brand",
+                self.stt_tab: "stt", self.vsrt_tab: "vsrt", self.merge_tab: "merge", self.batch_tab: "batch",
+                self.files_tab: "files"}.get(widget)
+
+    _TARGETS = {"text": "អត្ថបទ (.txt)", "srt": "SRT→វីដេអូ", "overlay": "Logo & Ads", "brand": "Logo ប៉ុណ្ណោះ",
+                "stt": "សំឡេង→SRT", "vsrt": "វីដេអូ→SRT", "merge": "Merge", "batch": "Auto", "files": "—"}
+
+    def _explorer_sync_target(self):
+        kind = self._tab_kind()
+        self.explorer.set_target(self._TARGETS.get(kind, ""), kind != "files")
+
+    @staticmethod
+    def _expand(paths, exts):
+        """Folder → ឯកសារខាងក្នុងដែលត្រូវប្រភេទ (តម្រៀបតាមឈ្មោះ) · ឯកសារ → ដដែល បើត្រូវប្រភេទ"""
+        out = []
+        for p in paths:
+            if os.path.isdir(p):
+                try:
+                    names = sorted(os.listdir(p), key=natural_key)
+                except OSError:
+                    continue
+                out += [os.path.join(p, f) for f in names
+                        if os.path.isfile(os.path.join(p, f)) and os.path.splitext(f)[1].lower() in exts]
+            elif os.path.splitext(p)[1].lower() in exts:
+                out.append(p)
+        return list(dict.fromkeys(out))
+
+    def _explorer_use(self, paths, target=None):
+        """ឯកសារ/Folder ពី Explorer (ឬអូសទម្លាក់) → ផ្ទាំងដែលកំពុងបើក។ target = ប្រអប់ដែលទម្លាក់ចំ (បើមាន)"""
+        paths = [os.path.normpath(p) for p in paths if p and os.path.exists(p)]
+        if not paths:
+            return
+        kind = self._tab_kind()
+        vexts, sexts = set(VIDEO_EXT), {".srt"}
+        videos = self._expand(paths, vexts)
+        dirs = [p for p in paths if os.path.isdir(p)]
+        first = paths[0]
+        if isinstance(target, QLineEdit) and target.isEnabled() and not target.isReadOnly() and os.path.isfile(first):
+            target.setText(first)  # ទម្លាក់ចំប្រអប់ឯកសារ → ដាក់ផ្ទាល់
+            if target is self.srt_path:
+                self.load_srt_file(first)
+            return self.set_status(f"✓ {os.path.basename(first)}")
+
+        if kind == "text":
+            txt = [p for p in paths if p.lower().endswith(".txt")]
+            if not txt:
+                return self.set_status("ផ្ទាំងអត្ថបទទទួលតែឯកសារ .txt", True)
+            with open(txt[0], encoding="utf-8-sig", errors="replace") as f:
+                self.text_edit.setPlainText(f.read())
+            return self.set_status(f"✓ {os.path.basename(txt[0])}")
+        if kind == "srt":
+            srts, files = self._expand(paths, sexts), self._expand(paths, sexts | vexts)
+            if len(srts) <= 1 and len(videos) <= 1 and not self.srtq_rows:
+                if not srts and not videos:
+                    return self.set_status("សូមជ្រើស .srt ឬវីដេអូ", True)
+                if videos:
+                    self.video_path.setText(videos[0])
+                if srts:
+                    self.srt_path.setText(srts[0])
+                    self.load_srt_file(srts[0])
+                else:
+                    self.set_status(f"✓ វីដេអូ {os.path.basename(videos[0])} — ជ្រើស .srt ផង")
+                return
+            return self._srtq_add(files)  # ច្រើន → បញ្ជីច្រើនឯកសារ (ផ្គូតាមឈ្មោះ)
+        if kind == "overlay":
+            return self._explorer_overlay_menu(first)
+        if kind in ("brand", "merge"):
+            if not videos:
+                return self.set_status("រកមិនឃើញវីដេអូ", True)
+            (self.brand_list if kind == "brand" else self.merge_list).add_paths(videos)
+            return self.set_status(f"✓ បានបន្ថែម {len(videos)} វីដេអូ")
+        if kind == "stt":
+            files = self._expand(paths, vexts | set(explorer_mod.AUDIO))
+            if not files:
+                return self.set_status("សូមជ្រើសឯកសារសំឡេង ឬវីដេអូ", True)
+            self.stt_path.setText(files[0])
+            return self.set_status(f"✓ {os.path.basename(files[0])}")
+        if kind == "vsrt":
+            if dirs:  # Folder = រឿងមួយ (Part ទាំងអស់ → Merge)
+                return self._vsrt_folders(dirs)
+            return self._vsrt_add([(os.path.dirname(p), [p], os.path.splitext(os.path.basename(p))[0])
+                                   for p in videos])
+        if kind == "batch":
+            return self._batch_add(dirs or list(dict.fromkeys(os.path.dirname(p) for p in paths)))
+        if kind == "files" and os.path.isfile(first):
+            open_path(first)
+
+    def _explorer_overlay_menu(self, path):
+        """ផ្ទាំង Logo & Ads — សួរថាដាក់ឯកសារនេះជាអ្វី"""
+        if not os.path.isfile(path):
+            return self.set_status("សូមជ្រើសឯកសារ (មិនមែន Folder)", True)
+        ext = os.path.splitext(path)[1].lower()
+        menu = QMenu(self)
+        menu.addSection(os.path.basename(path))
+        if ext in explorer_mod.IMAGE or ext in VIDEO_EXT:
+            menu.addAction("🏷 ដាក់ជា Logo", lambda: (self.ov["lg"]["path"].setText(path),
+                                                      self.ov["lg"]["on"].setChecked(True)))
+            menu.addAction("📺 ដាក់ជា Lower third", lambda: (self.ov["lt"]["path"].setText(path),
+                                                            self.ov["lt"]["on"].setChecked(True)))
+        if ext in VIDEO_EXT:
+            menu.addAction("📢 Ads កណ្តាល", lambda: self.ad["path"].setText(path))
+            menu.addAction("📢 Ads ចុង", lambda: self.ad["path_end"].setText(path))
+            menu.addAction("👁 វីដេអូសម្រាប់ Preview", lambda: (self.video_path.setText(path),
+                                                               self._ov_timer.start(50)))
+        if len(menu.actions()) <= 1:
+            return self.set_status("ផ្ទាំងនេះទទួលរូបភាព ឬវីដេអូ", True)
+        menu.exec_(self.cursor().pos())
+
     def _build_header(self):
         header = QFrame()
         header.setObjectName("header")
@@ -3594,6 +3755,10 @@ class MainWindow(QMainWindow):
         titles.addWidget(sub)
         lay.addLayout(titles, 1)
 
+        self.btn_explorer = QPushButton("📂 Explorer")
+        self.btn_explorer.setCheckable(True)
+        self.btn_explorer.setToolTip("បង្ហាញ/លាក់ Explorer ខាងឆ្វេង — ជ្រើសវីដេអូផ្ទាល់ពីក្នុងកម្មវិធី")
+        self.btn_explorer.toggled.connect(self._toggle_explorer)
         self.btn_theme = QPushButton()
         self.btn_update = QPushButton("🔄 Update")
         about = QPushButton("ⓘ")
@@ -3603,7 +3768,7 @@ class MainWindow(QMainWindow):
         for key, label in UI_SCALES:
             menu.addAction(label, lambda k=key: self._set_ui_scale(k))
         self.btn_scale.setMenu(menu)
-        for b in (self.btn_scale, self.btn_theme, self.btn_update, about):
+        for b in (self.btn_explorer, self.btn_scale, self.btn_theme, self.btn_update, about):
             b.setObjectName("ghost")
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
@@ -3845,7 +4010,7 @@ def setup_font(qt_app):
 
 UI_SCALES = [("auto", "🔍 Auto (តាមអេក្រង់)"), ("70", "70%"), ("80", "80%"), ("90", "90%"), ("100", "100%"),
              ("110", "110%"), ("125", "125%")]
-DESIGN_SIZE = (1320, 880)  # ទំហំបង្អួចដែលកម្មវិធីត្រូវការ (px ឡូជីខល) — Auto បង្រួមបើអេក្រង់តូចជាងនេះ
+DESIGN_SIZE = (1480, 880)  # ទំហំបង្អួចដែលកម្មវិធីត្រូវការ (px ឡូជីខល) — Auto បង្រួមបើអេក្រង់តូចជាងនេះ
 
 
 def _work_area():
