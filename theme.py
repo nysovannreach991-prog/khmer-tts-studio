@@ -1,8 +1,9 @@
-"""រចនាប័ទ្ម Modern / Gen Z — Dark & Light mode, ពណ៌ gradient លឿង→ទឹកក្រូច, ជ្រុងមូល។
+"""រចនាប័ទ្ម Modern / Gen Z — Dark, Light & Matrix mode, ពណ៌ gradient លឿង→ទឹកក្រូច, ជ្រុងមូល។
 
 C = ពណ៌បច្ចុប្បន្ន (dict ដែលប្តូរតាម mode) — gui.py ប្រើវាសម្រាប់ rich text និងពណ៌ក្នុងតារាង។
 """
 import os
+import re
 import tempfile
 
 from PyQt5.QtGui import QColor, QPalette
@@ -23,8 +24,20 @@ LIGHT = {
     "success": "#059669", "error": "#e11d48", "warn": "#c2410c",
     "female": "#db2777", "male": "#2563eb", "selection": "#fdefb2",
 }
+# Matrix — អក្សរបៃតងលើផ្ទៃខ្មៅ (phosphor green) + ភ្លៀងអក្សរ (matrix_rain.py)
+MATRIX = {
+    "bg": "#000000", "surface": "#020a04", "card": "#051209", "input": "#010603", "hover": "#0a2613",
+    "border": "#0d3a1b", "border_hi": "#1a7a36", "text": "#7dffa0", "muted": "#3fbf62", "faint": "#2b6e3d",
+    "accent": "#00ff41", "accent2": "#00d636", "accent3": "#39ff14", "on_accent": "#001a07",
+    "grad_a": "#39ff14", "grad_b": "#00b82e",
+    "success": "#00ff41", "error": "#ff4d5e", "warn": "#d4ff3a",
+    "female": "#b6ff6a", "male": "#2ee6ff", "selection": "#0c3d1c",
+}
+THEMES = {"dark": DARK, "light": LIGHT, "matrix": MATRIX}
+LABELS = {"dark": "🌙 Dark", "light": "☀️ Light", "matrix": "🟩 Matrix"}
 C = dict(DARK)
 mode = "dark"
+_base_families = None
 
 GRAD = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {a}, stop:1 {b})"
 
@@ -191,6 +204,71 @@ QMenu::item:selected {{ background: {c['selection']}; }}
 """
 
 
+def hackify(qss):
+    """Matrix → ជ្រុងការ៉េ (terminal) + រចនាប័ទ្ម hacker បន្ថែមពីលើ · theme ផ្សេង → ដដែល"""
+    if mode != "matrix":
+        return qss
+    qss = re.sub(r"border-radius:\s*\d+px", "border-radius: 0px", qss)
+    return qss + _MATRIX_QSS.format(c=C)
+
+
+# Matrix: hacker terminal — ប៊ូតុងស៊ុម → ចុចលើ = ពណ៌បញ្ច្រាស, progress ជាប្លុក, អក្សរ monospace (font កម្មវិធី)
+_MATRIX_QSS = """
+QLabel#appTitle {{ color: {c[accent]}; font-weight: bold; }}
+QLabel#appSub {{ color: {c[muted]}; }}
+QLabel#pill {{ background: transparent; color: {c[accent]}; border: 1px solid {c[accent]}; }}
+QLabel#logo {{ background: {c[bg]}; border: 1px solid {c[accent]}; color: {c[accent]}; }}
+QFrame#header {{ border: 1px solid {c[border_hi]}; }}
+QGroupBox {{ background: {c[surface]}; border: 1px solid {c[border_hi]}; }}
+QGroupBox::title {{ color: {c[bg]}; background: {c[accent]}; padding: 0 6px; }}
+
+QPushButton {{ background: transparent; color: {c[accent]}; border: 1px solid {c[border_hi]}; }}
+QPushButton:hover {{ background: {c[accent]}; color: {c[bg]}; border-color: {c[accent]}; }}
+QPushButton:pressed {{ background: {c[accent2]}; color: {c[bg]}; }}
+QPushButton:checked {{ background: {c[selection]}; color: {c[accent]}; border-color: {c[accent]}; }}
+QPushButton:disabled {{ background: transparent; color: {c[faint]}; border: 1px dashed {c[border]}; }}
+QPushButton#primary, QPushButton#bigGo {{ background: {c[bg]}; color: {c[accent]}; border: 2px solid {c[accent]};
+    font-weight: bold; }}
+QPushButton#primary:hover, QPushButton#bigGo:hover {{ background: {c[accent]}; color: {c[bg]}; }}
+QPushButton#primary:disabled, QPushButton#bigGo:disabled {{ background: {c[bg]}; color: {c[faint]};
+    border: 2px dashed {c[border_hi]}; }}
+QPushButton#ghost {{ color: {c[accent]}; border: 1px solid {c[border_hi]}; }}
+QPushButton#ghost:hover {{ background: {c[accent]}; color: {c[bg]}; }}
+
+QTabBar::tab {{ color: {c[muted]}; border-bottom: 2px solid transparent; }}
+QTabBar::tab:hover {{ background: transparent; color: {c[accent]}; border-bottom: 2px solid {c[border_hi]}; }}
+QTabBar::tab:selected {{ background: {c[accent]}; color: {c[bg]}; border-bottom: 2px solid {c[accent]}; }}
+
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {c[bg]}; color: {c[accent]};
+    border: 1px solid {c[border_hi]}; selection-background-color: {c[accent]}; selection-color: {c[bg]}; }}
+QPlainTextEdit, QTextEdit {{ color: {c[accent]}; }}
+
+QCheckBox::indicator, QRadioButton::indicator {{ background: {c[bg]}; border: 1px solid {c[accent2]}; }}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {{ background: {c[accent]}; }}
+
+QSlider::groove:horizontal {{ height: 4px; background: {c[border]}; }}
+QSlider::sub-page:horizontal {{ background: {c[accent]}; }}
+QSlider::handle:horizontal {{ background: {c[accent]}; border: none; width: 10px; height: 16px; margin: -6px 0; }}
+
+QProgressBar {{ background: {c[bg]}; color: {c[text]}; border: 1px solid {c[border_hi]}; }}
+QProgressBar::chunk {{ background: {c[accent]}; width: 9px; margin: 2px 1px; }}
+QProgressBar#cardBar::chunk, QProgressBar#bigBar::chunk {{ background: {c[accent]}; width: 7px; margin: 1px; }}
+
+QHeaderView::section {{ background: {c[bg]}; color: {c[accent]}; border-bottom: 1px solid {c[border_hi]}; }}
+QTableWidget, QTreeWidget, QTreeView, QListWidget {{ background: {c[bg]}; selection-background-color: {c[accent]};
+    selection-color: {c[bg]}; }}
+QListWidget::item:selected, QTreeWidget::item:selected, QTreeView::item:selected {{ background: {c[accent]};
+    color: {c[bg]}; }}
+QScrollBar::handle {{ background: {c[border_hi]}; }}
+QMenu {{ background: {c[bg]}; border: 1px solid {c[accent]}; }}
+QMenu::item:selected {{ background: {c[accent]}; color: {c[bg]}; }}
+QToolTip {{ background: {c[bg]}; color: {c[accent]}; border: 1px solid {c[accent]}; }}
+QLabel#chip {{ background: {c[bg]}; }}
+QLabel#chip[state="active"] {{ background: {c[accent]}; color: {c[bg]}; }}
+QFrame#dropZone {{ background: {c[bg]}; border: 1px dashed {c[accent2]}; }}
+"""
+
+
 def palette():
     c = C
     p = QPalette()
@@ -207,8 +285,14 @@ def palette():
 
 def apply(qt_app, new_mode):
     global mode
-    mode = new_mode if new_mode in ("dark", "light") else "dark"
+    mode = new_mode if new_mode in THEMES else "dark"
     C.clear()
-    C.update(DARK if mode == "dark" else LIGHT)
+    C.update(THEMES[mode])
+    global _base_families
+    if _base_families is None:
+        _base_families = qt_app.font().families() or [qt_app.font().family()]
+    font = qt_app.font()  # Matrix: Consolas មុន → អក្សរខ្មែរប្រើ Kantumruy (font បម្រុង)
+    font.setFamilies((["Consolas"] if mode == "matrix" else []) + [f for f in _base_families if f != "Consolas"])
+    qt_app.setFont(font)
     qt_app.setPalette(palette())
-    qt_app.setStyleSheet(stylesheet())
+    qt_app.setStyleSheet(hackify(stylesheet()))

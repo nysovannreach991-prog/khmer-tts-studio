@@ -253,8 +253,55 @@ def clean_key(key):
     return key.split()[0] if key.split() else ""
 
 
+_KEY_RE = re.compile(r"bayon_sk_[A-Za-z0-9_\-]+|AIza[0-9A-Za-z_\-]{30,}")
+
+
+def parse_keys(text):
+    """key ច្រើន (បំបែកដោយ , / ដកឃ្លា / បន្ទាត់ថ្មី ឬ paste ទាំងស្លាក "API Key:") → list ដោយមិនស្ទួន"""
+    found = _KEY_RE.findall(text or "")
+    if not found:  # key ទម្រង់ផ្សេង → មួយក្នុងមួយផ្នែក
+        found = [clean_key(p) for p in re.split(r"[,;\n]+", text or "")]
+    return list(dict.fromkeys(k for k in found if k))
+
+
+def join_keys(text):
+    return ",".join(parse_keys(text))
+
+
 def is_gateway_key(key):
-    return clean_key(key).startswith("bayon_sk_")
+    """True = key ទាំងអស់ជា Bayon (មិនអាចប្រើ Gemini TTS)"""
+    keys = parse_keys(key)
+    return bool(keys) and all(k.startswith("bayon_sk_") for k in keys)
+
+
+# key ដែលមានបញ្ហា → រំលងរហូតដល់ពេលនេះ (time.time()) · key_switch_hook(msg) ប្រាប់ GUI ពេលប្តូរ key
+_bad_keys = {}
+_key_lock = threading.Lock()
+key_switch_hook = None
+_KEY_DEAD = ("401", "402", "403", "quota", "Quota", "insufficient", "expired", "invalid", "Invalid", "balance",
+             "API_KEY_INVALID", "PERMISSION_DENIED")
+
+
+def key_label(key):
+    return f"{key[:10]}…{key[-4:]}" if len(key) > 16 else key
+
+
+def key_status(text):
+    """[(key, បញ្ហា ឬ None)] សម្រាប់បង្ហាញក្នុង UI"""
+    now = time.time()
+    with _key_lock:
+        return [(k, _bad_keys[k][1] if k in _bad_keys and _bad_keys[k][0] > now else None) for k in parse_keys(text)]
+
+
+def _key_problem(msg):
+    """None = កំហុសធម្មតា (បណ្តាញ/500) · វិនាទីដែលត្រូវរំលង key នេះ"""
+    code = re.search(r"API error (\d+)", msg)
+    code = int(code.group(1)) if code else 0
+    if code == 429 and not any(w in msg for w in ("quota", "Quota", "insufficient", "balance")):
+        return 60  # ហៅញឹកពេក → សម្រាកបន្តិច
+    if code in (401, 402, 403, 429) or (code == 400 and any(w in msg for w in _KEY_DEAD)):
+        return 6 * 3600
+    return None
 
 
 def _schema_lower(schema):
@@ -316,9 +363,35 @@ def _gateway_post(api_key, model, body):
 
 
 def gemini_post(api_key, model, body):
-    """ហៅ Gemini generateContent ហើយត្រឡប់ JSON response (Bayon key → Bayon Gateway ដោយស្វ័យប្រវត្តិ)"""
+    """ហៅ Gemini generateContent ហើយត្រឡប់ JSON response (Bayon key → Bayon Gateway ដោយស្វ័យប្រវត្តិ)
+    api_key អាចមាន key ច្រើន — key មានបញ្ហា (អស់ quota / ផុតកំណត់ / ខុស) → ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ"""
+    keys = parse_keys(api_key)
+    if "AUDIO" in body.get("generationConfig", {}).get("responseModalities", []):
+        keys = [k for k in keys if not k.startswith("bayon_sk_")] or keys  # Gemini TTS: តែ key Google
+    if len(keys) <= 1:
+        return _post_one(keys[0] if keys else "", model, body)
+    now = time.time()
+    with _key_lock:
+        order = [k for k in keys if _bad_keys.get(k, (0,))[0] <= now] or keys
+    last = None
+    for n, key in enumerate(order):
+        try:
+            return _post_one(key, model, body)
+        except RuntimeError as e:
+            skip = _key_problem(str(e))
+            if skip is None:
+                raise
+            last = e
+            with _key_lock:
+                _bad_keys[key] = (time.time() + skip, str(e)[:120])
+            if n + 1 < len(order) and key_switch_hook:
+                key_switch_hook(f"🔑 Key {key_label(key)} មានបញ្ហា ({str(e)[:80]}) → ប្តូរទៅ {key_label(order[n + 1])}")
+    raise RuntimeError(f"Key ទាំង {len(order)} មានបញ្ហា — {last}")
+
+
+def _post_one(api_key, model, body):
     api_key = clean_key(api_key)
-    if is_gateway_key(api_key):
+    if api_key.startswith("bayon_sk_"):
         return _gateway_post(api_key, model, body)
     req = urllib.request.Request(
         GEMINI_URL.format(model=model),

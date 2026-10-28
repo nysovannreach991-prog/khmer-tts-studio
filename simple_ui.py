@@ -359,7 +359,8 @@ class SimplePage(QWidget):
         sl.addWidget(self._label("🔑 Bayon / Gemini key (សម្រាប់បកប្រែ)"))
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
-        self.key.setPlaceholderText("bayon_sk_... ឬ AIza...")
+        self.key.setPlaceholderText("bayon_sk_... ឬ AIza... (ច្រើន key បំបែកដោយ ,)")
+        self.key.setToolTip("key ច្រើន → key មានបញ្ហា ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ")
         sl.addWidget(self.key)
         self.key_state = QLabel("")
         self.key_state.setObjectName("simpleMuted")
@@ -555,7 +556,7 @@ class SimplePage(QWidget):
     def restyle(self):
         c = theme.C
         grad = theme.GRAD.format(a=c["grad_a"], b=c["grad_b"])
-        self.setStyleSheet(f"""
+        self.setStyleSheet(theme.hackify(f"""
 QFrame#simpleHero, QFrame#simpleSide, QFrame#simpleFoot {{ background: {c['surface']};
     border: 1px solid {c['border']}; border-radius: 18px; }}
 QLabel#simpleTitle {{ font-size: 17pt; font-weight: bold; }}
@@ -596,4 +597,4 @@ QPushButton#bigGo {{ background: {grad}; color: {c['on_accent']}; border: none; 
 QPushButton#bigGo:hover {{ background: {theme.GRAD.format(a=QColor(c['grad_a']).lighter(110).name(),
                                                        b=QColor(c['grad_b']).lighter(112).name())}; }}
 QPushButton#bigGo:disabled {{ background: {c['hover']}; color: {c['faint']}; }}
-""")
+"""))

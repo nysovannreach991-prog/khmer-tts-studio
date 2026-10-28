@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯក�
 from PyQt5.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTime, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
-    QFontComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QFontComboBox, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
     QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTimeEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -41,6 +41,7 @@ import watermark
 import whisper_srt as whisper_mod
 import funasr_srt as funasr_mod
 import auto_pipeline
+import matrix_rain
 import simple_ui
 import vocal_remove
 
@@ -419,6 +420,8 @@ class _DropFilter(QObject):
 
 
 class MainWindow(QMainWindow):
+    key_switched = pyqtSignal(str)  # app.gemini_post ប្តូរ key (ពី thread ផ្សេង)
+
     def __init__(self):
         super().__init__()
         version = updater.local_version()
@@ -586,17 +589,34 @@ class MainWindow(QMainWindow):
 
         # Gemini key (TTS + សំឡេង → SRT)
         key_box = QGroupBox("🔑 Gemini / Bayon API Key")
-        kl = QHBoxLayout(key_box)
+        kv = QVBoxLayout(key_box)
+        kl = QHBoxLayout()
+        kv.addLayout(kl)
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("ប្រើ GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "AIza... (Gemini) ឬ bayon_sk_... (Bayon)")
+        self.api_key.setToolTip("ដាក់ key ច្រើនបាន (បំបែកដោយ ,) — key មានបញ្ហា → ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ")
         show = QPushButton("👁")
         show.setFixedWidth(40)
         show.setStyleSheet("padding:0")
         show.setCheckable(True)
         show.toggled.connect(lambda on: self.api_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
+        more = QPushButton("➕")
+        more.setFixedWidth(40)
+        more.setStyleSheet("padding:0")
+        more.setToolTip("បន្ថែម / គ្រប់គ្រង key ច្រើន (key បម្រុង)")
+        more.clicked.connect(self._edit_keys)
         kl.addWidget(self.api_key)
         kl.addWidget(show)
+        kl.addWidget(more)
+        self.key_info = QLabel()
+        self.key_info.setObjectName("hint")
+        self.key_info.setWordWrap(True)
+        self.key_info.setVisible(False)
+        kv.addWidget(self.key_info)
+        self.api_key.textChanged.connect(lambda _: self._key_info_refresh())
+        self.key_switched.connect(lambda msg: (self._log(msg), self._key_info_refresh()))
+        backend.key_switch_hook = self.key_switched.emit
         lay.addWidget(key_box)
 
         self.strip_parens = QCheckBox("លុបអត្ថបទក្នុង ( ) — ឈ្មោះតួអង្គ")
@@ -2485,8 +2505,50 @@ class MainWindow(QMainWindow):
         return p
 
     def gemini_key(self):
-        """Gemini (AIza...) ឬ Bayon Gateway (bayon_sk_...) — លុបស្លាក "API Key:" ដែលជាប់មកពេល copy"""
-        return backend.clean_key(self.api_key.text()) or os.environ.get("GEMINI_API_KEY", "")
+        """Gemini (AIza...) ឬ Bayon Gateway (bayon_sk_...) — key ច្រើនបំបែកដោយ "," (app.gemini_post ប្តូរពេលមានបញ្ហា)"""
+        return backend.join_keys(self.api_key.text()) or os.environ.get("GEMINI_API_KEY", "")
+
+    def _key_info_refresh(self):
+        status = backend.key_status(self.api_key.text())
+        if len(status) <= 1 and not any(bad for _, bad in status):
+            self.key_info.setVisible(False)
+            return
+        ok = sum(1 for _, bad in status if not bad)
+        text = f"🔑 {len(status)} key · ប្រើបាន {ok}"
+        if ok < len(status):
+            text += f" · ⚠ មានបញ្ហា {len(status) - ok} (រំលងសិន)"
+        self.key_info.setText(text)
+        self.key_info.setVisible(True)
+
+    def _edit_keys(self):
+        """ប្រអប់ key ច្រើន — មួយបន្ទាត់មួយ key (key ទី 1 ប្រើមុន ហើយបន្ទាប់ជាបម្រុង)"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🔑 API Key ច្រើន")
+        dlg.resize(560, 360)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("ដាក់ Bayon / Gemini key មួយបន្ទាត់មួយ។ ប្រើ key ទី 1 មុន — បើ key អស់ quota, ផុតកំណត់ ឬខុស\n"
+                           "កម្មវិធីប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ (paste ទាំងស្លាក \"API Key:\" ក៏បាន)។"))
+        edit = QPlainTextEdit("\n".join(backend.parse_keys(self.api_key.text())))
+        edit.setPlaceholderText("bayon_sk_...\nbayon_sk_...\nAIza...")
+        v.addWidget(edit, 1)
+        info = QLabel()
+        info.setWordWrap(True)
+        v.addWidget(info)
+
+        def refresh():
+            rows = backend.key_status(edit.toPlainText())
+            info.setText("\n".join(f"{n}. {backend.key_label(k)} — "
+                                   + (f"⚠ {bad[:70]}" if bad else ("Bayon" if k.startswith("bayon_sk_") else "Gemini"))
+                                   for n, (k, bad) in enumerate(rows, 1)) or "គ្មាន key")
+        edit.textChanged.connect(refresh)
+        refresh()
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+        if dlg.exec_() == QDialog.Accepted:
+            self.api_key.setText(", ".join(backend.parse_keys(edit.toPlainText())))
+            self.settings.setValue("api_key", self.api_key.text())
 
     # ================= busy / status / jobs =================
     def set_status(self, msg, error=False):
@@ -3707,7 +3769,7 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self):
         s = self.settings
-        self.api_key.setText(backend.clean_key(s.value("api_key", "")))  # លុបស្លាក "API Key:" ដែល paste ជាប់
+        self.api_key.setText(", ".join(backend.parse_keys(s.value("api_key", ""))))  # លុបស្លាក "API Key:" ដែល paste ជាប់
         (self.rb_gemini if s.value("engine") == "gemini" else self.rb_edge).setChecked(True)
         for name, slider in (("rate", self.rate), ("pitch", self.pitch), ("volume", self.volume)):
             slider[1].setValue(int(s.value(name, 0)))
@@ -3926,6 +3988,7 @@ class MainWindow(QMainWindow):
         title_row = QHBoxLayout()
         title = QLabel("AI Team #1")
         title.setObjectName("appTitle")
+        self.app_title = title
         title_row.addWidget(title)
         version = updater.local_version()
         if version != "0":
@@ -3934,8 +3997,9 @@ class MainWindow(QMainWindow):
             title_row.addWidget(pill)
         title_row.addStretch()
         titles.addLayout(title_row)
-        sub = QLabel("បកប្រែ · បញ្ចូលសំឡេង · កាត់វីដេអូ — ក្នុងមួយចុច ✨")
+        sub = QLabel(APP_SUB)
         sub.setObjectName("appSub")
+        self.app_sub = sub
         titles.addWidget(sub)
         lay.addLayout(titles, 1)
 
@@ -3961,10 +4025,17 @@ class MainWindow(QMainWindow):
             b.setObjectName("ghost")
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
-        self.btn_theme.setToolTip("ប្តូរ Dark / Light")
+        self.btn_theme.setToolTip("ប្តូរ Theme: Dark / Light / Matrix")
+        theme_menu = QMenu(self.btn_theme)
+        for key, label in theme.LABELS.items():
+            theme_menu.addAction(label, lambda k=key: self.set_theme(k))
+        self.btn_theme.setMenu(theme_menu)
+        # ភ្លៀងស្រអាប់ពេលកាត់ចំណងជើង/ប៊ូតុង (widget ផ្ទាល់ក្នុង header)
+        clear = [logo, title, sub] + [b for b in header.findChildren(QPushButton)] + header.findChildren(QLabel, "pill")
+        self.header_rain = matrix_rain.MatrixRain(header, cell=15, alpha=0.42, fps=20, density=0.6, keep_clear=clear)
+        self.header_rain.hide()
         self.btn_update.setToolTip("ពិនិត្យ Update")
         about.setToolTip("អំពីកម្មវិធី")
-        self.btn_theme.clicked.connect(self.toggle_theme)
         self.btn_update.clicked.connect(lambda: self.check_update(silent=False))
         about.clicked.connect(self._about)
         self._sync_theme_button()
@@ -3995,7 +4066,39 @@ class MainWindow(QMainWindow):
             self.move(avail.left() + 8, avail.top() + 8)
 
     def _sync_theme_button(self):
-        self.btn_theme.setText("☀️ Light" if theme.mode == "dark" else "🌙 Dark")
+        self.btn_theme.setText(f"{theme.LABELS[theme.mode]} ▾")
+        self._sync_terminal_title()
+        rain = getattr(self, "header_rain", None)
+        if rain:
+            rain.start() if theme.mode == "matrix" else rain.stop()
+
+    def _sync_terminal_title(self):
+        """Matrix → ចំណងជើងដូច terminal: "> AI_TEAM#1█" (cursor ភ្លឹបភ្លែត) + ពន្លឺបៃតង"""
+        hacker = theme.mode == "matrix"
+        blink = getattr(self, "_blink", None)
+        if not hacker:
+            if blink:
+                blink.stop()
+            self.app_title.setText("AI Team #1")
+            self.app_sub.setText(APP_SUB)
+            self.app_title.setGraphicsEffect(None)
+            return
+        self.app_sub.setText("root@aiteam:~$ ./dub --khmer  # " + APP_SUB.split(" — ")[0])
+        glow = QGraphicsDropShadowEffect(self.app_title)
+        glow.setColor(QColor(theme.C["accent"]))
+        glow.setBlurRadius(16)
+        glow.setOffset(0, 0)
+        self.app_title.setGraphicsEffect(glow)
+        if not blink:
+            self._blink = blink = QTimer(self)
+            self._blink_on = True
+
+            def tick():
+                self._blink_on = not self._blink_on
+                self.app_title.setText("> AI_TEAM#1" + ("█" if self._blink_on else " "))
+            blink.timeout.connect(tick)
+        self.app_title.setText("> AI_TEAM#1█")
+        blink.start(530)
 
     # ================= ✨ Simple mode =================
     def _toggle_simple(self, on):
@@ -4029,7 +4132,8 @@ class MainWindow(QMainWindow):
         sp.mute.toggled.connect(self.orig_mute.setChecked)
         sp.duck.setCurrentIndex(self.orig_duck.currentIndex())
         sp.duck.currentIndexChanged.connect(self.orig_duck.setCurrentIndex)
-        sp.key.textChanged.connect(lambda t: (self.api_key.setText(backend.clean_key(t)), self._simple_key_state()))
+        sp.key.textChanged.connect(lambda t: (self.api_key.setText(", ".join(backend.parse_keys(t))),
+                                              self._simple_key_state()))
         sp.voice.currentIndexChanged.connect(lambda _: s.setValue("simple_voice", sp.voice.currentData()))
         sp.lang.currentIndexChanged.connect(lambda _: s.setValue("simple_lang", sp.lang.currentData()))
         sp.use_brand.toggled.connect(lambda on: s.setValue("simple_brand", on))
@@ -4042,10 +4146,11 @@ class MainWindow(QMainWindow):
         sp = self.simple_page
         if not key:
             sp.key_state.setText("⚠ ត្រូវការ key ដើម្បីបកប្រែ (SRT ខ្មែរដែលមានស្រាប់ មិនត្រូវការទេ)")
-        elif backend.is_gateway_key(key):
-            sp.key_state.setText("✓ Bayon Gateway — Gemini 3.8 Flash")
         else:
-            sp.key_state.setText("✓ Gemini API (Google)")
+            n = len(backend.parse_keys(key))
+            more = f" · {n} key (ប្តូរខ្លួនឯងពេលមានបញ្ហា)" if n > 1 else ""
+            sp.key_state.setText(("✓ Bayon Gateway — Gemini 3.8 Flash" if backend.is_gateway_key(key)
+                                  else "✓ Gemini API (Google)") + more)
 
     def _simple_start(self):
         sp = self.simple_page
@@ -4155,11 +4260,14 @@ class MainWindow(QMainWindow):
         worker.failed.connect(lambda e: finish(False, e))
         self._start_worker(worker)
 
-    def toggle_theme(self):
-        new = "light" if theme.mode == "dark" else "dark"
+    def set_theme(self, new):
+        if new == theme.mode:
+            return
         theme.apply(QApplication.instance(), new)
         self.settings.setValue("theme", new)
         self._sync_theme_button()
+        if new == "matrix":
+            matrix_rain.cascade(self)  # ភ្លៀងអក្សរពេញបង្អួចមួយភ្លែត
         self.simple_page.restyle()
         # ពណ៌ក្នុង rich text / តារាង ត្រូវគូរឡើងវិញ
         self._render_stages()
@@ -4370,6 +4478,7 @@ def setup_font(qt_app):
     return font
 
 
+APP_SUB = "បកប្រែ · បញ្ចូលសំឡេង · កាត់វីដេអូ — ក្នុងមួយចុច ✨"
 UI_SCALES = [("auto", "🔍 Auto (តាមអេក្រង់)"), ("70", "70%"), ("80", "80%"), ("90", "90%"), ("100", "100%"),
              ("110", "110%"), ("125", "125%")]
 DESIGN_SIZE = (1480, 880)  # ទំហំបង្អួចដែលកម្មវិធីត្រូវការ (px ឡូជីខល) — Auto បង្រួមបើអេក្រង់តូចជាងនេះ
