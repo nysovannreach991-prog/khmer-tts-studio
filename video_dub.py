@@ -94,31 +94,49 @@ def cut_points(cues, duration, part_sec, kf=None):
     return points
 
 
+# Ducking: sidechaincompress (TTS ជា sidechain) — release វែងបន្តិច កុំឲ្យភ្លេងលោតឡើងចុះរវាងពាក្យ
+DUCK = {1: "threshold=0.03:ratio=2:attack=20:release=500:makeup=1",
+        2: "threshold=0.015:ratio=8:attack=15:release=450:makeup=1",
+        3: "threshold=0.01:ratio=20:attack=10:release=400:makeup=1"}
+DUCK_LABELS = ["បិទ", "ស្រាល", "មធ្យម", "ខ្លាំង"]
+
+
 def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job, overlays=None, ads=None,
-                  keep_full=False):
+                  keep_full=False, bg_audio=None, duck=0):
     """ដាក់ dub_pcm ចូលវីដេអូ (រក្សាសំឡេងដើមតាម orig_volume) ហើយកាត់ជាផ្នែកៗ។
     overlays = Logo / Lower third (មើល overlay.py) — ត្រូវ encode វីដេអូឡើងវិញ
     ads = វីដេអូ Ads នៅកណ្តាល/ចុង (មើល ads.py) — ដាក់បន្ទាប់ពីកាត់ជាផ្នែករួច
     dub_pcm = None → រក្សាសំឡេងដើម (ដាក់តែ Logo / Ads លើវីដេអូដែលមានស្រាប់)
-    keep_full = True → រក្សាទុកវីដេអូពេញ (មិនកាត់, គ្មាន Ads) ផង: out_dir/<name_base>_full.mp4 → job["full"]"""
+    keep_full = True → រក្សាទុកវីដេអូពេញ (មិនកាត់, គ្មាន Ads) ផង: out_dir/<name_base>_full.mp4 → job["full"]
+    bg_audio = សំឡេងដើមដែលលុបការនិយាយចេញ (vocal_remove) — ប្រើជំនួសសំឡេងដើម (orig_volume = កម្រិតភ្លេង)
+    duck = 1/2/3 → បន្ថយសំឡេងដើមពេល TTS និយាយ (ស្រាល/មធ្យម/ខ្លាំង) · 0 = បិទ"""
     duration, has_audio = probe(video)
     overlays = [o for o in (overlays or []) if o.get("path") and os.path.isfile(o["path"])]
     tmp = tempfile.mkdtemp(prefix="vdub_")
     try:
+        # សំឡេងដើម: [0:a] ឬភ្លេងគ្មានការនិយាយ (input ចុងក្រោយនៃ base_inputs)
+        orig = "[0:a]"
         if dub_pcm is None:  # រក្សាសំឡេងដើម (បើគ្មាន → ភាពស្ងាត់ ដើម្បីឱ្យ Ads/concat ដំណើរការ)
-            base_inputs = ["-i", video]
-            graph = ("[0:a]aresample=48000,aformat=channel_layouts=stereo[a]" if has_audio
-                     else f"anullsrc=r=48000:cl=stereo,atrim=0:{duration:.3f}[a]")
+            base_inputs = ["-i", video] + (["-i", bg_audio] if bg_audio else [])
+            orig = "[1:a]" if bg_audio else orig
+            graph = (f"{orig}aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{duration:.3f}[a]"
+                     if has_audio or bg_audio else f"anullsrc=r=48000:cl=stereo,atrim=0:{duration:.3f}[a]")
         else:
             dub_wav = os.path.join(tmp, write_output(dub_pcm, tmp, "dub", "wav"))
-            base_inputs = ["-i", video, "-i", dub_wav]
+            base_inputs = ["-i", video, "-i", dub_wav] + (["-i", bg_audio] if bg_audio else [])
+            orig = "[2:a]" if bg_audio else orig
             dub_sec = len(dub_pcm) / SAMPLE_RATE
             if dub_sec > duration + 1:
                 job["warnings"].append(f"សំឡេង TTS វែងជាងវីដេអូ {dub_sec - duration:.1f}s — ផ្នែកលើសត្រូវកាត់ចោល")
             dub = f"[1:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{duration:.3f}"
-            if has_audio and orig_volume > 0:
-                graph = (f"[0:a]aresample=48000,aformat=channel_layouts=stereo,volume={orig_volume:.2f}[bg];"
-                         f"{dub}[d];[bg][d]amix=inputs=2:duration=first:normalize=0[a]")
+            if (has_audio or bg_audio) and orig_volume > 0:
+                graph = (f"{orig}aresample=48000,aformat=channel_layouts=stereo,volume={orig_volume:.2f},"
+                         f"apad,atrim=0:{duration:.3f}[bg];")
+                if duck:  # សំឡេង TTS ជា sidechain → ភ្លេងចុះពេលនិយាយ ហើយឡើងវិញពេលស្ងាត់
+                    graph += (f"{dub},asplit=2[d][sc];[bg][sc]sidechaincompress={DUCK[duck]}[bgd];"
+                              f"[bgd][d]amix=inputs=2:duration=first:normalize=0[a]")
+                else:
+                    graph += f"{dub}[d];[bg][d]amix=inputs=2:duration=first:normalize=0[a]"
             else:
                 graph = f"{dub}[a]"
 
@@ -369,9 +387,31 @@ def trim_video(video, start, end, out, reencode):
                 raise
 
 
-def start_brand_job(video, out_dir, name_base, overlays, ads, part_sec, trim=None):
+def separate_vocals(src, out_audio, job, sub=None):
+    """លុបការនិយាយ (vocal_remove ក្នុង process កូន) — job["status"] = "separating", job["stage_pct"] = %
+    sub = job vocal_remove ដែលបានចាប់ផ្តើមរួច (ស្របពេលជាមួយ TTS) — រង់ចាំវា"""
+    import vocal_remove
+    sub = sub or vocal_remove.start_job(src, out_audio)
+    prev = job.get("status")
+    job["status"], job["stage_pct"] = "separating", 0
+
+    def tick(s):
+        if s["status"] == "download":
+            job["sep_msg"] = f"ទាញយក model លុបការនិយាយ (ម្តងគត់) {s['done']}%"
+        elif s["status"] == "running":
+            job["stage_pct"] = int(100 * s["done"] / max(s["total"], 1))
+            job["sep_msg"] = f"កំពុងលុបការនិយាយ ({'GPU' if s.get('device') == 'cuda' else 'CPU'})"
+        else:
+            job["sep_msg"] = "កំពុងបើក model លុបការនិយាយ..."
+    path = vocal_remove.wait(sub, tick)
+    job["status"] = prev if prev not in (None, "separating") else "video"
+    return path
+
+
+def start_brand_job(video, out_dir, name_base, overlays, ads, part_sec, trim=None, novocal=False):
     """ដាក់តែ Logo / Lower third / Watermark / Ads លើវីដេអូដែលមានស្រាប់ (រក្សាសំឡេងដើម, មិនបកប្រែ)។
-    trim = {"start": វិនាទី, "length": វិនាទី, "snap": True} → កាត់យកតែផ្នែកនោះជាមុនសិន"""
+    trim = {"start": វិនាទី, "length": វិនាទី, "snap": True} → កាត់យកតែផ្នែកនោះជាមុនសិន
+    novocal = True → លុបសំឡេងនិយាយចេញ (រក្សាភ្លេង/សូរ) — status "separating", stage_pct"""
     job_id = uuid.uuid4().hex[:12]
     jobs[job_id] = {"status": "analyzing", "done": 0, "total": 1, "error": None, "warnings": [],
                     "folder": None, "parts": [], "trimmed": None}
@@ -398,8 +438,11 @@ def start_brand_job(video, out_dir, name_base, overlays, ads, part_sec, trim=Non
                             for c in cues if c["end"] > ms0 and c["start"] < ms1]
                     job["trimmed"] = (round(t0, 2), round(t1, 2))
             job["done"] = 1
-            job["folder"], job["parts"] = mix_and_split(src, None, cues, out_dir, name_base, 0, part_sec, job,
-                                                        overlays, ads)
+            bg = None
+            if novocal:
+                bg = separate_vocals(src, os.path.join(tmp, "novocal.flac"), job)
+            job["folder"], job["parts"] = mix_and_split(src, None, cues, out_dir, name_base, 1.0, part_sec, job,
+                                                        overlays, ads, bg_audio=bg)
             job["status"] = "done"
         except Exception as e:  # noqa: BLE001
             job.update(status="error", error=str(e))

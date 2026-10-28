@@ -141,15 +141,46 @@ async def edge_audio_async(text, voice, rate=0, pitch=0, volume=0):
                 raise RuntimeError("Edge TTS មិនបានផ្ញើសំឡេងមកវិញ")
             break
         except Exception as e:
-            if attempt == EDGE_RETRIES - 1:
+            # "No audio" = អត្ថបទអានមិនបាន (មិនមែនបណ្តាញ) — ព្យាយាមតែម្តងទៀតគត់
+            if attempt == EDGE_RETRIES - 1 or (attempt >= 1 and "No audio" in str(e)):
                 raise RuntimeError(f"Edge TTS: {e}") from None
             await asyncio.sleep(2 ** attempt)
 
     tmp = f"{cache}.{uuid.uuid4().hex}.tmp"
     with open(tmp, "wb") as f:
         f.write(audio)
-    os.replace(tmp, cache)
+    try:
+        os.replace(tmp, cache)
+    except OSError:  # បន្ទាត់ដូចគ្នា (ឧ. "好的") បង្កើតស្របគ្នា → Windows ចាក់សោ cache — មួយទៀតបានរក្សាទុករួចហើយ
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
     return bytes(audio)
+
+
+EDGE_MIN_VERSION = (7, 3, 1)  # Microsoft បដិសេធ (403) កំណែចាស់ជាងនេះ
+
+
+def edge_outdated():
+    try:
+        v = tuple(int(x) for x in edge_tts.__version__.split(".")[:3])
+    except (AttributeError, ValueError):
+        return False
+    return v < EDGE_MIN_VERSION
+
+
+def reload_edge_tts():
+    """ផ្ទុក edge_tts ឡើងវិញបន្ទាប់ពី pip upgrade — មិនបាច់បើកកម្មវិធីឡើងវិញ"""
+    global edge_tts, _edge_voices_cache
+    import importlib
+    import sys
+    for name in [m for m in sys.modules if m == "edge_tts" or m.startswith("edge_tts.")]:
+        del sys.modules[name]
+    importlib.invalidate_caches()
+    edge_tts = importlib.import_module("edge_tts")
+    _edge_voices_cache = None
+    return edge_tts.__version__
 
 
 def edge_audio(text, voice, rate=0, pitch=0, volume=0):
@@ -208,8 +239,87 @@ def split_text(text, limit=GEMINI_CHUNK_CHARS):
     return [c for c in chunks if c.strip()]
 
 
+BAYON_URL = "https://bayongateway.com/v1/chat/completions"
+# model ដែល Bayon មិនមាន → model ជិតបំផុតដែលមាន
+BAYON_MODELS = {"gemini-3.5-flash": "gemini-3.8-flash", "gemini-3.1-pro-preview": "gemini-3.7-pro",
+                "gemini-2.5-flash": "gemini-3-flash"}
+
+
+def clean_key(key):
+    """API key ពីប្រអប់ — លុបស្លាក "API Key:" / សញ្ញាសម្រង់ / ដកឃ្លា ដែលច្រើនតែជាប់មកពេល copy"""
+    key = (key or "").strip().strip('"\'')
+    if ":" in key and not key.lower().startswith("http"):
+        key = key.rsplit(":", 1)[1].strip().strip('"\'')
+    return key.split()[0] if key.split() else ""
+
+
+def is_gateway_key(key):
+    return clean_key(key).startswith("bayon_sk_")
+
+
+def _schema_lower(schema):
+    """Gemini schema ("ARRAY", "OBJECT"...) → JSON schema ("array", "object"...)"""
+    if isinstance(schema, dict):
+        return {k: (v.lower() if k == "type" and isinstance(v, str) else _schema_lower(v)) for k, v in schema.items()}
+    if isinstance(schema, list):
+        return [_schema_lower(x) for x in schema]
+    return schema
+
+
+def _json_text(text):
+    """ចម្លើយ JSON ដែលអាចរុំក្នុង ```json ... ``` → JSON សុទ្ធ"""
+    text = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fence:
+        text = fence.group(1).strip()
+    starts = [i for i in (text.find("["), text.find("{")) if i >= 0]
+    return text[min(starts):] if starts else text
+
+
+def _gateway_post(api_key, model, body):
+    """Bayon Gateway (OpenAI chat/completions) — បម្លែង body ទម្រង់ Gemini ទៅ/មក ដើម្បីឱ្យកូដផ្សេងមិនបាច់ដឹង"""
+    config = body.get("generationConfig", {})
+    if "AUDIO" in config.get("responseModalities", []):
+        raise RuntimeError("Gemini TTS មិនអាចប្រើតាម Bayon key បានទេ — សូមប្រើ Edge TTS (ឥតគិតថ្លៃ) "
+                           "ឬ Gemini API Key ពី Google (AIza...)")
+    content = []
+    for part in body["contents"][0]["parts"]:
+        if "inlineData" in part:
+            mime = part["inlineData"]["mimeType"]
+            fmt = {"audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav"}.get(mime, "mp3")
+            content.append({"type": "input_audio", "input_audio": {"data": part["inlineData"]["data"], "format": fmt}})
+        elif "text" in part:
+            content.append({"type": "text", "text": part["text"]})
+    want_json = config.get("responseMimeType") == "application/json"
+    if want_json:
+        schema = json.dumps(_schema_lower(config.get("responseSchema", {})), ensure_ascii=False)
+        content.append({"type": "text", "text": f"Reply with ONLY valid JSON (no markdown) matching this JSON schema: {schema}"})
+    payload = {"model": BAYON_MODELS.get(model, model), "messages": [{"role": "user", "content": content}],
+               "reasoning_effort": "low"}  # low = លឿនជាងច្រើនដង គុណភាពដដែល
+    req = urllib.request.Request(BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {clean_key(api_key)}"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        try:
+            detail = json.loads(detail)["error"]["message"]
+        except Exception:
+            pass
+        raise RuntimeError(f"Bayon API error {e.code}: {detail}") from None
+    try:
+        text = data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError(f"Bayon ឆ្លើយតបមិនត្រឹមត្រូវ: {json.dumps(data)[:300]}") from None
+    return {"candidates": [{"content": {"parts": [{"text": _json_text(text) if want_json else text}]}}]}
+
+
 def gemini_post(api_key, model, body):
-    """ហៅ Gemini generateContent ហើយត្រឡប់ JSON response"""
+    """ហៅ Gemini generateContent ហើយត្រឡប់ JSON response (Bayon key → Bayon Gateway ដោយស្វ័យប្រវត្តិ)"""
+    api_key = clean_key(api_key)
+    if is_gateway_key(api_key):
+        return _gateway_post(api_key, model, body)
     req = urllib.request.Request(
         GEMINI_URL.format(model=model),
         data=json.dumps(body).encode("utf-8"),
@@ -369,6 +479,9 @@ def _dub_setup(p):
         }
         if not opts["api_key"]:
             raise BadRequest("សូមបញ្ចូល Gemini API Key (ឬកំណត់ GEMINI_API_KEY)")
+        if is_gateway_key(opts["api_key"]):
+            raise BadRequest("Bayon key ប្រើបានសម្រាប់ស្តាប់ និងបកប្រែ ប៉ុន្តែមិនអាចបង្កើតសំឡេង Gemini TTS ទេ — "
+                             "សូមប្តូរ Engine ទៅ Edge TTS (ឥតគិតថ្លៃ) ខាងស្តាំ")
     else:
         opts = {
             "voice": p.get("voice") or "km-KH-SreymomNeural",

@@ -119,8 +119,31 @@ def write_output(pcm, out_dir, name_base, fmt):
 
 # ---------------- Per-cue synthesis ----------------
 
+# អក្សរដែលសំឡេងខ្មែរអានមិនបាន (ចិន/ជប៉ុន/កូរ៉េ ដែលបកប្រែមិនដាច់ ឧ. "谢។")
+_UNSPEAKABLE = re.compile(r"[　-ヿ㐀-鿿가-힯豈-﫿＀-￯]+")
+_HAS_WORD = re.compile(r"\w")
+
+
+class Skipped(Exception):
+    """បន្ទាត់គ្មានអ្វីអានបាន — ទុកស្ងាត់ជំនួសការបញ្ឈប់ការងារទាំងមូល"""
+
+
 def _synth_edge(text, voice, opts, edge_audio):
-    mp3 = edge_audio(text, voice, opts["rate"], opts["pitch"], opts["volume"])
+    try:
+        mp3 = edge_audio(text, voice, opts["rate"], opts["pitch"], opts["volume"])
+    except RuntimeError as e:
+        if "No audio" not in str(e) and "មិនបានផ្ញើសំឡេង" not in str(e):
+            raise
+        # Edge មិនផ្ញើសំឡេង = អត្ថបទមានតែអក្សរដែលសំឡេងនេះអានមិនបាន ឬតែវណ្ណយុត្តិ
+        if voice.startswith(("zh-", "ja-", "ko-")):
+            raise Skipped() from None
+        clean = _UNSPEAKABLE.sub(" ", text).strip()
+        if clean == text or not _HAS_WORD.search(clean):
+            raise Skipped() from None
+        try:
+            mp3 = edge_audio(clean, voice, opts["rate"], opts["pitch"], opts["volume"])
+        except RuntimeError:
+            raise Skipped() from None
     return decode_to_pcm(mp3)
 
 
@@ -166,7 +189,11 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
         # cue["voice"] = សំឡេងស្រី/ប្រុសដែលជ្រើសដោយស្វ័យប្រវត្តិ
         # decode + កាត់ស្ងាត់ + ពន្លឿន ធ្វើក្នុង thread ដដែល (ស្របគ្នា) — មិនរង់ចាំដល់ចុងបញ្ចប់
         cue = cues[i]
-        clip = trim_silence(synth_fn(cue["text"], cue.get("voice") or opts["voice"], opts, backend))
+        try:
+            clip = trim_silence(synth_fn(cue["text"], cue.get("voice") or opts["voice"], opts, backend))
+        except Skipped:
+            job["warnings"].append(f"បន្ទាត់ទី {cue['index']} អានមិនបាន (\"{cue['text'][:30]}\") — ទុកស្ងាត់")
+            return np.zeros(0, np.int16)
         next_start = cues[i + 1]["start"] if i + 1 < len(cues) else cue["end"]
         slot = (max(cue["end"], next_start) - cue["start"]) * SAMPLE_RATE // 1000
         if fit and slot > 0 and len(clip) > slot:

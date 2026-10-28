@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFontComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
     QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
-    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTimeEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget, QTimeEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 import ads as ads_mod
@@ -39,6 +39,10 @@ import updater
 import video_merge
 import watermark
 import whisper_srt as whisper_mod
+import funasr_srt as funasr_mod
+import auto_pipeline
+import simple_ui
+import vocal_remove
 
 OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
 DEFAULT_OUTPUT_DIR = backend.OUTPUT_DIR
@@ -478,8 +482,20 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(10)
         lay.addWidget(self._build_header())
-        lay.addWidget(splitter, 1)
-        lay.addLayout(self._build_status_bar())
+        # ✨ Simple mode — ផ្ទាំង Auto សាមញ្ញ (ប្តូរដោយប៊ូតុង ✨ Simple នៅខាងលើ)
+        self.simple_page = simple_ui.SimplePage(self._scan_folder)
+        self.simple_page.start.connect(self._simple_start)
+        self.simple_page.stop.connect(self._simple_stop)
+        self.simple_page.btn_open.clicked.connect(lambda: open_path(OUTPUT_DIR))
+        self.stack = QStackedWidget()
+        self.stack.addWidget(splitter)
+        self.stack.addWidget(self.simple_page)
+        lay.addWidget(self.stack, 1)
+        self.status_box = QWidget()
+        status_lay = self._build_status_bar()
+        status_lay.setContentsMargins(0, 0, 0, 0)
+        self.status_box.setLayout(status_lay)
+        lay.addWidget(self.status_box)
         self.setCentralWidget(central)
 
         self._load_settings()
@@ -487,12 +503,14 @@ class MainWindow(QMainWindow):
         self.btn_explorer.setChecked(explorer_on)
         self.explorer.setVisible(explorer_on)  # (isVisible() = False មុនបង្អួចបង្ហាញ — ប្រើតម្លៃផ្ទាល់)
         self._explorer_sync_target()
+        self._simple_load()
         self._update_engine()
         self.load_edge_voices()
         if ffmpeg_setup.available():
             threading.Thread(target=overlay.pick_encoder, daemon=True).start()  # រក GPU encoder ជាមុន
         QTimer.singleShot(2000, self._check_revoked)
         QTimer.singleShot(1200, lambda: self.offer_ffmpeg(startup=True))
+        QTimer.singleShot(1000, self._fix_edge_version)
         QTimer.singleShot(3000, lambda: self.check_update(silent=True))  # ពិនិត្យ Update ស្ងាត់ៗ
         self._update_timer = QTimer(self)  # បើកកម្មវិធីយូរ → ពិនិត្យរៀងរាល់ 1 ម៉ោង
         self._update_timer.timeout.connect(lambda: self.check_update(silent=True))
@@ -567,11 +585,11 @@ class MainWindow(QMainWindow):
         lay.addWidget(gender_box)
 
         # Gemini key (TTS + សំឡេង → SRT)
-        key_box = QGroupBox("🔑 Gemini API Key")
+        key_box = QGroupBox("🔑 Gemini / Bayon API Key")
         kl = QHBoxLayout(key_box)
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
-        self.api_key.setPlaceholderText("ប្រើ GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "AIza... / AQ...")
+        self.api_key.setPlaceholderText("ប្រើ GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "AIza... (Gemini) ឬ bayon_sk_... (Bayon)")
         show = QPushButton("👁")
         show.setFixedWidth(40)
         show.setStyleSheet("padding:0")
@@ -749,7 +767,16 @@ class MainWindow(QMainWindow):
         self.orig_volume.setValue(15)
         self.orig_volume.setSuffix(" %")
         self.orig_mute = QCheckBox("🔇 Mute សំឡេងដើម (ឮតែសំឡេង TTS)")
-        self.orig_mute.toggled.connect(lambda on: self.orig_volume.setEnabled(not on))
+        self.orig_novocal = QCheckBox("🎤 លុបតែការនិយាយ (រក្សាភ្លេង & សូរ)")
+        self.orig_novocal.setToolTip("លុបសំឡេងនិយាយដើម (ឧ. ភាសាចិន) ចេញ ហើយរក្សាភ្លេង និងសូរផ្សេងៗ ដាក់ជាមួយសំឡេងខ្មែរ\n"
+                                     "Demucs (AI) — GPU ប្រហែល 3–4 វិនាទី ក្នុងសំឡេង 1 នាទី · ដំឡើងម្តង (~100 MB)")
+        self.orig_mute.toggled.connect(lambda on: self._sync_orig_controls())
+        self.orig_novocal.toggled.connect(lambda on: self._sync_orig_controls())
+        self.orig_duck = QComboBox()
+        self.orig_duck.addItems(video_dub.DUCK_LABELS)
+        self.orig_duck.setCurrentIndex(2)
+        self.orig_duck.setToolTip("ចាប់សំឡេងនិយាយ (TTS) → បន្ថយភ្លេង/សំឡេងដើមដោយស្វ័យប្រវត្តិពេលកំពុងនិយាយ\n"
+                                  "ហើយឡើងវិញពេលស្ងាត់ (ducking) — សំឡេងខ្មែរច្បាស់ ភ្លេងមិនគ្របពេក")
         self.orig_mute.setChecked(True)
         self.part_minutes = QSpinBox()
         self.part_minutes.setRange(0, 120)
@@ -757,8 +784,8 @@ class MainWindow(QMainWindow):
         self.part_minutes.setSuffix(" នាទី")
         self.part_minutes.setSpecialValueText("មិនកាត់")
         row2 = QHBoxLayout()
-        for widget in (QLabel("វីដេអូ — សំឡេងដើម"), self.orig_volume, self.orig_mute,
-                       QLabel("កាត់ជាផ្នែក"), self.part_minutes):
+        for widget in (QLabel("វីដេអូ — សំឡេងដើម"), self.orig_volume, self.orig_mute, self.orig_novocal,
+                       QLabel("🔉 បន្ថយភ្លេងពេលនិយាយ"), self.orig_duck, QLabel("កាត់ជាផ្នែក"), self.part_minutes):
             row2.addWidget(widget)
         row2.addStretch()
         g.addRow(row2)
@@ -855,6 +882,8 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         self.vsrt_mode = QComboBox()
         for key, label in [("auto", "🤖 Auto — subtitle ស្រាប់ក្នុងវីដេអូ បើគ្មាន → Whisper (ឥតគិតថ្លៃ)"),
+                           ("sensevoice", "⚡ SenseVoice — លឿនបំផុត · ចិន/អង់គ្លេស/ជប៉ុន/កូរ៉េ (ឥតគិតថ្លៃ)"),
+                           ("paraformer", "🎯 Paraformer-zh + VAD — ចិន ពាក្យត្រឹមត្រូវ ពេលវេលាល្អ (ឥតគិតថ្លៃ)"),
                            ("whisper", "🎙 Whisper — ស្តាប់លើកុំព្យូទ័រ (ឥតគិតថ្លៃ, គ្មាន API Key)"),
                            ("embedded", "📄 ទាញ subtitle ដែលមានស្រាប់ក្នុងវីដេអូ (លឿនបំផុត)"),
                            ("gemini", "✨ Gemini — បកប្រែ + ចាប់ភេទស្រី/ប្រុស (ត្រូវការ API Key)")]:
@@ -876,10 +905,27 @@ class MainWindow(QMainWindow):
         self.btn_vsrt_gpu.setToolTip("ដំឡើង NVIDIA CUDA library (ម្តងគត់) — Whisper លឿនជាង CPU 10–30 ដង")
         self.btn_vsrt_gpu.clicked.connect(self._vsrt_install_gpu)
         self.btn_vsrt_gpu.hide()
-        wrow = self._hrow(QLabel("Model"), self.vsrt_wmodel, QLabel("ភាសាដើម"), self.vsrt_wlang,
+        self.vsrt_wmodel_label = QLabel("Model")
+        wrow = self._hrow(self.vsrt_wmodel_label, self.vsrt_wmodel, QLabel("ភាសាដើម"), self.vsrt_wlang,
                           self.vsrt_gpu, self.btn_vsrt_gpu)
         wrow.setContentsMargins(0, 0, 0, 0)
-        self.vsrt_wbox.setLayout(wrow)
+        # បកប្រែ SRT បន្ទាប់ពីស្តាប់ (Gemini / Bayon key) — ស្តាប់លើកុំព្យូទ័រ លឿន + បកប្រែតែអត្ថបទ (ថោក)
+        self.vsrt_trans = QComboBox()
+        for code, label in [("", "មិនបកប្រែ (ភាសាដើម)"), ("km", "→ ខ្មែរ (+ SRT ភាសាដើម)"), ("en", "→ English"),
+                            ("th", "→ ថៃ"), ("vi", "→ វៀតណាម")]:
+            self.vsrt_trans.addItem(label, code)
+        self.vsrt_trans.setToolTip("បកប្រែអត្ថបទ SRT ដោយ Gemini ឬ Bayon key (ខាងស្តាំ) — "
+                                   "SRT ភាសាដើមរក្សាទុកក្នុង SRT_ភាសាដើម")
+        self.vsrt_trans_model = QComboBox()
+        self.vsrt_trans_model.addItems(transcribe.MODELS)
+        wbox_lay = QVBoxLayout()
+        wbox_lay.setContentsMargins(0, 0, 0, 0)
+        wbox_lay.addLayout(wrow)
+        wbox_lay.addLayout(self._hrow(QLabel("បកប្រែ"), self.vsrt_trans, QLabel("Model"), self.vsrt_trans_model))
+        self.vsrt_trans.currentIndexChanged.connect(
+            lambda _: self.vsrt_trans_model.setEnabled(bool(self.vsrt_trans.currentData())))
+        self.vsrt_trans_model.setEnabled(False)
+        self.vsrt_wbox.setLayout(wbox_lay)
         form.addRow(self.vsrt_wbox)
 
         # Gemini: ភាសា SRT + model + ភេទ
@@ -921,6 +967,7 @@ class MainWindow(QMainWindow):
         row.addStretch()
         lay.addLayout(row)
         self.vsrt_active, self.vsrt_queue, self.vsrt_tmp, self.vsrt_cur = False, [], None, None
+        self.vsrt_has_nvidia, self.vsrt_gpu_ok = False, False
         self._vsrt_mode_changed()
         self._vsrt_gpu_refresh()
         return w
@@ -930,6 +977,10 @@ class MainWindow(QMainWindow):
                 "· Folder រឿងA → រឿងA.srt (ភាសាដើម) ក្នុង Folder នោះ",
         "whisper": "Whisper ស្តាប់សំឡេងលើកុំព្យូទ័រផ្ទាល់ — ឥតគិតថ្លៃ គ្មាន API Key · ដំឡើងម្តង (~100 MB) + model ពេលប្រើលើកដំបូង "
                    "· មិនបកប្រែ មិនចាប់ភេទ",
+        "sensevoice": "SenseVoice (Alibaba) + fsmn-vad — លឿនបំផុត: GPU សំឡេង 4 នាទី ≈ 3វិ (Whisper ≈ 15វិ) · "
+                      "ចិន អង់គ្លេស កាតាំង ជប៉ុន កូរ៉េ · model ផ្ទុកតែម្តងសម្រាប់គ្រប់រឿង · ដំឡើងម្តង + model ~1 GB",
+        "paraformer": "Paraformer-zh + fsmn-vad + វណ្ណយុត្តិ (FunASR) — សម្រាប់រឿងចិន: មិនបាត់ពាក្យ ពេលវេលាតាមតួអក្សរ · "
+                      "GPU សំឡេង 4 នាទី ≈ 5វិ · ដំឡើងម្តង + model ~1 GB",
         "embedded": "ទាញតែ subtitle ដែលមានស្រាប់ក្នុងឯកសារវីដេអូ (subtitle track) — 1–2 វិនាទី · "
                     "subtitle ដែលដុតជាប់លើរូបភាព ទាញមិនបានទេ",
         "gemini": "Merge → Gemini · Folder រឿងA → រឿងA.srt (ភាសាខ្មែរ) ក្នុង Folder នោះ, SRT ភាសាដើមក្នុង "
@@ -938,7 +989,17 @@ class MainWindow(QMainWindow):
 
     def _vsrt_mode_changed(self):
         mode = self.vsrt_mode.currentData()
-        self.vsrt_wbox.setVisible(mode in ("auto", "whisper"))
+        fun, whisper_like = mode in ("sensevoice", "paraformer"), mode in ("auto", "whisper")
+        self.vsrt_wbox.setVisible(fun or whisper_like)
+        self.vsrt_wmodel_label.setVisible(whisper_like)
+        self.vsrt_wmodel.setVisible(whisper_like)
+        # GPU: Whisper ប្រើ CUDA library ពី pip · SenseVoice/Paraformer ប្រើ torch កំណែ CUDA
+        ok = funasr_mod.gpu_ready() if fun else self.vsrt_gpu_ok
+        who = "SenseVoice/Paraformer" if fun else "Whisper"
+        self.vsrt_gpu.setText("⚡ GPU" if ok else "💻 CPU")
+        self.vsrt_gpu.setToolTip(f"{who} ប្រើកាត NVIDIA — លឿន" if ok else f"{who} ប្រើ CPU")
+        self.btn_vsrt_gpu.setText(f"⚡ បើក GPU (~{2.5 if fun else 1.5} GB)")
+        self.btn_vsrt_gpu.setVisible(self.vsrt_has_nvidia and not ok and (not fun or funasr_mod.installed()))
         self.vsrt_gbox.setVisible(mode == "gemini")
         self.vsrt_note.setText(self.VSRT_NOTES[mode])
 
@@ -949,13 +1010,7 @@ class MainWindow(QMainWindow):
 
         def show(result):
             self.vsrt_has_nvidia, self.vsrt_gpu_ok = result
-            if self.vsrt_gpu_ok:
-                self.vsrt_gpu.setText("⚡ GPU")
-                self.vsrt_gpu.setToolTip("Whisper ប្រើកាត NVIDIA — លឿន")
-            else:
-                self.vsrt_gpu.setText("💻 CPU")
-                self.vsrt_gpu.setToolTip("Whisper ប្រើ CPU — model ⚡ small ល្អបំផុតសម្រាប់ CPU")
-            self.btn_vsrt_gpu.setVisible(self.vsrt_has_nvidia and not self.vsrt_gpu_ok)
+            self._vsrt_mode_changed()  # ស្លាក/ប៊ូតុង GPU តាមវិធីដែលជ្រើស
             if not self.settings.contains("vsrt_wmodel"):  # លំនាំដើម: GPU → turbo, CPU → small
                 self._select_data(self.vsrt_wmodel, "large-v3-turbo" if self.vsrt_gpu_ok else "small")
         self.vsrt_has_nvidia, self.vsrt_gpu_ok = False, False
@@ -966,6 +1021,14 @@ class MainWindow(QMainWindow):
     def _vsrt_install_gpu(self):
         if self.busy:
             return
+        if self.vsrt_mode.currentData() in ("sensevoice", "paraformer"):
+            if QMessageBox.question(self, "បើក GPU សម្រាប់ SenseVoice / Paraformer",
+                                    "ទាញយក PyTorch កំណែ NVIDIA CUDA (~2.5 GB, ម្តងគត់) ជំនួសកំណែ CPU។\n"
+                                    "បន្ទាប់មក SenseVoice / Paraformer នឹងលឿនជាង CPU ច្រើនដង។\n\n"
+                                    "ទាញយកឥឡូវនេះ?") != QMessageBox.Yes:
+                return
+            funasr_mod.stop_servers()  # process ចាស់កំពុងប្រើ torch CPU → បិទសិន (Windows ចាក់សោឯកសារ)
+            return self._vsrt_pip(funasr_mod.GPU_PACKAGES, "PyTorch CUDA (~2.5 GB)", self._vsrt_mode_changed)
         if QMessageBox.question(self, "បើក GPU សម្រាប់ Whisper",
                                 "ទាញយក NVIDIA CUDA library (~1.5 GB, ម្តងគត់)។\n"
                                 "បន្ទាប់មក Whisper នឹងលឿនជាង CPU ច្រើនដង។\n\nទាញយកឥឡូវនេះ?") != QMessageBox.Yes:
@@ -1641,7 +1704,8 @@ class MainWindow(QMainWindow):
         self.set_status(f"🗑 បានលុប Preset “{name}”")
 
     # ================= Logo ប៉ុណ្ណោះ (វីដេអូដែលមានស្រាប់) =================
-    BRAND_KINDS = [("lg", "🏷 Logo"), ("lt", "📺 Lower third"), ("wm", "💧 Watermark"), ("ad", "📢 Ads")]
+    BRAND_KINDS = [("lg", "🏷 Logo"), ("lt", "📺 Lower third"), ("wm", "💧 Watermark"), ("ad", "📢 Ads"),
+                   ("nv", "🎤 លុបការនិយាយ")]
 
     def _build_brand_tab(self):
         w = QWidget()
@@ -1656,7 +1720,9 @@ class MainWindow(QMainWindow):
         self.brand_use = {}
         for kind, label in self.BRAND_KINDS:
             cb = QCheckBox(label)
-            cb.setChecked(True)
+            cb.setChecked(kind != "nv")  # លុបការនិយាយ — បិទជាលំនាំដើម
+            if kind == "nv":
+                cb.setToolTip("លុបសំឡេងនិយាយចេញ — រក្សាភ្លេង និងសូរផ្សេងៗ (Demucs AI)")
             self.brand_use[kind] = cb
             row.addWidget(cb)
         row.addStretch()
@@ -1743,10 +1809,11 @@ class MainWindow(QMainWindow):
 
     def _brand_summary(self):
         """ធីកបានតែអ្វីដែលបានកំណត់រួច — ប្រាប់អ្វីដែលនឹងធ្វើ"""
-        ready = {o["kind"] for o in self.overlays()} | ({"ad"} if self.ads_spec() else set())
+        ready = {o["kind"] for o in self.overlays()} | ({"ad"} if self.ads_spec() else set()) | {"nv"}
         for kind, cb in self.brand_use.items():
             cb.setEnabled(kind in ready)
-            cb.setToolTip("" if kind in ready else "មិនទាន់កំណត់ ឬមិនទាន់បើកក្នុងផ្ទាំង 🏷 Logo & Ads")
+            if kind != "nv":
+                cb.setToolTip("" if kind in ready else "មិនទាន់កំណត់ ឬមិនទាន់បើកក្នុងផ្ទាំង 🏷 Logo & Ads")
         overlays, ads = self._brand_selection()
         names = [label for kind, label in self.BRAND_KINDS
                  if kind in ready and self.brand_use[kind].isChecked()]
@@ -1784,7 +1851,10 @@ class MainWindow(QMainWindow):
         self.brand_active, self.brand_stop = True, False
         self.btn_brand_stop.setEnabled(True)
         self.brand_t0 = time.time()
-        self.brand_specs = (overlays, ads, self.brand_part.value() * 60, trim)
+        novocal = self.brand_use["nv"].isChecked()
+        if not self._need_novocal(novocal, self.run_brand):
+            return
+        self.brand_specs = (overlays, ads, self.brand_part.value() * 60, trim, novocal)
         self.brand_dir = None
         if self.brand_one_dir.isChecked():  # លទ្ធផលទាំងអស់ → Folder តែមួយ
             name = backend.safe_name(self.brand_dir_name.text().strip()) or f"Logo_{time.strftime('%Y%m%d_%H%M')}"
@@ -1801,15 +1871,16 @@ class MainWindow(QMainWindow):
         video = self.brand_queue.pop(0)
         n = self.brand_total - len(self.brand_queue)
         name = os.path.basename(video)
-        overlays, ads, part_sec, trim = self.brand_specs
+        overlays, ads, part_sec, trim, novocal = self.brand_specs
         parts = ["ដាក់ Logo" if overlays else "", "Ads" if ads else "", "កាត់ជាផ្នែក" if part_sec else ""]
         s_video = " + ".join(x for x in parts if x) or "រក្សាទុកវីដេអូ"
-        s_scan, s_trim = "រកចន្លោះស្ងាត់", "✂ កាត់យកតែផ្នែក"
-        self.begin_stages(f"🎨 {n}/{self.brand_total}: {name}", [s_scan] + ([s_trim] if trim else []) + [s_video])
+        s_scan, s_trim, s_sep = "រកចន្លោះស្ងាត់", "✂ កាត់យកតែផ្នែក", "🎤 លុបការនិយាយ"
+        self.begin_stages(f"🎨 {n}/{self.brand_total}: {name}",
+                          [s_scan] + ([s_trim] if trim else []) + ([s_sep] if novocal else []) + [s_video])
         self.enter_stage(s_scan)
-        suffix = "_cut" if trim else ""
+        suffix = ("_cut" if trim else "") + ("_novocal" if novocal and not (overlays or ads) else "")
         base = (backend.safe_name(os.path.splitext(name)[0]) or "video") + f"{suffix}_{time.strftime('%Y%m%d_%H%M%S')}"
-        job = video_dub.start_brand_job(video, OUTPUT_DIR, base, overlays, ads, part_sec, trim)
+        job = video_dub.start_brand_job(video, OUTPUT_DIR, base, overlays, ads, part_sec, trim, novocal)
         self.set_busy(True, f"{name}: កំពុងរកចន្លោះស្ងាត់...")
 
         def done(s):
@@ -1823,7 +1894,7 @@ class MainWindow(QMainWindow):
                             f"{name}: រួចរាល់ {len(s['parts'])} ផ្នែក{extra} → {out_label()}/{s['folder']}")
             QTimer.singleShot(200, self._brand_next)
 
-        stage = {"analyzing": s_scan, "trimming": s_trim}
+        stage = {"analyzing": s_scan, "trimming": s_trim, "separating": s_sep}
         self.watch_job(job, lambda s: f"{name}: " + ("កំពុងកាត់..." if s["status"] == "trimming"
                                                       else "កំពុងរកចន្លោះស្ងាត់..."), done,
                        lambda s: stage.get(s["status"], s_video))
@@ -2059,6 +2130,8 @@ class MainWindow(QMainWindow):
 
     def run_batch(self):
         if self.busy or self.batch_active or not self._check_ffmpeg():
+            return
+        if not self._need_novocal(self.orig_novocal.isChecked(), self.run_batch):
             return
         t = self.batch_table
         queue = []
@@ -2412,7 +2485,8 @@ class MainWindow(QMainWindow):
         return p
 
     def gemini_key(self):
-        return self.api_key.text().strip() or os.environ.get("GEMINI_API_KEY", "")
+        """Gemini (AIza...) ឬ Bayon Gateway (bayon_sk_...) — លុបស្លាក "API Key:" ដែលជាប់មកពេល copy"""
+        return backend.clean_key(self.api_key.text()) or os.environ.get("GEMINI_API_KEY", "")
 
     # ================= busy / status / jobs =================
     def set_status(self, msg, error=False):
@@ -2508,6 +2582,10 @@ class MainWindow(QMainWindow):
             self.enter_stage(stage_of(s))
         if s["status"] in ("mixing", "merging"):  # មិនដឹងភាគរយ → progress bar រត់ទៅមក
             self.progress.setRange(0, 0)
+        elif s["status"] == "separating":
+            self.progress.setRange(0, 100)
+            self.progress.setValue(int(s.get("stage_pct", 0)))
+            self.progress.setFormat("🎤 លុបការនិយាយ %p%")
         elif s["status"] == "video":
             self.progress.setRange(0, 100)
             self.progress.setValue(int(s.get("stage_pct", 0)))
@@ -2531,7 +2609,8 @@ class MainWindow(QMainWindow):
             except Exception as e:  # noqa: BLE001
                 self.fail(str(e))
             return
-        self.set_status({"mixing": "កំពុងដាក់សំឡេងតាមពេលវេលា...",
+        self.set_status({"separating": s.get("sep_msg") or "កំពុងលុបការនិយាយ...",
+                         "mixing": "កំពុងដាក់សំឡេងតាមពេលវេលា...",
                          "merging": "សំឡេងរួចរាល់ — កំពុងរង់ចាំ Merge វីដេអូចប់...",
                          "video": "កំពុងដំណើរការវីដេអូ (Logo / Ads / កាត់ជាផ្នែក)..." if self.brand_active else
                          "កំពុងដាក់សំឡេងចូលវីដេអូ និងកាត់ជាផ្នែកៗ..."}.get(s["status"]) or label(s))
@@ -2699,9 +2778,46 @@ class MainWindow(QMainWindow):
             p["api_key"] = self.gemini_key()
         return backend._dub_setup(p)
 
+    def _sync_orig_controls(self):
+        """លុបតែការនិយាយ → ភ្លេងឮពេញ (Mute / កម្រិតសំឡេងដើម មិនប្រើ)"""
+        novocal = self.orig_novocal.isChecked()
+        self.orig_mute.setEnabled(not novocal)
+        self.orig_volume.setEnabled(not novocal and not self.orig_mute.isChecked())
+        self.orig_duck.setEnabled(novocal or not self.orig_mute.isChecked())  # Mute → គ្មានភ្លេងឲ្យបន្ថយ
+
+    def _orig_level(self):
+        """(កម្រិតសំឡេងដើម, លុបការនិយាយ?)"""
+        if self.orig_novocal.isChecked():
+            return 1.0, True
+        return (0.0 if self.orig_mute.isChecked() else self.orig_volume.value() / 100), False
+
+    def _need_novocal(self, wanted, then):
+        """ត្រូវការ Demucs តែមិនទាន់ដំឡើង → សួរ ហើយដំឡើង (then() ពេលរួច) · True = អាចបន្តភ្លាម"""
+        if not wanted or vocal_remove.installed():
+            return True
+        if QMessageBox.question(self, "ដំឡើងមុខងារលុបការនិយាយ",
+                                "លុបសំឡេងនិយាយ (រក្សាភ្លេង) ត្រូវដំឡើង Demucs ម្តង (~100 MB, + PyTorch បើមិនទាន់មាន)។\n"
+                                "Model (~85 MB) ទាញយកពេលប្រើលើកដំបូង។\n\nដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
+            return False
+        last = {"line": ""}
+        self.begin_stages("ដំឡើង Demucs", ["ដំឡើង Demucs"])
+        self.enter_stage("ដំឡើង Demucs")
+        poll = QTimer(self)
+        poll.timeout.connect(lambda: self.busy and self.set_status(f"កំពុងដំឡើង Demucs... {last['line'][:90]}"))
+        poll.start(500)
+
+        def done(_):
+            poll.stop()
+            self.set_result(None, "✓ ដំឡើង Demucs រួចរាល់")
+            then()
+        self.run_sync(lambda: vocal_remove.install(lambda line: last.__setitem__("line", line)),
+                      "កំពុងដំឡើង Demucs...", done)
+        return False
+
     def _start_video_dub(self, args, video, name_base, stages, on_done):
         """បង្កើតសំឡេង → ដាក់ចូលវីដេអូ → កាត់ជាផ្នែក (stages = ឈ្មោះ 3 ដំណាក់កាល)"""
-        orig = 0.0 if self.orig_mute.isChecked() else self.orig_volume.value() / 100
+        orig, novocal = self._orig_level()
+        duck = self.orig_duck.currentIndex() if orig > 0 else 0
         part_sec = self.part_minutes.value() * 60
         overlays = self.overlays()
         for prefix, c in self.ov.items():
@@ -2715,12 +2831,24 @@ class MainWindow(QMainWindow):
                       f" · {'ផ្នែកនីមួយៗ' if ads['per_part'] else 'វីដេអូទាំងមូល'}")
 
         keep_full = part_sec > 0 and self.keep_full.isChecked()
+        sep = {"dir": tempfile.mkdtemp(prefix="novocal_")} if novocal else {}
+        if novocal:
+            self._log("   🎤 លុបការនិយាយដើម (រក្សាភ្លេង & សូរ)")
+            if not callable(video):  # វីដេអូមានរួច → លុបការនិយាយស្របពេលជាមួយការបង្កើតសំឡេង
+                sep["job"] = vocal_remove.start_job(video, os.path.join(sep["dir"], "bg.flac"))
 
         def post(job, pcm):
             # video អាចជា function ដែលរង់ចាំ Merge (Auto: Merge ស្របពេលជាមួយការបង្កើតសំឡេង)
             src = video(job) if callable(video) else video
-            job["folder"], job["parts"] = video_dub.mix_and_split(
-                src, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays, ads, keep_full)
+            try:
+                bg = video_dub.separate_vocals(src, os.path.join(sep["dir"], "bg.flac"), job, sep.get("job")) \
+                    if novocal else None
+                job["folder"], job["parts"] = video_dub.mix_and_split(
+                    src, pcm, args["cues"], OUTPUT_DIR, name_base, orig, part_sec, job, overlays, ads, keep_full,
+                    bg_audio=bg, duck=duck)
+            finally:
+                if sep:
+                    shutil.rmtree(sep["dir"], ignore_errors=True)
 
         def done(s):
             if s.get("full"):
@@ -2739,6 +2867,9 @@ class MainWindow(QMainWindow):
         error = self.fail if chained else (lambda m: self.set_status(m, True))
         if self.busy or not self._check_ffmpeg():
             return
+        if self.video_path.text().strip() or self.srtq_rows:
+            if not self._need_novocal(self.orig_novocal.isChecked(), lambda: self.run_srt(chained)):
+                return
         if self.srtq_rows and not chained:  # មានបញ្ជីច្រើនឯកសារ → ធ្វើបញ្ជីនោះ
             return self.run_srtq()
         if not self.cues:
@@ -3154,10 +3285,13 @@ class MainWindow(QMainWindow):
             return self.set_status("សូមបន្ថែម Folder រឿង (ឬវីដេអូ) ហើយធីកយ៉ាងហោចណាស់មួយ", True)
         mode = self.vsrt_mode.currentData()
         key = ""
-        if mode == "gemini":
+        trans = self.vsrt_trans.currentData() if mode != "gemini" else ""
+        if mode == "gemini" or trans:
             key = self.gemini_key()
             if not key:
-                return self.set_status("សូមបញ្ចូល Gemini API Key (ខាងស្តាំ) — ឬប្រើវិធី Whisper (ឥតគិតថ្លៃ)", True)
+                return self.set_status("សូមបញ្ចូល Gemini API Key ឬ Bayon key (ខាងស្តាំ) — ឬជ្រើស 'មិនបកប្រែ'"
+                                       if trans else
+                                       "សូមបញ្ចូល Gemini API Key (ខាងស្តាំ) — ឬប្រើវិធី Whisper (ឥតគិតថ្លៃ)", True)
         beside = self.vsrt_beside.isChecked()
         if beside:
             exist = [r for r in queue if os.path.exists(self._vsrt_target(self.vsrt_rows[r]))]
@@ -3179,6 +3313,12 @@ class MainWindow(QMainWindow):
                     if not queue:
                         return self.set_status("រឿងទាំងអស់មាន SRT រួចហើយ")
         lang = self.vsrt_wlang.currentData()
+        if mode in ("sensevoice", "paraformer") and not funasr_mod.installed():
+            if QMessageBox.question(self, "ដំឡើង FunASR",
+                                    "SenseVoice / Paraformer (ស្តាប់សំឡេងលើកុំព្យូទ័រ ឥតគិតថ្លៃ) ត្រូវដំឡើងម្តង (~300 MB)។\n"
+                                    "Model នឹងទាញយកពេលប្រើលើកដំបូង (~1 GB)។\n\nដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
+                return
+            return self._vsrt_pip(funasr_mod.PACKAGES, "FunASR", self.run_vsrt)
         need_whisper = mode == "whisper" or (mode == "auto" and any(
             not whisper_mod.pick_track(whisper_mod.embedded_tracks(v), lang)
             for r in queue for v in self.vsrt_rows[r]["videos"]))
@@ -3196,12 +3336,16 @@ class MainWindow(QMainWindow):
         self.vsrt_opts = {"mode": mode, "key": key, "model": self.vsrt_model.currentText(),
                           "target": self.vsrt_target.currentData(), "gender": self.vsrt_gender.isChecked(),
                           "beside": beside, "wmodel": self.vsrt_wmodel.currentData(), "wlang": lang,
-                          "gpu": self.vsrt_gpu_ok}
+                          "gpu": self.vsrt_gpu_ok, "trans": trans,
+                          "trans_model": self.vsrt_trans_model.currentText()}
         self.btn_vsrt_stop.setEnabled(True)
         self.vsrt_t0 = time.time()
         how = {"auto": "Auto", "whisper": f"Whisper {self.vsrt_wmodel.currentData()} · "
                                           f"{'GPU' if self.vsrt_gpu_ok else 'CPU'}",
+               "sensevoice": "SenseVoice", "paraformer": "Paraformer-zh + VAD",
                "embedded": "subtitle ស្រាប់", "gemini": "Gemini"}[mode]
+        if trans:
+            how += f" → បកប្រែ {trans} ({'Bayon' if backend.is_gateway_key(key) else 'Gemini'})"
         self._log(f"📝 វីដេអូ→SRT — {len(queue)} រឿង ({how})")
         self._vsrt_render()
         self._vsrt_next()
@@ -3225,15 +3369,28 @@ class MainWindow(QMainWindow):
         mode, multi = o["mode"], len(videos) > 1
         s_save, s_emb, s_whisper, s_merge = "រក្សាទុក SRT", "subtitle ស្រាប់", "Whisper ស្តាប់", "Merge វីដេអូ"
         s_gemini = "Gemini ស្តាប់ & បកប្រែ" if o["target"] else "Gemini ស្តាប់"
+        s_fun = {"sensevoice": "SenseVoice ស្តាប់", "paraformer": "Paraformer ស្តាប់"}.get(mode, "")
+        s_trans = "បកប្រែ"
         merge = [s_merge] if multi else []
-        stages = {"auto": [s_emb] + merge + [s_whisper, s_save], "whisper": merge + [s_whisper, s_save],
-                  "embedded": [s_emb, s_save], "gemini": merge + ["ទាញសំឡេងចេញ", s_gemini, s_save]}[mode]
+        trans = [s_trans] if o.get("trans") else []
+        stages = {"auto": [s_emb] + merge + [s_whisper] + trans + [s_save],
+                  "whisper": merge + [s_whisper] + trans + [s_save],
+                  "sensevoice": merge + [s_fun] + trans + [s_save], "paraformer": merge + [s_fun] + trans + [s_save],
+                  "embedded": [s_emb] + trans + [s_save], "gemini": merge + ["ទាញសំឡេងចេញ", s_gemini, s_save]}[mode]
         self.begin_stages(f"📝 {n}/{self.vsrt_total}: {name}" + (f" ({len(videos)} Part)" if multi else ""), stages)
         self.vsrt_tmp = tempfile.mkdtemp(prefix="vsrt_")
         out_name = f"{stem}.srt"
         out_tmp = os.path.join(self.vsrt_tmp, out_name)
 
         def done(s):
+            if o.get("trans") and not s.get("original_file"):  # ស្តាប់រួច → បកប្រែអត្ថបទ
+                self.enter_stage(s_trans)
+                job = transcribe.start_translate_job(os.path.join(self.vsrt_tmp, s["file"]), self.vsrt_tmp,
+                                                     backend.safe_name(stem) + "_tr", o["trans"], o["key"],
+                                                     o["trans_model"], backend.gemini_post)
+                self.set_busy(True)
+                return self.watch_job(job, lambda j: f"{name}: កំពុងបកប្រែ {j['done']}/{j['total']} ដុំ...",
+                                      done, lambda j: s_trans, "ដុំ")
             self.enter_stage(s_save)
             saved = self._vsrt_save(row["folder"], stem, s, o["beside"])
             self.vsrt_done.append(saved[0])
@@ -3271,6 +3428,25 @@ class MainWindow(QMainWindow):
                 done({"file": out_name, "lines": s["lines"]})
             self.watch_job(job, label, finished, lambda s: s_whisper)
 
+        def start_funasr(src):
+            self.enter_stage(s_fun)
+            job = funasr_mod.start_job(src, out_tmp, mode, o["wlang"])
+            self.set_busy(True)
+
+            def label(s):
+                if s["status"] == "download":
+                    return f"កំពុងទាញយក model {s_fun.split()[0]} (ម្តងគត់) {s['done']}%..."
+                if s["status"] == "load":
+                    return f"{name}: កំពុងបើក model {s_fun.split()[0]}..."
+                return f"{name}: {s_fun} ({s.get('device') or '...'}) {fmt_dur(s['done'])} / {fmt_dur(s['total'])}"
+
+            def finished(s):
+                self._log(f"   🎙 {s_fun.split()[0]} · {'GPU' if 'cuda' in (s.get('device') or '') else 'CPU'} · "
+                          f"{s['lines']} បន្ទាត់ · {s.get('seconds', 0):.1f}វិ"
+                          + (" (model ផ្ទុករួចហើយ)" if s.get("reused") else ""))
+                done({"file": out_name, "lines": s["lines"]})
+            self.watch_job(job, label, finished, lambda s: s_fun)
+
         def start_gemini(src):
             self.enter_stage("ទាញសំឡេងចេញ")
             base = backend.safe_name(stem) or "video"
@@ -3298,7 +3474,7 @@ class MainWindow(QMainWindow):
                 with_source(start_whisper)
             return self.run_sync(lambda: self._vsrt_embedded(videos, o["wlang"], out_tmp),
                                  f"{name}: កំពុងរក subtitle ក្នុងវីដេអូ...", after)
-        with_source(start_whisper if mode == "whisper" else start_gemini)
+        with_source({"whisper": start_whisper, "sensevoice": start_funasr, "paraformer": start_funasr}.get(mode, start_gemini))
 
     @staticmethod
     def _vsrt_embedded(videos, lang, out_srt):
@@ -3523,14 +3699,15 @@ class MainWindow(QMainWindow):
 
     # ================= settings =================
     _CHECKS = ["auto_gender", "strip_parens", "fit", "orig_mute", "stt_gender", "stt_dub", "stt_video", "vsrt_gender",
-               "batch_keep_merged", "keep_full", "ov_confirm", "brand_trim", "brand_trim_snap", "brand_one_dir"]
+               "batch_keep_merged", "keep_full", "ov_confirm", "brand_trim", "brand_trim_snap", "brand_one_dir",
+               "orig_novocal"]
     _SPINS = ["max_speed", "workers", "orig_volume", "part_minutes", "brand_part"]
     # key ថ្មី → លំនាំដើមថ្មី (Mute សំឡេងដើម = បើក) មិនត្រូវជាន់ដោយតម្លៃចាស់ដែលបានរក្សាទុក
     _KEYS = {"orig_mute": "orig_mute_v2"}
 
     def _load_settings(self):
         s = self.settings
-        self.api_key.setText(s.value("api_key", ""))
+        self.api_key.setText(backend.clean_key(s.value("api_key", "")))  # លុបស្លាក "API Key:" ដែល paste ជាប់
         (self.rb_gemini if s.value("engine") == "gemini" else self.rb_edge).setChecked(True)
         for name, slider in (("rate", self.rate), ("pitch", self.pitch), ("volume", self.volume)):
             slider[1].setValue(int(s.value(name, 0)))
@@ -3543,6 +3720,9 @@ class MainWindow(QMainWindow):
         self._select_data(self.vsrt_target, s.value("vsrt_target", "km"))
         self._select_data(self.vsrt_mode, s.value("vsrt_mode", "auto"))
         self._select_data(self.vsrt_wlang, s.value("vsrt_wlang", ""))
+        self._select_data(self.vsrt_trans, s.value("vsrt_trans", ""))
+        if s.value("vsrt_trans_model"):
+            self.vsrt_trans_model.setCurrentText(s.value("vsrt_trans_model"))
         if s.contains("vsrt_wmodel"):
             self._select_data(self.vsrt_wmodel, s.value("vsrt_wmodel"))
         self.vsrt_model.setCurrentText(s.value("vsrt_model", transcribe.MODELS[0]))
@@ -3552,6 +3732,7 @@ class MainWindow(QMainWindow):
             key = self._KEYS.get(name, name)
             if s.contains(key):
                 getattr(self, name).setChecked(s.value(key) in (True, "true", "1"))
+        self.orig_duck.setCurrentIndex(int(s.value("orig_duck", 2)))
         for name in self._SPINS:
             if s.contains(name):
                 widget = getattr(self, name)
@@ -3596,6 +3777,8 @@ class MainWindow(QMainWindow):
         s.setValue("vsrt_mode", self.vsrt_mode.currentData())
         s.setValue("vsrt_wlang", self.vsrt_wlang.currentData())
         s.setValue("vsrt_wmodel", self.vsrt_wmodel.currentData())
+        s.setValue("vsrt_trans", self.vsrt_trans.currentData())
+        s.setValue("vsrt_trans_model", self.vsrt_trans_model.currentText())
         s.setValue("vsrt_model", self.vsrt_model.currentText())
         s.setValue("vsrt_place", "output" if self.vsrt_outdir.isChecked() else "beside")
         s.setValue("audio_format", self.audio_format.currentText())
@@ -3603,6 +3786,7 @@ class MainWindow(QMainWindow):
             s.setValue(self._KEYS.get(name, name), getattr(self, name).isChecked())
         for name in self._SPINS:
             s.setValue(name, getattr(self, name).value())
+        s.setValue("orig_duck", self.orig_duck.currentIndex())
         self._ov_save()
         for kind, cb in self.brand_use.items():
             s.setValue(f"brand_use_{kind}", cb.isChecked())
@@ -3755,6 +3939,11 @@ class MainWindow(QMainWindow):
         titles.addWidget(sub)
         lay.addLayout(titles, 1)
 
+        self.btn_simple = QPushButton("✨ Simple")
+        self.btn_simple.setCheckable(True)
+        self.btn_simple.setToolTip("ផ្ទាំងសាមញ្ញ: ទម្លាក់ Folder រឿង → ចុចមួយ → វីដេអូខ្មែរ "
+                                   "(Merge → SRT → បកប្រែ → សំឡេង)")
+        self.btn_simple.toggled.connect(self._toggle_simple)
         self.btn_explorer = QPushButton("📂 Explorer")
         self.btn_explorer.setCheckable(True)
         self.btn_explorer.setToolTip("បង្ហាញ/លាក់ Explorer ខាងឆ្វេង — ជ្រើសវីដេអូផ្ទាល់ពីក្នុងកម្មវិធី")
@@ -3768,7 +3957,7 @@ class MainWindow(QMainWindow):
         for key, label in UI_SCALES:
             menu.addAction(label, lambda k=key: self._set_ui_scale(k))
         self.btn_scale.setMenu(menu)
-        for b in (self.btn_explorer, self.btn_scale, self.btn_theme, self.btn_update, about):
+        for b in (self.btn_simple, self.btn_explorer, self.btn_scale, self.btn_theme, self.btn_update, about):
             b.setObjectName("ghost")
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
@@ -3808,11 +3997,170 @@ class MainWindow(QMainWindow):
     def _sync_theme_button(self):
         self.btn_theme.setText("☀️ Light" if theme.mode == "dark" else "🌙 Dark")
 
+    # ================= ✨ Simple mode =================
+    def _toggle_simple(self, on):
+        if not on and self.simple_page.running():  # កំពុងធ្វើ → កុំបិទ (មើលវឌ្ឍនភាពមិនឃើញ)
+            self.btn_simple.blockSignals(True)
+            self.btn_simple.setChecked(True)
+            self.btn_simple.blockSignals(False)
+            return
+        self.stack.setCurrentIndex(1 if on else 0)
+        self.status_box.setVisible(not on)
+        self.btn_explorer.setVisible(not on)
+        self.btn_simple.setText("✨ Simple ✓" if on else "✨ Simple")
+        self.settings.setValue("simple_mode", on)
+        if on:
+            self.simple_page.part.setValue(self.part_minutes.value())
+            self.simple_page.mute.setChecked(self.orig_mute.isChecked())
+            self.simple_page.duck.setCurrentIndex(self.orig_duck.currentIndex())
+            self.simple_page.key.setText(self.gemini_key())
+            self._simple_key_state()
+            simple_ui._fade_in(self.simple_page, 260)
+
+    def _simple_load(self):
+        sp, s = self.simple_page, self.settings
+        self._select_data(sp.voice, s.value("simple_voice", "km-KH-SreymomNeural"))
+        self._select_data(sp.lang, s.value("simple_lang", "zh"))
+        sp.use_brand.setChecked(s.value("simple_brand", "false") in (True, "true"))
+        sp.novocal.setChecked(s.value("simple_novocal", "false") in (True, "true"))
+        sp.novocal.toggled.connect(lambda on: s.setValue("simple_novocal", on))
+        # ការកំណត់រួមជាមួយផ្ទាំងធម្មតា
+        sp.part.valueChanged.connect(self.part_minutes.setValue)
+        sp.mute.toggled.connect(self.orig_mute.setChecked)
+        sp.duck.setCurrentIndex(self.orig_duck.currentIndex())
+        sp.duck.currentIndexChanged.connect(self.orig_duck.setCurrentIndex)
+        sp.key.textChanged.connect(lambda t: (self.api_key.setText(backend.clean_key(t)), self._simple_key_state()))
+        sp.voice.currentIndexChanged.connect(lambda _: s.setValue("simple_voice", sp.voice.currentData()))
+        sp.lang.currentIndexChanged.connect(lambda _: s.setValue("simple_lang", sp.lang.currentData()))
+        sp.use_brand.toggled.connect(lambda on: s.setValue("simple_brand", on))
+        on = s.value("simple_mode", "false") in (True, "true")
+        self.btn_simple.setChecked(on)
+        self._toggle_simple(on)
+
+    def _simple_key_state(self):
+        key = self.gemini_key()
+        sp = self.simple_page
+        if not key:
+            sp.key_state.setText("⚠ ត្រូវការ key ដើម្បីបកប្រែ (SRT ខ្មែរដែលមានស្រាប់ មិនត្រូវការទេ)")
+        elif backend.is_gateway_key(key):
+            sp.key_state.setText("✓ Bayon Gateway — Gemini 3.8 Flash")
+        else:
+            sp.key_state.setText("✓ Gemini API (Google)")
+
+    def _simple_start(self):
+        sp = self.simple_page
+        if self.busy or sp.running() or not self._check_ffmpeg():
+            return
+        stories = sp.stories()
+        if not stories:
+            return sp.headline.setText("⚠ សូមទម្លាក់ Folder រឿងជាមុនសិន")
+        if not funasr_mod.installed():
+            if QMessageBox.question(self, "ដំឡើង SenseVoice",
+                                    "ការស្តាប់សំឡេង (SenseVoice — លឿនបំផុត) ត្រូវដំឡើងម្តង (~300 MB)។\n"
+                                    "Model (~1 GB) នឹងទាញយកពេលប្រើលើកដំបូង។\n\nដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
+                return
+            return self._simple_install(lambda on_line: whisper_mod.pip_install(funasr_mod.PACKAGES, on_line),
+                                        "SenseVoice", self._simple_start)
+        novocal = sp.novocal.isChecked()
+        if novocal and not vocal_remove.installed():
+            if QMessageBox.question(self, "ដំឡើងមុខងារលុបការនិយាយ",
+                                    "លុបសំឡេងនិយាយ (រក្សាភ្លេង) ត្រូវដំឡើង Demucs ម្តង (~100 MB)។\n\n"
+                                    "ដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
+                return
+            return self._simple_install(vocal_remove.install, "Demucs", self._simple_start)
+        key = self.gemini_key()
+        need_tr = [st for st in stories if not self._has_khmer_srt(st)]
+        if need_tr and not key:
+            sp.key.setFocus()
+            return sp.headline.setText(f"⚠ រឿង {len(need_tr)} ត្រូវបកប្រែ — សូមបញ្ចូល Bayon key (ខាងស្តាំ)")
+        use_brand = sp.use_brand.isChecked()
+        overlays = self.overlays() if use_brand else []
+        ads = self.ads_spec() if use_brand else None
+        if use_brand and not self.confirm_overlays([(os.path.basename(st["folder"]), st["videos"][0]) for st in stories],
+                                                   overlays, ads, use_ads=bool(ads)):
+            return
+        dub = self.voice_settings()
+        dub.update(engine="edge", voice=sp.voice.currentData(), auto_gender=False, api_key="",
+                   fit=self.fit.isChecked(), max_speed=self.max_speed.value(), format="mp3",
+                   workers=max(self.workers.value(), 48))  # Edge ស្របគ្នា 48 → លឿនបំផុតដែលនៅតែស្ថិតស្ថេរ
+        part_sec = sp.part.value() * 60
+        opts = {"key": key, "model": "gemini-3.8-flash", "engine": "sensevoice", "lang": sp.lang.currentData(),
+                "dub": dub, "dub_setup": backend._dub_setup, "safe_name": backend.safe_name, "out_dir": OUTPUT_DIR,
+                "orig_volume": 1.0 if novocal else 0.0 if sp.mute.isChecked() else self.orig_volume.value() / 100,
+                "novocal": novocal,
+                "duck": sp.duck.currentIndex() if novocal or not sp.mute.isChecked() else 0,
+                "part_sec": part_sec, "overlays": overlays, "ads": ads,
+                "keep_full": part_sec > 0 and self.keep_full.isChecked()}
+        self.simple_pipe = auto_pipeline.Pipeline(stories, opts)
+        self.set_busy(True)
+        self._log(f"✨ Simple Auto — {len(stories)} រឿង")
+        sp.attach(self.simple_pipe)
+        self.simple_pipe.start()
+        self._simple_watch = QTimer(self)
+        self._simple_watch.timeout.connect(self._simple_poll)
+        self._simple_watch.start(500)
+
+    @staticmethod
+    def _has_khmer_srt(story):
+        for srt in story["srts"][:1]:
+            try:
+                with open(srt, encoding="utf-8-sig", errors="replace") as f:
+                    if re.search(r"[\u1780-\u17ff]", f.read(4000)):
+                        return True
+            except OSError:
+                pass
+        return False
+
+    def _simple_poll(self):
+        p = self.simple_pipe
+        while p.log:
+            _, msg = p.log.pop(0)
+            self._log(f"   {msg}")
+        if p.finished:
+            self._simple_watch.stop()
+            self.set_busy(False)
+            done = sum(st["status"] == "done" for st in p.state)
+            self._log(f"✨ Simple Auto ចប់ — ✓ {done}/{len(p.state)} · {fmt_dur(time.time() - p.t0)}")
+            outs = [st["out"] for st in p.state if st.get("out")]
+            if outs:
+                self.last_result = outs[-1]
+            self.refresh_files()
+
+    def _simple_stop(self):
+        if getattr(self, "simple_pipe", None):
+            self.simple_pipe.stop.set()
+            self.simple_page.btn_stop.setEnabled(False)
+            self.simple_page.headline.setText("■ កំពុងបញ្ឈប់... (រង់ចាំជំហានបច្ចុប្បន្នចប់)")
+
+    def _simple_install(self, install, label, then):
+        """pip install ពេលនៅ Simple mode — បង្ហាញវឌ្ឍនភាពលើផ្ទាំង Simple"""
+        sp, last = self.simple_page, {"line": ""}
+        sp.btn_go.setEnabled(False)
+        poll = QTimer(self)
+        poll.timeout.connect(lambda: sp.headline.setText(f"⏳ កំពុងដំឡើង {label}... {last['line'][:70]}"))
+        poll.start(400)
+
+        def finish(ok, err=""):
+            poll.stop()
+            self.set_busy(False)
+            sp.btn_go.setEnabled(True)
+            if ok:
+                sp.headline.setText(f"✓ ដំឡើង {label} រួចរាល់")
+                then()
+            else:
+                sp.headline.setText(f"✕ ដំឡើងមិនបាន: {err[-150:]}")
+        self.set_busy(True)
+        worker = Worker(lambda: install(lambda line: last.__setitem__("line", line)))
+        worker.done.connect(lambda _: finish(True))
+        worker.failed.connect(lambda e: finish(False, e))
+        self._start_worker(worker)
+
     def toggle_theme(self):
         new = "light" if theme.mode == "dark" else "dark"
         theme.apply(QApplication.instance(), new)
         self.settings.setValue("theme", new)
         self._sync_theme_button()
+        self.simple_page.restyle()
         # ពណ៌ក្នុង rich text / តារាង ត្រូវគូរឡើងវិញ
         self._render_stages()
         self._batch_render()
@@ -3892,11 +4240,24 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.Yes:
             self._install_update(info)
 
+    def _fix_edge_version(self):
+        """edge-tts ចាស់ → Microsoft ឆ្លើយ 403 គ្រប់ពេល · upgrade នៅខាងក្រោយ ហើយផ្ទុកឡើងវិញ"""
+        if not backend.edge_outdated():
+            return
+        old = backend.edge_tts.__version__
+        self._log(f"🔧 Edge TTS v{old} ចាស់ពេក (Microsoft បដិសេធ) — កំពុង Update...")
+        spec = "edge-tts>=" + ".".join(map(str, backend.EDGE_MIN_VERSION))
+        worker = Worker(lambda: (whisper_mod.pip_install([spec, "--upgrade"]), backend.reload_edge_tts())[1])
+        worker.done.connect(lambda v: self._log(f"✅ Edge TTS v{old} → v{v} — ប្រើបានហើយ"))
+        worker.failed.connect(lambda e: self._log(f"⚠ Update Edge TTS មិនបាន: {e[-200:]}"))
+        self._edge_fix_worker = worker
+        worker.start()
+
     @staticmethod
     def _apply_update(info):
         count = updater.download_and_apply(info)
         if "requirements.txt" in info["changed"]:  # library ថ្មី
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r",
+            subprocess.run([whisper_mod._python(), "-m", "pip", "install", "-q", "-r",
                             os.path.join(updater.APP_DIR, "requirements.txt")],
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         return count
@@ -3983,6 +4344,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._save_settings()
+        funasr_mod.stop_servers()  # process SenseVoice/Paraformer ដែលកំពុងរង់ចាំ
         event.accept()
 
 

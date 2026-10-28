@@ -85,9 +85,14 @@ def _transcribe_chunk(path, api_key, model, gemini_post, target):
     with open(path, "rb") as f:
         audio = base64.b64encode(f.read()).decode("ascii")
     prompt, schema = _prompt_and_schema(target)
+    return _ask_json([{"inlineData": {"mimeType": "audio/mp3", "data": audio}}, {"text": prompt}],
+                     schema, api_key, model, gemini_post)
+
+
+def _ask_json(parts, schema, api_key, model, gemini_post):
+    """ផ្ញើទៅ Gemini/Bayon ហើយអានចម្លើយ JSON — ព្យាយាមម្តងទៀតពេល server រវល់"""
     body = {
-        "contents": [{"parts": [{"inlineData": {"mimeType": "audio/mp3", "data": audio}},
-                                {"text": prompt}]}],
+        "contents": [{"parts": parts}],
         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema},
     }
     models = [model] + ([FALLBACK_MODEL] if model != FALLBACK_MODEL else [])
@@ -101,7 +106,7 @@ def _transcribe_chunk(path, api_key, model, gemini_post, target):
             return json.loads(text)
         except (RuntimeError, KeyError, IndexError, json.JSONDecodeError) as e:
             msg = str(e)
-            retryable = not isinstance(e, RuntimeError) or any(c in msg for c in ("429", "500", "503"))
+            retryable = not isinstance(e, RuntimeError) or any(c in msg for c in ("429", "500", "502", "503", "504"))
             if not retryable or attempt == 5:
                 raise RuntimeError(msg if isinstance(e, RuntimeError) else f"Gemini ឆ្លើយតបមិនត្រឹមត្រូវ: {e}") from None
             time.sleep(delay)
@@ -222,3 +227,74 @@ def _run_job(job_id, src_path, api_key, model, with_gender, target, out_dir, bas
             os.remove(src_path)
         except OSError:
             pass
+
+
+# ---------------- បកប្រែ SRT (អត្ថបទ) — សម្រាប់ SenseVoice / Paraformer / Whisper ----------------
+TRANSLATE_BATCH = 50   # បន្ទាត់ក្នុងមួយសំណើ — តិច = ឆ្លើយលឿន ហើយមិនរំលងបន្ទាត់
+_LINES_SCHEMA = {"type": "OBJECT", "properties": {"lines": {"type": "ARRAY", "items": {"type": "STRING"}}},
+                 "required": ["lines"]}
+
+
+def translate_lines(lines, target, api_key, model, gemini_post, on_batch=None, workers=WORKERS):
+    """បកប្រែបន្ទាត់ subtitle (ស្របគ្នាច្រើនដុំ) → បញ្ជីដែលមានចំនួនដូចគ្នា (ដុំដែលខុសចំនួន → ព្យាយាមម្តងទៀត)"""
+    lang = LANGUAGES[target]
+    batches = [lines[i:i + TRANSLATE_BATCH] for i in range(0, len(lines), TRANSLATE_BATCH)]
+
+    def work(index):
+        batch = batches[index]
+        before = batches[index - 1][-3:] if index else []  # បរិបទ (មិនបកប្រែ) — ឱ្យសន្ទនាជាប់គ្នា
+        prompt = (
+            f"Translate these {len(batch)} subtitle lines from a drama into {lang}. The translation will be read "
+            f"aloud as a dub: write natural, spoken {lang} like real conversation (not word-for-word), keep names "
+            "consistent, and keep each line about as short as the original so it fits the same time. "
+            f"Return exactly {len(batch)} strings in 'lines', in the same order, one per input line — never merge, "
+            "split, skip or number lines."
+            + (f"\nPrevious lines (context only, do not translate): {json.dumps(before, ensure_ascii=False)}"
+               if before else "")
+            + f"\nLines: {json.dumps(batch, ensure_ascii=False)}")
+        out = []
+        for _ in range(3):
+            data = _ask_json([{"text": prompt}], _LINES_SCHEMA, api_key, model, gemini_post)
+            out = data.get("lines", []) if isinstance(data, dict) else data
+            out = [" ".join(str(x).split()) for x in out] if isinstance(out, list) else []
+            if len(out) == len(batch):
+                break
+        if len(out) != len(batch):  # នៅតែខុស → ប្រើបន្ទាត់ដើមសម្រាប់ផ្នែកដែលខ្វះ
+            out = (out + batch[len(out):])[:len(batch)]
+        if on_batch:
+            on_batch()
+        return [t or o for t, o in zip(out, batch)]
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(batches)))) as pool:
+        return [t for part in pool.map(work, range(len(batches))) for t in part]
+
+
+def start_translate_job(src_srt, out_dir, base_name, target, api_key, model, gemini_post):
+    """SRT ភាសាដើម → <base>.srt (បកប្រែ) + <base>_orig.srt · job ដូច start_job (file / original_file / lines)"""
+    from srt_dub import parse_srt
+    job_id = uuid.uuid4().hex[:12]
+    job = jobs[job_id] = {"status": "running", "done": 0, "total": 1, "error": None, "warnings": [],
+                          "file": None, "original_file": None, "lines": 0}
+
+    def run():
+        try:
+            with open(src_srt, encoding="utf-8-sig", errors="replace") as f:
+                cues = parse_srt(f.read())
+            if not cues:
+                raise RuntimeError("SRT គ្មាន subtitle")
+            job["total"] = -(-len(cues) // TRANSLATE_BATCH)
+            texts = translate_lines([c["text"] for c in cues], target, api_key, model, gemini_post,
+                                    on_batch=lambda: job.__setitem__("done", job["done"] + 1))
+            segs = [{"start": c["start"] / 1000, "end": c["end"] / 1000, "text": c["text"], "translation": t,
+                     "gender": "unknown"} for c, t in zip(cues, texts)]
+            job["file"], job["original_file"] = f"{base_name}.srt", f"{base_name}_orig.srt"
+            with open(os.path.join(out_dir, job["file"]), "w", encoding="utf-8") as f:
+                f.write(build_srt(segs, False, "translation"))
+            with open(os.path.join(out_dir, job["original_file"]), "w", encoding="utf-8") as f:
+                f.write(build_srt(segs, False))
+            job.update(lines=len(segs), status="done")
+        except Exception as e:  # noqa: BLE001
+            job.update(status="error", error=f"បកប្រែ: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
