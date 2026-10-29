@@ -1,11 +1,10 @@
 """✨ Simple Auto — Folder រឿង (Part ច្រើន) → Merge → SRT (SenseVoice) → បកប្រែខ្មែរ (Bayon/Gemini) →
 សំឡេង Edge TTS → វីដេអូ។
 
-រត់ជា 2 ខ្សែស្របគ្នា: ខណៈរឿងទី N កំពុងបញ្ចូលសំឡេង + encode វីដេអូ រឿងទី N+1 កំពុង Merge / ស្តាប់ / បកប្រែរួចជាមុន
-→ រឿងច្រើនចប់លឿនជាងធ្វើម្តងមួយៗ។ GUI អាន state[] (មិនមែន thread-safe ពេញលេញ តែគ្រប់គ្រាន់សម្រាប់បង្ហាញ)។
+ធ្វើម្តងមួយរឿង (មិនស្របគ្នា) — model ស្តាប់ / លុបការនិយាយ មិនប្រជែង GPU គ្នា (VRAM ពេញ → Windows ប្រើ RAM
+ជំនួស ហើយយឺតខ្លាំងដូចគាំង)។ GUI អាន state[] (មិនមែន thread-safe ពេញលេញ តែគ្រប់គ្រាន់សម្រាប់បង្ហាញ)។
 """
 import os
-import queue
 import re
 import shutil
 import tempfile
@@ -18,6 +17,9 @@ import transcribe
 import video_dub
 import video_merge
 import vocal_remove
+import whisper_srt
+
+WHISPER_MODEL = "large-v3-turbo"  # GPU: លឿន និងច្បាស់ជាង SenseVoice (ពាក្យខ្លីៗ មិនបាត់)
 
 STAGES = [("merge", "🧩 Merge"), ("asr", "📝 SRT"), ("translate", "🌐 ខ្មែរ"), ("tts", "🔊 សំឡេង"),
           ("video", "🎬 វីដេអូ")]
@@ -62,7 +64,6 @@ class Pipeline:
                        "pct": 0, "msg": "", "out": None, "lines": 0, "t0": None, "t1": None, "notes": []}
                       for s in stories]
         self.stop = threading.Event()
-        self.ready = queue.Queue(maxsize=1)  # រៀបចំរួច រង់ចាំបញ្ចូលសំឡេង (មុនតែ 1 រឿង)
         self.t0 = time.time()
         self.finished = False
         self.log = []  # (ពេល, សារ) — GUI បង្ហាញ
@@ -71,7 +72,10 @@ class Pipeline:
     # ---------- progress ----------
     def _set(self, i, stage, pct, msg=None):
         st = self.state[i]
-        st["stage"], st["stage_pct"] = stage, max(0, min(100, int(pct)))
+        pct = max(0, min(100, int(pct)))
+        if (stage, pct, msg) != (st["stage"], st["stage_pct"], st["msg"] if msg is None else msg):
+            st["since"] = time.time()  # វឌ្ឍនភាពចុងក្រោយ — GUI បង្ហាញ "⏳ កំពុងរង់ចាំ Xs" ពេលយូរ
+        st["stage"], st["stage_pct"] = stage, pct
         if msg is not None:
             st["msg"] = msg
         order = [k for k, _ in STAGES]
@@ -89,52 +93,37 @@ class Pipeline:
 
     # ---------- run ----------
     def start(self):
-        threading.Thread(target=self._prep_loop, daemon=True).start()
-        threading.Thread(target=self._dub_loop, daemon=True).start()
+        threading.Thread(target=self._loop, daemon=True).start()
 
-    def _prep_loop(self):
-        for i in range(len(self.stories)):
-            if self.stop.is_set():
-                break
-            st = self.state[i]
-            st.update(status="running", t0=time.time())
-            tmp = tempfile.mkdtemp(prefix="simple_")
-            try:
-                video, cues = self._prepare(i, tmp)
-                self.ready.put((i, video, cues, tmp))
-            except InterruptedError:
-                shutil.rmtree(tmp, ignore_errors=True)
-                break
-            except Exception as e:  # noqa: BLE001
-                shutil.rmtree(tmp, ignore_errors=True)
-                st.update(status="failed", msg=str(e)[-300:], t1=time.time())
-                self._say(f"✕ {st['name']}: {str(e)[-200:]}")
-        self.ready.put(None)
-
-    def _dub_loop(self):
-        while True:
-            item = self.ready.get()
-            if item is None:
-                break
-            i, video, cues, tmp = item
-            st = self.state[i]
-            try:
+    def _loop(self):
+        """ម្តងមួយរឿង: Merge → SRT → ខ្មែរ → សំឡេង → វីដេអូ ហើយទើបរឿងបន្ទាប់"""
+        try:
+            for i in range(len(self.stories)):
                 if self.stop.is_set():
-                    raise InterruptedError
-                self._dub(i, video, cues)
-                st.update(status="done", t1=time.time())
-                self._say(f"✓ {st['name']}: {st['msg']}")
-            except InterruptedError:
-                st.update(status="waiting", msg="បានបញ្ឈប់")
-            except Exception as e:  # noqa: BLE001
-                st.update(status="failed", msg=str(e)[-300:], t1=time.time())
-                self._say(f"✕ {st['name']}: {str(e)[-200:]}")
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-        for st in self.state:  # ឈប់មុនដល់ → រឿងដែលមិនទាន់ធ្វើ
-            if st["status"] == "running":
-                st.update(status="waiting", msg="បានបញ្ឈប់")
-        self.finished = True
+                    break
+                st = self.state[i]
+                st.update(status="running", t0=time.time(), since=time.time())
+                tmp = tempfile.mkdtemp(prefix="simple_")
+                try:
+                    video, cues = self._prepare(i, tmp)
+                    if self.stop.is_set():
+                        raise InterruptedError
+                    self._dub(i, video, cues)
+                    st.update(status="done", t1=time.time())
+                    self._say(f"✓ {st['name']}: {st['msg']}")
+                except InterruptedError:
+                    st.update(status="waiting", msg="បានបញ្ឈប់")
+                    break
+                except Exception as e:  # noqa: BLE001
+                    st.update(status="failed", msg=str(e)[-300:], t1=time.time())
+                    self._say(f"✕ {st['name']}: {str(e)[-200:]}")
+                finally:
+                    shutil.rmtree(tmp, ignore_errors=True)
+        finally:
+            for st in self.state:  # ឈប់មុនដល់ → រឿងដែលមិនទាន់ធ្វើ
+                if st["status"] == "running":
+                    st.update(status="waiting", msg="បានបញ្ឈប់")
+            self.finished = True
 
     # ---------- ជំហាន 1–3: Merge → SRT → ខ្មែរ ----------
     def _prepare(self, i, tmp):
@@ -151,9 +140,6 @@ class Pipeline:
         else:
             video = videos[0]
         self._set(i, "merge", 100, "")
-        if o.get("novocal"):  # លុបការនិយាយ ស្របពេលជាមួយការស្តាប់ + បកប្រែ (រង់ចាំពេលដាក់ចូលវីដេអូ)
-            bg = os.path.join(tmp, "novocal.flac")
-            self.sep[i] = (vocal_remove.start_job(video, bg), bg)
 
         # 2) SRT — មានស្រាប់ក្នុង Folder? (ខ្មែរ → ប្រើភ្លាម · ភាសាដើម → បកប្រែតែប៉ុណ្ណោះ)
         cues = self._existing_srt(story)
@@ -163,6 +149,7 @@ class Pipeline:
             st["notes"].append("ប្រើ SRT ខ្មែរដែលមានស្រាប់")
             self._set(i, "translate", 100, f"SRT ខ្មែរមានស្រាប់ ({len(cues)} បន្ទាត់)")
             st["lines"] = len(cues)
+            self._start_novocal(i, video, tmp)
             return video, cues
         if not cues and os.path.exists(orig_path):  # បានស្តាប់រួចពីមុន (ឧ. បកប្រែបរាជ័យ)
             cues = _read_srt(orig_path)
@@ -172,17 +159,25 @@ class Pipeline:
         else:
             out = os.path.join(tmp, "orig.srt")
             self._set(i, "asr", 0, "កំពុងបើក model ស្តាប់...")
-            job = funasr_srt.start_job(video, out, o["engine"], o["lang"])
+            if o["engine"] == "whisper":  # process ដាច់ដោយឡែក → ចប់ហើយ VRAM ទំនេរវិញ
+                job = whisper_srt.start_job(video, out, WHISPER_MODEL, o["lang"], o.get("gpu", True))
+            else:
+                job = funasr_srt.start_job(video, out, o["engine"], o["lang"])
 
             def tick(j):
-                if j["status"] == "download":
+                if j["status"] == "download" and not j["done"]:
+                    self._set(i, "asr", 0, "កំពុងបើក model ស្តាប់...")
+                elif j["status"] == "download":
                     self._set(i, "asr", 0, f"ទាញយក model (ម្តងគត់) {j['done']}%")
                 elif j["status"] == "load":
                     self._set(i, "asr", 0, "កំពុងបើក model ស្តាប់...")
                 else:
                     self._set(i, "asr", 100 * j["done"] / max(j["total"], 1),
                               f"កំពុងស្តាប់ ({'GPU' if 'cuda' in (j.get('device') or '') else 'CPU'})")
-            _poll(job, tick, self.stop)
+            j = _poll(job, tick, self.stop)
+            st["notes"] += j.get("warnings", [])[:1]  # ឧ. GPU ប្រើមិនបាន → CPU
+            if o["engine"] != "whisper" and o.get("novocal"):
+                funasr_srt.stop_servers()  # ដោះ VRAM ឱ្យ Demucs
             cues = _read_srt(out)
             if not cues:
                 raise RuntimeError("រកមិនឃើញការនិយាយក្នុងវីដេអូ")
@@ -190,6 +185,8 @@ class Pipeline:
                 _write_srt(orig_path, cues)
             except OSError:
                 pass
+
+        self._start_novocal(i, video, tmp)  # ស្របពេលជាមួយការបកប្រែ + TTS (បណ្តាញ មិនប្រើ GPU)
 
         # 3) បកប្រែ (ដុំៗស្របគ្នា)
         total = -(-len(cues) // transcribe.TRANSLATE_BATCH)
@@ -210,6 +207,12 @@ class Pipeline:
         st["lines"] = len(km)
         self._set(i, "translate", 100, f"បកប្រែរួច {len(km)} បន្ទាត់")
         return video, km
+
+    def _start_novocal(self, i, video, tmp):
+        """លុបការនិយាយ (GPU) ក្រោយការស្តាប់ចប់ — រង់ចាំវាពេលដាក់ចូលវីដេអូ"""
+        if self.opts.get("novocal"):
+            bg = os.path.join(tmp, "novocal.flac")
+            self.sep[i] = (vocal_remove.start_job(video, bg), bg)
 
     @staticmethod
     def _existing_srt(story):

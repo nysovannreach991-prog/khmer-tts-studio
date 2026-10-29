@@ -195,6 +195,9 @@ class StoryCard(QFrame):
         if st["t0"]:
             took = f" · ⏱ {fmt_dur((st['t1'] or time.time()) - st['t0'])}"
         text = st["msg"] + took if status in ("running", "done") else st["msg"] if status == "failed" else ""
+        idle = time.time() - st.get("since", time.time())
+        if status == "running" and idle > 20:  # គ្មានវឌ្ឍនភាពយូរ → បង្ហាញថានៅដំណើរការ (មិនមែនគាំង)
+            text += f" · ⏳ រង់ចាំ {fmt_dur(idle)}"
         if st["notes"] and status == "done":
             text += "  ·  " + " · ".join(st["notes"][:2])
         self.detail.setText(text)
@@ -332,6 +335,14 @@ class SimplePage(QWidget):
         for key, label in LANGS:
             self.lang.addItem(label, key)
         sl.addWidget(self.lang)
+        sl.addWidget(self._label("📝 Model ស្តាប់"))
+        self.asr = QComboBox()
+        self.asr.addItem("🎯 Whisper turbo · GPU (ណែនាំ)", "whisper")
+        self.asr.addItem("⚡ SenseVoice (លឿនបំផុត)", "sensevoice")
+        self.asr.setToolTip("Whisper turbo លើ GPU: ច្បាស់ជាង មិនបាត់ពាក្យខ្លីៗ (ណែនាំ)\n"
+                            "SenseVoice: លឿនជាង ~3 ដង តែអាចខុសពាក្យខ្លះ")
+        self.asr.currentIndexChanged.connect(lambda _: self._sync_engine_note())
+        sl.addWidget(self.asr)
         sl.addWidget(self._label("✂ កាត់ជាផ្នែក"))
         self.part = QSpinBox()
         self.part.setRange(0, 120)
@@ -367,10 +378,10 @@ class SimplePage(QWidget):
         self.key_state.setWordWrap(True)
         sl.addWidget(self.key_state)
         sl.addStretch()
-        self.engine_note = QLabel("📝 SenseVoice + VAD (លឿនបំផុត មិនបាត់ពាក្យ)\n🌐 Gemini 3.8 Flash តាម Bayon\n"
-                                  "🔊 Edge TTS ស្របគ្នា 48 បន្ទាត់")
+        self.engine_note = QLabel()
         self.engine_note.setObjectName("simpleMuted")
         sl.addWidget(self.engine_note)
+        self._sync_engine_note()
         body.addWidget(side)
         outer.addLayout(body, 1)
 
@@ -503,6 +514,12 @@ class SimplePage(QWidget):
     # ---------- ដំណើរការ ----------
     def running(self):
         return bool(self.pipeline and not self.pipeline.finished)
+
+    def _sync_engine_note(self):
+        asr = ("📝 Whisper turbo · GPU (ច្បាស់ មិនបាត់ពាក្យ)" if self.asr.currentData() == "whisper"
+               else "📝 SenseVoice + VAD (លឿនបំផុត)")
+        self.engine_note.setText(f"{asr}\n🌐 Gemini 3.8 Flash តាម Bayon\n🔊 Edge TTS ស្របគ្នា 48 បន្ទាត់\n"
+                                 "🎬 ធ្វើម្តងមួយរឿង (មិនប្រជែង GPU)")
 
     def attach(self, pipeline):
         """ចាប់ផ្តើមបង្ហាញវឌ្ឍនភាពនៃ pipeline"""

@@ -104,8 +104,9 @@ def _ask_json(parts, schema, api_key, model, gemini_post):
             data = gemini_post(api_key, current, body)
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(text)
-        except (RuntimeError, KeyError, IndexError, json.JSONDecodeError) as e:
-            msg = str(e)
+        except (RuntimeError, OSError, KeyError, IndexError, json.JSONDecodeError) as e:
+            # OSError = timeout (ជាប់គ្មានចម្លើយ) / បណ្តាញដាច់ → ព្យាយាមម្តងទៀត
+            msg = str(e) or type(e).__name__
             retryable = not isinstance(e, RuntimeError) or any(c in msg for c in ("429", "500", "502", "503", "504"))
             if not retryable or attempt == 5:
                 raise RuntimeError(msg if isinstance(e, RuntimeError) else f"Gemini ឆ្លើយតបមិនត្រឹមត្រូវ: {e}") from None

@@ -4126,6 +4126,8 @@ class MainWindow(QMainWindow):
         self._select_data(sp.lang, s.value("simple_lang", "zh"))
         sp.use_brand.setChecked(s.value("simple_brand", "false") in (True, "true"))
         sp.novocal.setChecked(s.value("simple_novocal", "false") in (True, "true"))
+        self._select_data(sp.asr, s.value("simple_asr", "whisper"))
+        sp.asr.currentIndexChanged.connect(lambda _: s.setValue("simple_asr", sp.asr.currentData()))
         sp.novocal.toggled.connect(lambda on: s.setValue("simple_novocal", on))
         # ការកំណត់រួមជាមួយផ្ទាំងធម្មតា
         sp.part.valueChanged.connect(self.part_minutes.setValue)
@@ -4159,7 +4161,25 @@ class MainWindow(QMainWindow):
         stories = sp.stories()
         if not stories:
             return sp.headline.setText("⚠ សូមទម្លាក់ Folder រឿងជាមុនសិន")
-        if not funasr_mod.installed():
+        asr = sp.asr.currentData()
+        if asr == "whisper":
+            if not whisper_mod.installed():
+                if QMessageBox.question(self, "ដំឡើង Whisper",
+                                        "ការស្តាប់សំឡេង (Whisper turbo) ត្រូវដំឡើងម្តង (~100 MB)។\n"
+                                        "Model (~1.6 GB) នឹងទាញយកពេលប្រើលើកដំបូង។\n\nដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
+                    return
+                return self._simple_install(lambda on_line: whisper_mod.pip_install(whisper_mod.WHISPER_PACKAGES, on_line),
+                                            "Whisper", self._simple_start)
+            if not getattr(self, "_simple_gpu_asked", False) and not whisper_mod.gpu_ready() \
+                    and whisper_mod.has_nvidia():
+                self._simple_gpu_asked = True  # សួរម្តងក្នុងមួយដង (ប្រើ CPU បើមិនយល់ព្រម)
+                if QMessageBox.question(self, "បើក GPU សម្រាប់ Whisper (ណែនាំ)",
+                                        "កុំព្យូទ័រនេះមានកាត NVIDIA — ទាញយក CUDA library (~1.5 GB, ម្តងគត់)\n"
+                                        "ដើម្បីឱ្យ Whisper លឿនជាង CPU 10–30 ដង។\n\nទាញយកឥឡូវនេះ?") == QMessageBox.Yes:
+                    return self._simple_install(
+                        lambda on_line: whisper_mod.pip_install(whisper_mod.GPU_PACKAGES, on_line),
+                        "NVIDIA CUDA", self._simple_start)
+        elif not funasr_mod.installed():
             if QMessageBox.question(self, "ដំឡើង SenseVoice",
                                     "ការស្តាប់សំឡេង (SenseVoice — លឿនបំផុត) ត្រូវដំឡើងម្តង (~300 MB)។\n"
                                     "Model (~1 GB) នឹងទាញយកពេលប្រើលើកដំបូង។\n\nដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
@@ -4189,7 +4209,7 @@ class MainWindow(QMainWindow):
                    fit=self.fit.isChecked(), max_speed=self.max_speed.value(), format="mp3",
                    workers=max(self.workers.value(), 48))  # Edge ស្របគ្នា 48 → លឿនបំផុតដែលនៅតែស្ថិតស្ថេរ
         part_sec = sp.part.value() * 60
-        opts = {"key": key, "model": "gemini-3.8-flash", "engine": "sensevoice", "lang": sp.lang.currentData(),
+        opts = {"key": key, "model": "gemini-3.8-flash", "engine": asr, "gpu": True, "lang": sp.lang.currentData(),
                 "dub": dub, "dub_setup": backend._dub_setup, "safe_name": backend.safe_name, "out_dir": OUTPUT_DIR,
                 "orig_volume": 1.0 if novocal else 0.0 if sp.mute.isChecked() else self.orig_volume.value() / 100,
                 "novocal": novocal,

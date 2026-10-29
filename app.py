@@ -323,6 +323,14 @@ def _json_text(text):
     return text[min(starts):] if starts else text
 
 
+def _timeout(body):
+    """អត្ថបទ (បកប្រែ) ឆ្លើយក្នុង ~10–30វិ — 120វិ គ្មានចម្លើយ = ជាប់ → ព្យាយាមម្តងទៀត (កុំរង់ចាំ 5 នាទី)
+    សំឡេង (ស្តាប់ / TTS) ត្រូវការយូរជាង"""
+    config = body.get("generationConfig", {})
+    has_audio = any("inlineData" in p for c in body.get("contents", []) for p in c.get("parts", []))
+    return 300 if has_audio or "AUDIO" in config.get("responseModalities", []) else 120
+
+
 def _gateway_post(api_key, model, body):
     """Bayon Gateway (OpenAI chat/completions) — បម្លែង body ទម្រង់ Gemini ទៅ/មក ដើម្បីឱ្យកូដផ្សេងមិនបាច់ដឹង"""
     config = body.get("generationConfig", {})
@@ -346,7 +354,7 @@ def _gateway_post(api_key, model, body):
     req = urllib.request.Request(BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", "Authorization": f"Bearer {clean_key(api_key)}"})
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=_timeout(body)) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
@@ -400,7 +408,7 @@ def _post_one(api_key, model, body):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=_timeout(body)) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
