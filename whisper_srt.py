@@ -119,19 +119,39 @@ def _python():
     return exe
 
 
-def pip_install(packages, on_line=None):
-    """ដំឡើង package ដោយ pip — on_line(text) ទទួលបន្ទាត់វឌ្ឍនភាព"""
+# វឌ្ឍនភាពទាញយករបស់ pip ដែលកំពុងដំណើរការ (GUI អានដើម្បីបង្ហាញ progress bar)
+# {"name": ឈ្មោះ package, "done": bytes, "total": bytes} ឬ None
+pip_progress = None
+_PIP_FILE = re.compile(r"^Downloading (?:\S*/)?([A-Za-z0-9_.]+?)-\d\S*\.(?:whl|tar\.gz|zip)\b(?!\.metadata)")
+_PIP_RAW = re.compile(r"^Progress (\d+) of (\d+)")
+
+
+def pip_install(packages, on_line=None, raw_progress=True):
+    """ដំឡើង package ដោយ pip — on_line(text) ទទួលបន្ទាត់វឌ្ឍនភាព · pip_progress = bytes ដែលទាញយករួច"""
+    global pip_progress
     proc = subprocess.Popen([_python(), "-m", "pip", "install", "--disable-pip-version-check",
-                             "--no-warn-script-location", "--progress-bar", "off", *packages],
+                             "--no-warn-script-location", "--progress-bar", "raw" if raw_progress else "off",
+                             *packages],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=_NO_WINDOW)
-    tail = []
+    tail, name = [], ""
     for raw in proc.stdout:
         line = raw.decode("utf-8", "replace").strip()
+        m = _PIP_RAW.match(line)
+        if m:  # "Progress 262144 of 12608406" — មិនដាក់ក្នុង tail/on_line (ច្រើនពេក)
+            pip_progress = {"name": name, "done": int(m.group(1)), "total": int(m.group(2))}
+            continue
+        f = _PIP_FILE.match(line)
+        if f:
+            name = f.group(1).replace("_", "-")
+            pip_progress = None
         if line:
             tail = (tail + [line])[-15:]
             if on_line:
                 on_line(line)
+    pip_progress = None
     if proc.wait() != 0:
+        if raw_progress and any("invalid choice" in t and "raw" in t for t in tail):
+            return pip_install(packages, on_line, raw_progress=False)  # pip ចាស់ (< 24.1) មិនស្គាល់ "raw"
         raise RuntimeError("ដំឡើងមិនបាន — ពិនិត្យអ៊ីនធឺណិត ហើយព្យាយាមម្តងទៀត\n" + "\n".join(tail[-5:]))
 
 

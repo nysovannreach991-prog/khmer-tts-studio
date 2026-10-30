@@ -204,14 +204,48 @@ class SysBar(QWidget):
         self.status = {}  # {"ai": "gpu"|"cpu"|"fixable", "enc": "h264_nvenc"..., "driver": "610.00"}
         self.active = None  # ឧបករណ៍ដែលការងារកំពុងប្រើ ("cuda"/"cpu")
         self.fix_rects = {}  # ប៊ូតុងក្នុងរបារ: "gpu"/"driver" → QRectF
+        self.download = None  # (frac 0..1 ឬ -1 = មិនដឹង %, អក្សរ) ពេលកំពុងទាញយក/ដំឡើង
         self.setMouseTracking(True)
-        t = QTimer(self)
-        t.timeout.connect(self.update)
-        t.start(1000)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update)
+        self.timer.start(1000)
 
     def set_status(self, **kw):
         self.status.update(kw)
         self.update()
+
+    def set_download(self, frac, text=""):
+        """បង្ហាញ progress bar ទាញយកនៅខាងស្តាំរបារ — frac=None បិទវិញ"""
+        self.download = None if frac is None else (frac, text)
+        self.timer.setInterval(1000 if frac is None else 120)  # ចលនាលឿនពេលទាញយក
+        self.update()
+
+    def _paint_download(self, p, r, x_min, frac, text, lab_f, val_f):
+        c = theme.C
+        w = min(640.0, r.right() - 12 - x_min - 20)
+        if w < 260:
+            return
+        box = QRectF(r.right() - 12 - w, r.top() + 6, w, r.height() - 12)
+        p.setPen(QPen(QColor(c["accent"]), 1))
+        p.setBrush(QColor("#1f2123"))
+        p.drawRoundedRect(box, 3, 3)
+        label = text + ("" if frac < 0 else f"   {frac * 100:.0f}%")
+        text_w = QFontMetricsF(val_f).horizontalAdvance(label) + 20
+        inner = box.adjusted(3, 3, -3 - text_w, -3)
+        p.setPen(Qt.NoPen)
+        n = max(12, int(inner.width() / 7))
+        step = inner.width() / n
+        if frac < 0:  # មិនដឹង % → សញ្ញារត់ពីឆ្វេងទៅស្តាំ
+            head = (time.time() * 14) % (n + 6)
+            lit = [i for i in range(n) if 0 <= head - i < 6]
+        else:
+            lit = range(round(max(0.0, min(1.0, frac)) * n))
+        for i in lit:
+            p.setBrush(QColor(c["accent"]))
+            p.drawRect(QRectF(inner.left() + i * step, inner.top(), step - 1.5, inner.height()))
+        p.setFont(val_f)
+        p.setPen(QColor("#ffffff"))
+        p.drawText(box.adjusted(8, 0, -8, 0), Qt.AlignVCenter | Qt.AlignRight, label)
 
     def set_active(self, device):
         if device != self.active:
@@ -317,6 +351,11 @@ class SysBar(QWidget):
             x += 8
             text(f"VRAM {d['vram'][0]:.1f}/{d['vram'][1]:.0f} GB", c["faint"], val_f, val_m)
 
+        if self.download:  # កំពុងទាញយក GPU → progress bar ជំនួសស្លាក AI/Encode
+            self.fix_rects = {}
+            self._paint_download(p, r, x, *self.download, lab_f, val_f)
+            p.end()
+            return
         # ខាងស្តាំ: AI / Encode ប្រើ GPU ឬ CPU
         st = self.status
         ai = st.get("ai")

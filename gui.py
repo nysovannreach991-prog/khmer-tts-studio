@@ -4306,11 +4306,23 @@ class MainWindow(QMainWindow):
         sp, last = self.simple_page, {"line": ""}
         sp.btn_go.setEnabled(False)
         poll = QTimer(self)
-        poll.timeout.connect(lambda: sp.headline.setText(f"⏳ កំពុងដំឡើង {label}... {last['line'][:70]}"))
+
+        def tick():
+            prog = whisper_mod.pip_progress
+            if prog and prog["total"]:  # កំពុងទាញយក → % និង MB
+                frac = prog["done"] / prog["total"]
+                size = f"{prog['done'] / 2 ** 20:,.0f}/{prog['total'] / 2 ** 20:,.0f} MB"
+                sp.headline.setText(f"⬇ ទាញយក {prog['name']} {frac * 100:.0f}% · {size}")
+                self.sysbar.set_download(frac, f"⬇ {prog['name']}  {size}")
+            else:
+                sp.headline.setText(f"⏳ កំពុងដំឡើង {label}... {last['line'][:70]}")
+                self.sysbar.set_download(-1, f"⏳ {label}")
+        poll.timeout.connect(tick)
         poll.start(400)
 
         def finish(ok, err=""):
             poll.stop()
+            self.sysbar.set_download(None)
             self.set_busy(False)
             sp.btn_go.setEnabled(True)
             if ok:
