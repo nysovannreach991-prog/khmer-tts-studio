@@ -4069,7 +4069,8 @@ class MainWindow(QMainWindow):
         self.status_box.setVisible(False)
         self.btn_explorer.setVisible(False)
         self.simple_page.part.setValue(self.part_minutes.value())
-        self.simple_page.mute.setChecked(self.orig_mute.isChecked())
+        # លុបតែការនិយាយ (រក្សាទុក) មានអាទិភាព — កុំឱ្យ Mute ដោះវាចេញពេលបើកកម្មវិធី
+        self.simple_page.mute.setChecked(self.orig_mute.isChecked() and not self.simple_page.novocal.isChecked())
         self.simple_page.duck.setCurrentIndex(self.orig_duck.currentIndex())
         self.simple_page.key.setText(self.gemini_key())
         self._simple_key_state()
@@ -4107,6 +4108,8 @@ class MainWindow(QMainWindow):
         sp.novocal.toggled.connect(lambda on: s.setValue("simple_novocal", on))
         # ការកំណត់រួមជាមួយផ្ទាំងធម្មតា
         sp.part.valueChanged.connect(self.part_minutes.setValue)
+        sp.keep_full.setChecked(self.keep_full.isChecked())
+        sp.keep_full.toggled.connect(self.keep_full.setChecked)
         sp.mute.toggled.connect(self.orig_mute.setChecked)
         sp.duck.setCurrentIndex(self.orig_duck.currentIndex())
         sp.duck.currentIndexChanged.connect(self.orig_duck.setCurrentIndex)
