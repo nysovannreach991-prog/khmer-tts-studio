@@ -6,11 +6,12 @@ import threading
 import time
 import uuid
 import wave
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 import numpy as np
 
 SAMPLE_RATE = 24000
+STALL_SECONDS = 240  # គ្មានបន្ទាត់ណាចប់ក្នុងរយៈពេលនេះ = ជាប់ → ធ្វើបន្ទាត់នោះម្តងទៀត
 _TIME_RE = re.compile(r"(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)")
 
 # សញ្ញាភេទនៅដើមបន្ទាត់ ឧ. "(ស្រី) ..." ឬ "(ប្រុស) ..." — បង្កើតដោយមុខងារ សំឡេង → SRT
@@ -200,17 +201,46 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
             clip = speed_up(clip, min(len(clip) / slot, max_speed))
         return clip
 
+    def respawn(i):
+        # thread daemon ថ្មី — បើ thread ចាស់នៅជាប់ វាមិនរារាំងការបិទកម្មវិធី
+        fut = Future()
+
+        def run():
+            try:
+                fut.set_result(synth(i))
+            except BaseException as e:
+                fut.set_exception(e)
+        threading.Thread(target=run, daemon=True).start()
+        return fut
+
     clips = [None] * len(cues)
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         futures = {pool.submit(synth, i): i for i in range(len(cues))}
-        for fut in as_completed(futures):
-            i = futures[fut]
-            try:
-                clips[i] = fut.result()
-            except Exception as e:
-                raise RuntimeError(f"បន្ទាត់ទី {cues[i]['index']}: {e}") from None
-            job["done"] += 1
+        pending, retried = set(futures), set()
+        while pending:
+            finished, pending = wait(pending, timeout=STALL_SECONDS, return_when=FIRST_COMPLETED)
+            if not finished:
+                # គ្មានបន្ទាត់ណាចប់យូរពេក → ធ្វើបន្ទាត់ដែលកំពុងជាប់ម្តងទៀត (យកមួយណាដែលចប់មុន)
+                stuck = [f for f in pending if f.running() and futures[f] not in retried]
+                if not stuck:
+                    raise RuntimeError(f"ជាប់គាំងលើសពី {STALL_SECONDS * 2 // 60} នាទី — សូមចុចចាប់ផ្តើមម្តងទៀត")
+                for f in stuck:
+                    retried.add(futures[f])
+                    nf = respawn(futures[f])
+                    futures[nf] = futures[f]
+                    pending.add(nf)
+                continue
+            for fut in finished:
+                i = futures[fut]
+                if clips[i] is not None:
+                    continue  # ច្បាប់ចម្លងមួយទៀតចប់មុនរួចហើយ
+                try:
+                    clips[i] = fut.result()
+                except Exception as e:
+                    raise RuntimeError(f"បន្ទាត់ទី {cues[i]['index']}: {e}") from None
+                job["done"] += 1
+            pending = {f for f in pending if clips[futures[f]] is None}
     finally:
         pool.shutdown(wait=False, cancel_futures=True)  # បរាជ័យ → កុំរង់ចាំបន្ទាត់ដែលនៅសល់
 

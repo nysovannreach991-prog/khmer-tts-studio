@@ -65,6 +65,7 @@ GEMINI_CHUNK_CHARS = 3000
 EDGE_CHUNK_CHARS = 800      # ទំហំផ្នែកនីមួយៗសម្រាប់បង្កើតស្របគ្នា
 EDGE_CONCURRENCY = 16       # ចំនួនការភ្ជាប់ទៅ Edge ក្នុងពេលតែមួយ
 EDGE_RETRIES = 5          # រង់ចាំ 1+2+4+8 វិនាទី ពេលបណ្តាញដាច់មួយភ្លែត
+EDGE_TIMEOUT = 60         # វិនាទីអតិបរមាក្នុងការព្យាយាមម្តង (ផ្នែក 800 តួអក្សរ ប្រើ ~10s)
 EDGE_CACHE_DIR = (os.path.join(_LOCAL, "AITeam1", "cache", "edge") if INSTALLED
                   else os.path.join(OUTPUT_DIR, ".cache", "edge"))
 os.makedirs(EDGE_CACHE_DIR, exist_ok=True)
@@ -125,18 +126,26 @@ async def edge_audio_async(text, voice, rate=0, pitch=0, volume=0):
         with open(cache, "rb") as f:
             return f.read()
 
+    async def fetch():
+        communicate = edge_tts.Communicate(
+            text, voice,
+            rate=_signed(rate, "%"), pitch=_signed(pitch, "Hz"), volume=_signed(volume, "%"),
+            connector=aiohttp.TCPConnector(resolver=_dns_resolver),
+        )
+        data = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                data.extend(chunk.get("data", b""))
+        return data
+
     audio = bytearray()
     for attempt in range(EDGE_RETRIES):
         try:
-            communicate = edge_tts.Communicate(
-                text, voice,
-                rate=_signed(rate, "%"), pitch=_signed(pitch, "Hz"), volume=_signed(volume, "%"),
-                connector=aiohttp.TCPConnector(resolver=_dns_resolver),
-            )
-            audio = bytearray()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio.extend(chunk.get("data", b""))
+            # websocket របស់ Edge គ្មាន timeout ពេលទទួល — Microsoft ឈប់ផ្ញើពាក់កណ្តាលទី → ជាប់រហូត
+            try:
+                audio = await asyncio.wait_for(fetch(), EDGE_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise RuntimeError(f"អស់ពេល {EDGE_TIMEOUT}s") from None
             if not audio:
                 raise RuntimeError("Edge TTS មិនបានផ្ញើសំឡេងមកវិញ")
             break
