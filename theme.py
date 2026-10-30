@@ -1,4 +1,4 @@
-"""រចនាប័ទ្ម Modern / Gen Z — Dark, Light & Matrix mode, ពណ៌ gradient លឿង→ទឹកក្រូច, ជ្រុងមូល។
+"""រចនាប័ទ្ម Vector — ម៉ាស៊ីនកុំព្យូទ័របុរាណ (theme តែមួយ)។
 
 C = ពណ៌បច្ចុប្បន្ន (dict ដែលប្តូរតាម mode) — gui.py ប្រើវាសម្រាប់ rich text និងពណ៌ក្នុងតារាង។
 """
@@ -8,35 +8,19 @@ import tempfile
 
 from PyQt5.QtGui import QColor, QPalette
 
-DARK = {
-    "bg": "#0e0d0a", "surface": "#17150f", "card": "#1f1c14", "input": "#13110c", "hover": "#2a261b",
-    "border": "#2f2a1e", "border_hi": "#4a4230", "text": "#fbf8ef", "muted": "#b0a88f", "faint": "#756d58",
-    "accent": "#facc15", "accent2": "#f59e0b", "accent3": "#fb923c", "on_accent": "#1a1400",
-    "grad_a": "#fde047", "grad_b": "#f59e0b",
-    "success": "#34d399", "error": "#fb7185", "warn": "#fb923c",
-    "female": "#f472b6", "male": "#60a5fa", "selection": "#3d3418",
+# Vector — ម៉ាស៊ីនកុំព្យូទ័របុរាណ: ផ្ទៃប្រផេះស្រាល, module ពណ៌ស (bevel), ភ្លើង LED ទឹកក្រូច, អេក្រង់ LCD ខ្មៅ
+VECTOR = {
+    "bg": "#d6d7d8", "surface": "#e4e5e6", "card": "#f3f3f2", "input": "#fafaf9", "hover": "#ebeceb",
+    "border": "#c3c5c7", "border_hi": "#a7aaad", "text": "#2a2c2f", "muted": "#686c71", "faint": "#9a9ea3",
+    "accent": "#ff5a1f", "accent2": "#ef4f16", "accent3": "#ff7c48", "on_accent": "#ffffff",
+    "grad_a": "#ff7c48", "grad_b": "#ef4f16",
+    "success": "#2e9a58", "error": "#d6392a", "warn": "#dd7418",
+    "female": "#d2437a", "male": "#3a6cd4", "selection": "#ffdccd",
+    "lcd": "#2d2f32", "lcd_text": "#d4d6d0", "bevel": "#8d9195",
 }
-LIGHT = {
-    "bg": "#fbf9f1", "surface": "#ffffff", "card": "#fffdf6", "input": "#ffffff", "hover": "#fdf6dc",
-    "border": "#efe7cc", "border_hi": "#e2d29a", "text": "#1f1a0d", "muted": "#6f6650", "faint": "#aca38a",
-    "accent": "#b45309", "accent2": "#d97706", "accent3": "#ea580c", "on_accent": "#1f1a0d",
-    "grad_a": "#fcd34d", "grad_b": "#f59e0b",
-    "success": "#059669", "error": "#e11d48", "warn": "#c2410c",
-    "female": "#db2777", "male": "#2563eb", "selection": "#fdefb2",
-}
-# Matrix — អក្សរបៃតងលើផ្ទៃខ្មៅ (phosphor green) + ភ្លៀងអក្សរ (matrix_rain.py)
-MATRIX = {
-    "bg": "#000000", "surface": "#020a04", "card": "#051209", "input": "#010603", "hover": "#0a2613",
-    "border": "#0d3a1b", "border_hi": "#1a7a36", "text": "#7dffa0", "muted": "#3fbf62", "faint": "#2b6e3d",
-    "accent": "#00ff41", "accent2": "#00d636", "accent3": "#39ff14", "on_accent": "#001a07",
-    "grad_a": "#39ff14", "grad_b": "#00b82e",
-    "success": "#00ff41", "error": "#ff4d5e", "warn": "#d4ff3a",
-    "female": "#b6ff6a", "male": "#2ee6ff", "selection": "#0c3d1c",
-}
-THEMES = {"dark": DARK, "light": LIGHT, "matrix": MATRIX}
-LABELS = {"dark": "🌙 Dark", "light": "☀️ Light", "matrix": "🟩 Matrix"}
-C = dict(DARK)
-mode = "dark"
+THEMES = {"vector": VECTOR}
+C = dict(VECTOR)
+mode = "vector"
 _base_families = None
 
 GRAD = "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {a}, stop:1 {b})"
@@ -205,67 +189,83 @@ QMenu::item:selected {{ background: {c['selection']}; }}
 
 
 def hackify(qss):
-    """Matrix → ជ្រុងការ៉េ (terminal) + រចនាប័ទ្ម hacker បន្ថែមពីលើ · theme ផ្សេង → ដដែល"""
-    if mode != "matrix":
-        return qss
-    qss = re.sub(r"border-radius:\s*\d+px", "border-radius: 0px", qss)
-    return qss + _MATRIX_QSS.format(c=C)
+    """Vector → ជ្រុងតូច + module bevel (ប៊ូតុងដូចគ្រាប់ចុចម៉ាស៊ីន, LCD ខ្មៅ)"""
+    qss = re.sub(r"border-radius:\s*(\d+)px", lambda m: f"border-radius: {min(int(m.group(1)), 6)}px", qss)
+    return qss + _VECTOR_QSS.format(c=C)
 
 
-# Matrix: hacker terminal — ប៊ូតុងស៊ុម → ចុចលើ = ពណ៌បញ្ច្រាស, progress ជាប្លុក, អក្សរ monospace (font កម្មវិធី)
-_MATRIX_QSS = """
-QLabel#appTitle {{ color: {c[accent]}; font-weight: bold; }}
-QLabel#appSub {{ color: {c[muted]}; }}
-QLabel#pill {{ background: transparent; color: {c[accent]}; border: 1px solid {c[accent]}; }}
-QLabel#logo {{ background: {c[bg]}; border: 1px solid {c[accent]}; color: {c[accent]}; }}
-QFrame#header {{ border: 1px solid {c[border_hi]}; }}
-QGroupBox {{ background: {c[surface]}; border: 1px solid {c[border_hi]}; }}
-QGroupBox::title {{ color: {c[bg]}; background: {c[accent]}; padding: 0 6px; }}
+# Vector: module ពណ៌សមាន bevel ខាងក្រោម, ប៊ូតុងដូចគ្រាប់ចុចម៉ាស៊ីន, LCD ខ្មៅ, progress ជាសសរតូចៗ (tick)
+_MODULE = ("background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #fbfbfa, stop:1 {c[card]}); "
+           "border: 1px solid {c[border]}; border-bottom: 2px solid {c[border_hi]};")
+_VECTOR_QSS = """
+QFrame#header, QGroupBox, QFrame#simpleHero, QFrame#simpleSide, QFrame#simpleFoot {{ """ + _MODULE + """ }}
+QTabWidget::pane {{ background: {c[surface]}; border: 1px solid {c[border]}; border-bottom: 2px solid {c[border_hi]}; }}
+QGroupBox::title {{ color: {c[muted]}; }}
+QLabel#pill {{ background: {c[lcd]}; color: {c[accent]}; border: 1px solid #1b1c1e; }}
 
-QPushButton {{ background: transparent; color: {c[accent]}; border: 1px solid {c[border_hi]}; }}
-QPushButton:hover {{ background: {c[accent]}; color: {c[bg]}; border-color: {c[accent]}; }}
-QPushButton:pressed {{ background: {c[accent2]}; color: {c[bg]}; }}
-QPushButton:checked {{ background: {c[selection]}; color: {c[accent]}; border-color: {c[accent]}; }}
-QPushButton:disabled {{ background: transparent; color: {c[faint]}; border: 1px dashed {c[border]}; }}
-QPushButton#primary, QPushButton#bigGo {{ background: {c[bg]}; color: {c[accent]}; border: 2px solid {c[accent]};
-    font-weight: bold; }}
-QPushButton#primary:hover, QPushButton#bigGo:hover {{ background: {c[accent]}; color: {c[bg]}; }}
-QPushButton#primary:disabled, QPushButton#bigGo:disabled {{ background: {c[bg]}; color: {c[faint]};
-    border: 2px dashed {c[border_hi]}; }}
-QPushButton#ghost {{ color: {c[accent]}; border: 1px solid {c[border_hi]}; }}
-QPushButton#ghost:hover {{ background: {c[accent]}; color: {c[bg]}; }}
+QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #e5e6e6);
+    color: {c[text]}; border: 1px solid {c[border_hi]}; border-bottom: 2px solid {c[bevel]}; }}
+QPushButton:hover {{ border-color: {c[accent]}; border-bottom: 2px solid {c[accent2]}; }}
+QPushButton:pressed {{ background: #dcdddd; border-bottom: 1px solid {c[bevel]}; padding-top: 8px; }}
+QPushButton:checked {{ background: {c[lcd]}; color: {c[accent]}; border: 1px solid #1b1c1e;
+    border-bottom: 2px solid #111213; }}
+QPushButton:disabled {{ background: {c[surface]}; color: {c[faint]}; border: 1px solid {c[border]}; }}
+QPushButton#ghost {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #e5e6e6);
+    border: 1px solid {c[border_hi]}; border-bottom: 2px solid {c[bevel]}; }}
+QPushButton#ghost:hover {{ background: #ffffff; border-color: {c[accent]}; border-bottom: 2px solid {c[accent2]}; }}
+QPushButton#primary, QPushButton#bigGo {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c[accent3]}, stop:1 {c[accent2]});
+    color: #ffffff; border: 1px solid #c63f0e; border-bottom: 3px solid #9c3109; font-weight: bold; }}
+QPushButton#primary:hover, QPushButton#bigGo:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff8f62, stop:1 {c[accent]}); }}
+QPushButton#primary:pressed, QPushButton#bigGo:pressed {{ border-bottom: 1px solid #9c3109; padding-top: 10px; }}
+QPushButton#primary:disabled, QPushButton#bigGo:disabled {{ background: {c[lcd]}; color: {c[lcd_text]};
+    border: 1px solid #1b1c1e; border-bottom: 3px solid #111213; }}
 
-QTabBar::tab {{ color: {c[muted]}; border-bottom: 2px solid transparent; }}
-QTabBar::tab:hover {{ background: transparent; color: {c[accent]}; border-bottom: 2px solid {c[border_hi]}; }}
-QTabBar::tab:selected {{ background: {c[accent]}; color: {c[bg]}; border-bottom: 2px solid {c[accent]}; }}
+QTabBar::tab {{ color: {c[muted]}; }}
+QTabBar::tab:hover {{ background: {c[card]}; color: {c[text]}; }}
+QTabBar::tab:selected {{ background: {c[lcd]}; color: {c[accent]}; }}
 
-QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {c[bg]}; color: {c[accent]};
-    border: 1px solid {c[border_hi]}; selection-background-color: {c[accent]}; selection-color: {c[bg]}; }}
-QPlainTextEdit, QTextEdit {{ color: {c[accent]}; }}
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {c[input]};
+    border: 1px solid {c[border]}; border-top: 2px solid {c[border_hi]}; }}
+QCheckBox::indicator, QRadioButton::indicator {{ background: {c[input]}; border: 1px solid {c[bevel]}; }}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {{ background: {c[accent]}; border-color: #c63f0e; }}
 
-QCheckBox::indicator, QRadioButton::indicator {{ background: {c[bg]}; border: 1px solid {c[accent2]}; }}
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {{ background: {c[accent]}; }}
+QProgressBar {{ background: {c[lcd]}; color: {c[lcd_text]}; border: 1px solid #1b1c1e; padding: 2px; }}
+QProgressBar::chunk {{ background: {c[accent]}; width: 4px; margin-right: 2px; border-radius: 0px; }}
+QProgressBar#cardBar, QProgressBar#bigBar {{ background: {c[lcd]}; border: 1px solid #1b1c1e; padding: 2px; }}
+QProgressBar#cardBar::chunk, QProgressBar#bigBar::chunk {{ background: {c[accent]}; width: 3px; margin-right: 2px;
+    border-radius: 0px; }}
 
-QSlider::groove:horizontal {{ height: 4px; background: {c[border]}; }}
-QSlider::sub-page:horizontal {{ background: {c[accent]}; }}
-QSlider::handle:horizontal {{ background: {c[accent]}; border: none; width: 10px; height: 16px; margin: -6px 0; }}
+QHeaderView::section {{ background: {c[surface]}; }}
+QMenu::item:selected {{ background: {c[lcd]}; color: {c[accent]}; }}
+QToolTip {{ background: {c[lcd]}; color: {c[lcd_text]}; border: 1px solid #1b1c1e; }}
 
-QProgressBar {{ background: {c[bg]}; color: {c[text]}; border: 1px solid {c[border_hi]}; }}
-QProgressBar::chunk {{ background: {c[accent]}; width: 9px; margin: 2px 1px; }}
-QProgressBar#cardBar::chunk, QProgressBar#bigBar::chunk {{ background: {c[accent]}; width: 7px; margin: 1px; }}
-
-QHeaderView::section {{ background: {c[bg]}; color: {c[accent]}; border-bottom: 1px solid {c[border_hi]}; }}
-QTableWidget, QTreeWidget, QTreeView, QListWidget {{ background: {c[bg]}; selection-background-color: {c[accent]};
-    selection-color: {c[bg]}; }}
-QListWidget::item:selected, QTreeWidget::item:selected, QTreeView::item:selected {{ background: {c[accent]};
-    color: {c[bg]}; }}
-QScrollBar::handle {{ background: {c[border_hi]}; }}
-QMenu {{ background: {c[bg]}; border: 1px solid {c[accent]}; }}
-QMenu::item:selected {{ background: {c[accent]}; color: {c[bg]}; }}
-QToolTip {{ background: {c[bg]}; color: {c[accent]}; border: 1px solid {c[accent]}; }}
-QLabel#chip {{ background: {c[bg]}; }}
-QLabel#chip[state="active"] {{ background: {c[accent]}; color: {c[bg]}; }}
-QFrame#dropZone {{ background: {c[bg]}; border: 1px dashed {c[accent2]}; }}
+QLabel#leds {{ color: {c[accent]}; font-size: 8pt; }}
+QLabel#serial {{ color: {c[muted]}; font-size: 8pt; }}
+QLabel#led {{ color: {c[faint]}; font-size: 11pt; }}
+QLabel#led[state="running"] {{ color: {c[accent]}; }}
+QLabel#led[state="done"] {{ color: {c[success]}; }}
+QLabel#led[state="failed"] {{ color: {c[error]}; }}
+QLabel#chip {{ background: {c[card]}; color: {c[muted]}; border: 1px solid {c[border_hi]};
+    border-bottom: 2px solid {c[bevel]}; }}
+QLabel#chip[state="active"] {{ background: {c[lcd]}; color: {c[accent]}; border: 1px solid #1b1c1e;
+    border-bottom: 2px solid #111213; }}
+QLabel#chip[state="done"] {{ background: {c[card]}; color: {c[success]}; border-color: {c[success]}; }}
+QLabel#simpleArrow {{ color: {c[accent]}; }}
+QFrame#dropZone {{ background: {c[surface]}; border: 2px dashed {c[border_hi]}; }}
+QFrame#dropZone:hover, QFrame#dropZone[hover="true"] {{ background: #ffffff; border-color: {c[accent]}; }}
+QFrame#storyCard {{ """ + _MODULE + """ border-left: 3px solid {c[border_hi]}; }}
+QFrame#storyCard[state="running"] {{ border-left: 3px solid {c[accent]}; }}
+QFrame#storyCard[state="done"] {{ border-left: 3px solid {c[success]}; }}
+QFrame#storyCard[state="failed"] {{ border-left: 3px solid {c[error]}; }}
+QLabel#statusChip {{ background: {c[lcd]}; color: {c[lcd_text]}; }}
+QLabel#statusChip[state="running"] {{ color: {c[accent]}; }}
+QLabel#statusChip[state="done"] {{ color: #7ee2a2; }}
+QLabel#statusChip[state="failed"] {{ color: #ff8a7a; }}
+QLabel#simpleHeadline, QLabel#lcd {{ background: {c[lcd]}; color: {c[lcd_text]}; border: 1px solid #1b1c1e;
+    border-radius: 4px; padding: 7px 12px; }}
+QLabel#sideHead {{ border-bottom: 1px dashed {c[border_hi]}; padding-bottom: 6px; }}
 """
 
 
@@ -283,16 +283,22 @@ def palette():
     return p
 
 
-def apply(qt_app, new_mode):
+def mono(font):
+    """font monospace (Consolas) — អក្សរខ្មែរនៅតែប្រើ font កម្មវិធី (Kantumruy)"""
+    font.setFamilies(["Consolas"] + [f for f in (_base_families or font.families()) if f != "Consolas"])
+    return font
+
+
+def apply(qt_app, new_mode="vector"):
     global mode
-    mode = new_mode if new_mode in THEMES else "dark"
+    mode = "vector"  # theme តែមួយ (Dark/Light/Matrix ចាស់ → Vector)
     C.clear()
     C.update(THEMES[mode])
     global _base_families
     if _base_families is None:
         _base_families = qt_app.font().families() or [qt_app.font().family()]
-    font = qt_app.font()  # Matrix: Consolas មុន → អក្សរខ្មែរប្រើ Kantumruy (font បម្រុង)
-    font.setFamilies((["Consolas"] if mode == "matrix" else []) + [f for f in _base_families if f != "Consolas"])
+    font = qt_app.font()
+    font.setFamilies([f for f in _base_families if f != "Consolas"])
     qt_app.setFont(font)
     qt_app.setPalette(palette())
     qt_app.setStyleSheet(hackify(stylesheet()))

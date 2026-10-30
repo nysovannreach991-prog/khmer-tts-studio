@@ -3,8 +3,8 @@ Merge → SRT (SenseVoice) → បកប្រែខ្មែរ (Bayon/Gemini) 
 import os
 import time
 
-from PyQt5.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, QVariantAnimation, pyqtSignal
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer, QVariantAnimation, pyqtSignal
+from PyQt5.QtGui import QColor, QPainter
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit,
     QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 
 import auto_pipeline
 import theme
+import vector_fx
 from video_dub import DUCK_LABELS
 
 SPIN = "◐◓◑◒"
@@ -59,6 +60,18 @@ class SmoothBar(QProgressBar):
         self._anim.start()
 
 
+class _Notice(QLabel):
+    """QLabel ដែលប្រាប់ពេលអក្សរប្តូរ — បន្ទះសៀគ្វីបង្ហាញសារដដែល (ការព្រមាន ការដំឡើង...)"""
+
+    def __init__(self, text, on_change):
+        super().__init__(text)
+        self._on_change = on_change
+
+    def setText(self, text):
+        super().setText(text)
+        self._on_change()
+
+
 class StepChips(QWidget):
     """🧩 Merge → 📝 SRT → 🌐 ខ្មែរ → 🔊 សំឡេង → 🎬 វីដេអូ — ជំហានកំពុងធ្វើភ្លឺបញ្ចេញបញ្ចូល"""
 
@@ -68,11 +81,15 @@ class StepChips(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         self.chips = {}
+        self.arrows, self.traces = [], {}  # Vector: ខ្សែសៀគ្វីជំនួស "→"
         for n, (key, label) in enumerate(auto_pipeline.STAGES):
             if n:
                 arrow = QLabel("→")
                 arrow.setObjectName("simpleArrow")
                 lay.addWidget(arrow)
+                self.arrows.append(arrow)
+                self.traces[key] = vector_fx.TraceArrow()
+                lay.addWidget(self.traces[key])
             chip = QLabel(label)
             chip.setObjectName("chip")
             chip.setAlignment(Qt.AlignCenter)
@@ -88,6 +105,25 @@ class StepChips(QWidget):
         self._pulse.setDuration(1400)
         self._pulse.setLoopCount(-1)
         self._pulse.valueChanged.connect(self._on_pulse)
+        self._flow = QTimer(self)
+        self._flow.setInterval(70)
+        self._flow.timeout.connect(lambda: [t.advance() for t in self.traces.values()])
+        self.sync_skin()
+
+    def sync_skin(self):
+        vector = theme.mode == "vector"
+        for a in self.arrows:
+            a.setVisible(not vector)
+        for t in self.traces.values():
+            t.setVisible(vector)
+        self._sync_flow()
+
+    def _sync_flow(self):
+        on = theme.mode == "vector" and self.active is not None
+        if on and not self._flow.isActive():
+            self._flow.start()
+        elif not on:
+            self._flow.stop()
 
     def set_stage(self, stage, finished=False):
         order = [k for k, _ in auto_pipeline.STAGES]
@@ -100,11 +136,14 @@ class StepChips(QWidget):
                 chip.setStyleSheet("")
                 chip.style().unpolish(chip)
                 chip.style().polish(chip)
+            if key in self.traces:  # ខ្សែនៅមុខជំហាន = សញ្ញាហូរចូលជំហាននោះ
+                self.traces[key].set_state({"done": "done", "active": "flow"}.get(state, "todo"))
         self.active = None if finished else (stage if idx >= 0 else None)
         if self.active and self._pulse.state() != QVariantAnimation.Running:
             self._pulse.start()
         elif not self.active:
             self._pulse.stop()
+        self._sync_flow()
 
     def _on_pulse(self, v):
         if not self.active:
@@ -127,6 +166,9 @@ class StoryCard(QFrame):
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(6)
         top = QHBoxLayout()
+        self.led = QLabel("●")  # Vector: ភ្លើង LED ជំនួសរូប emoji
+        self.led.setObjectName("led")
+        top.addWidget(self.led)
         self.icon = QLabel("🎬")
         self.icon.setObjectName("storyIcon")
         self.name = QLabel(os.path.basename(story["folder"]))
@@ -163,13 +205,20 @@ class StoryCard(QFrame):
         self.btn_open.setCursor(Qt.PointingHandCursor)
         self.btn_open.hide()
         self.btn_open.clicked.connect(lambda: self.out and os.startfile(self.out))
-        top.insertWidget(4, self.btn_open)
+        top.insertWidget(5, self.btn_open)
         self._set_state("waiting")
+        self.sync_skin()
+
+    def sync_skin(self):
+        vector = theme.mode == "vector"
+        self.led.setVisible(vector)
+        self.icon.setVisible(not vector)
+        self.bar.setFixedHeight(11 if vector else 6)  # Vector: LCD មាន padding → ត្រូវការកម្ពស់សម្រាប់ tick
 
     def _set_state(self, state):
         if self.property("state") != state:
             self.setProperty("state", state)
-            for w in (self, self.chip):
+            for w in (self, self.chip, self.led):
                 w.setProperty("state", state)
                 w.style().unpolish(w)
                 w.style().polish(w)
@@ -190,6 +239,7 @@ class StoryCard(QFrame):
         else:
             self.chip.setText("○ រង់ចាំ" if not st["msg"] else "■ " + st["msg"])
             self.icon.setText("🎬")
+        self.led.setText("○" if status == "running" and tick % 4 >= 2 else "●")  # LED ភ្លឹបភ្លែតពេលកំពុងធ្វើ
         self.bar.set_pct(100 if status == "done" else st["pct"])
         took = ""
         if st["t0"]:
@@ -219,7 +269,7 @@ class DropZone(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(4)
-        icon = QLabel("📂")
+        self.icon = icon = QLabel("📂")
         icon.setObjectName("dropIcon")
         icon.setAlignment(Qt.AlignCenter)
         title = QLabel("ទម្លាក់ Folder រឿងនៅទីនេះ")
@@ -257,6 +307,8 @@ class DropZone(QFrame):
 class SimplePage(QWidget):
     start = pyqtSignal()
     stop = pyqtSignal()
+    nav = pyqtSignal()  # ទៅទំព័រ 🏷 Logo & Ads
+    SIDE_W = 330
 
     def __init__(self, scan_folder):
         super().__init__()
@@ -269,16 +321,38 @@ class SimplePage(QWidget):
         outer.setSpacing(12)
 
         # ---- ចំណងជើង + ជំហាន ----
-        hero = QFrame()
+        self.hero = hero = QFrame()
         hero.setObjectName("simpleHero")
         hl = QVBoxLayout(hero)
         hl.setContentsMargins(22, 16, 22, 16)
         hl.setSpacing(8)
-        title = QLabel("⚡ Auto — រឿងចិន → វីដេអូខ្មែរ ក្នុងមួយចុច")
-        title.setObjectName("simpleTitle")
-        hl.addWidget(title)
+        # Vector: ជួរ LED + លេខស៊េរីម៉ាស៊ីន ពីលើចំណងជើង
+        self.serial_row = QWidget()
+        sr = QHBoxLayout(self.serial_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        self.leds = leds = QLabel("■ ■ ■")
+        leds.setObjectName("leds")
+        self.serial = QLabel("AI-TEAM/01 · THE DUB COMPUTER")
+        self.serial.setObjectName("serial")
+        self.serial_state = QLabel("● IDLE")
+        self.serial_state.setObjectName("serial")
+        sr.addWidget(leds)
+        sr.addWidget(self.serial)
+        sr.addStretch()
+        sr.addWidget(self.serial_state)
+        hl.addWidget(self.serial_row)
+        self.title = QLabel("⚡ Auto — រឿងចិន → វីដេអូខ្មែរ ក្នុងមួយចុច")
+        self.title.setObjectName("simpleTitle")
+        hl.addWidget(self.title)
         self.steps = StepChips()
         hl.addWidget(self.steps)
+        # Vector: បន្ទះសៀគ្វី (module ៤ → កុំព្យូទ័រ → វីដេអូ) ជំនួសជួរជំហាន
+        self.board = vector_fx.ProcessBoard({k: lab.split()[0] for k, lab in auto_pipeline.STAGES},
+                                            self._board_model)
+        self.board.dropped.connect(self.add_paths)
+        self.board.action.connect(self._board_action)
+        self._who = None
+        hl.addWidget(self.board, 1)
         outer.addWidget(hero)
 
         # ---- ខ្លួន: ឆ្វេង = រឿង · ស្តាំ = ការកំណត់ ----
@@ -294,7 +368,8 @@ class SimplePage(QWidget):
         self.count = QLabel("មិនទាន់មានរឿង")
         self.count.setObjectName("simpleMuted")
         row.addWidget(self.count, 1)
-        for text, fn in [("➕ Folder មេ", self._pick_parent), ("សម្អាត", self.clear)]:
+        for text, fn in [("🏷 Logo && Ads ›", self.nav.emit), ("➕ Folder", self._pick),
+                         ("➕ Folder មេ", self._pick_parent), ("សម្អាត", self.clear)]:
             b = QPushButton(text)
             b.setObjectName("ghost")
             b.setCursor(Qt.PointingHandCursor)
@@ -316,15 +391,25 @@ class SimplePage(QWidget):
         left.addWidget(scroll, 1)
         body.addLayout(left, 3)
 
-        side = QFrame()
+        self.side = side = QFrame()
         side.setObjectName("simpleSide")
-        side.setFixedWidth(330)
+        side.setParent(self)  # ផ្ទាំងអណ្តែតរំកិលចេញពីស្តាំ — លាក់ រហូតដល់ចុច ⚙ ការកំណត់
+        side.setFixedWidth(self.SIDE_W)
+        side.hide()
         sl = QVBoxLayout(side)
         sl.setContentsMargins(18, 16, 18, 16)
         sl.setSpacing(8)
+        head_row = QHBoxLayout()
         head = QLabel("⚙️ ការកំណត់")
         head.setObjectName("sideHead")
-        sl.addWidget(head)
+        head_row.addWidget(head, 1)
+        close = QPushButton("✕")
+        close.setObjectName("cardX")
+        close.setFixedSize(28, 28)
+        close.setCursor(Qt.PointingHandCursor)
+        close.clicked.connect(lambda: self.btn_settings.setChecked(False))
+        head_row.addWidget(close)
+        sl.addLayout(head_row)
         sl.addWidget(self._label("🔊 សំឡេងខ្មែរ (Edge TTS)"))
         self.voice = QComboBox()
         for key, label in VOICES:
@@ -382,18 +467,19 @@ class SimplePage(QWidget):
         self.engine_note.setObjectName("simpleMuted")
         sl.addWidget(self.engine_note)
         self._sync_engine_note()
-        body.addWidget(side)
-        outer.addLayout(body, 1)
+        self.body_w = QWidget()
+        self.body_w.setLayout(body)
+        outer.addWidget(self.body_w, 1)
 
         # ---- បាតខាងក្រោម: progress សរុប + ប៊ូតុង ----
-        foot = QFrame()
+        self.foot = foot = QFrame()
         foot.setObjectName("simpleFoot")
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(18, 14, 18, 14)
         fl.setSpacing(14)
         prog = QVBoxLayout()
         prog.setSpacing(6)
-        self.headline = QLabel("ទម្លាក់ Folder រឿង ហើយចុច ▶ ចាប់ផ្តើម")
+        self.headline = _Notice("ទម្លាក់ Folder រឿង ហើយចុច ▶ ចាប់ផ្តើម", self._board_refresh)
         self.headline.setObjectName("simpleHeadline")
         self.bar = SmoothBar(14)
         self.bar.setObjectName("bigBar")
@@ -403,6 +489,12 @@ class SimplePage(QWidget):
         prog.addWidget(self.bar)
         prog.addWidget(self.sub)
         fl.addLayout(prog, 1)
+        self.btn_settings = QPushButton("⚙ ការកំណត់")
+        self.btn_settings.setObjectName("ghost")
+        self.btn_settings.setCheckable(True)
+        self.btn_settings.setCursor(Qt.PointingHandCursor)
+        self.btn_settings.toggled.connect(self._toggle_settings)
+        fl.addWidget(self.btn_settings)
         self.btn_open = QPushButton("📂 បើកថត Output")
         self.btn_open.setObjectName("ghost")
         self.btn_open.setCursor(Qt.PointingHandCursor)
@@ -424,7 +516,109 @@ class SimplePage(QWidget):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._refresh)
+        self.receipt = vector_fx.Receipt(self)
+        self.setAcceptDrops(True)
         self.restyle()
+
+    def _side_geometry(self):
+        bottom = self.height() - 6 if theme.mode == "vector" else self.foot.y() - 8
+        return 6, max(200, bottom - 6)
+
+    def _toggle_settings(self, on):
+        """ផ្ទាំងការកំណត់អណ្តែត រំកិលចេញ/ចូលពីខាងស្តាំ"""
+        y, h = self._side_geometry()
+        self.side.setFixedHeight(h)
+        shown, hidden = QPoint(self.width() - self.SIDE_W - 6, y), QPoint(self.width() + 4, y)
+        if on:
+            self.side.move(hidden)
+            self.side.show()
+            self.side.raise_()
+        anim = QPropertyAnimation(self.side, b"pos", self)
+        anim.setDuration(280)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(self.side.pos())
+        anim.setEndValue(shown if on else hidden)
+        if not on:
+            anim.finished.connect(self.side.hide)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+
+    def show_settings(self):
+        self.btn_settings.setChecked(True)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.side.isVisible():
+            y, h = self._side_geometry()
+            self.side.setFixedHeight(h)
+            self.side.move(self.width() - self.SIDE_W - 6, y)
+        self._place_receipt()
+
+    def _place_receipt(self):
+        r = self.receipt
+        if theme.mode == "vector":  # ចេញពីរន្ធក្រោមកុំព្យូទ័រ
+            slot = self.board.slot_rect
+            top = self.board.mapTo(self, QPoint(int(slot.center().x()), int(slot.top())))
+            r.move(top.x() - r.width() // 2, top.y() + 2)
+        else:  # ពីលើបាតខាងក្រោម នៅខាងស្តាំ
+            r.move(self.foot.geometry().right() - 20 - r.width(), self.foot.y() - r.height() - 6)
+
+    # ---------- បន្ទះសៀគ្វី (Vector) ----------
+    def _board_model(self):
+        p = self.pipeline
+        if p and len(p.state) == len(self.cards):
+            stories = [{"name": st["name"], "status": st["status"], "pct": st["pct"], "stage": st["stage"]}
+                       for st in p.state]
+        else:
+            stories = [{"name": os.path.basename(c.story["folder"]), "status": "waiting", "pct": 0, "stage": None}
+                       for c in self.cards]
+        running = self.running()
+        who = self._who if running else None
+        lines = ([who["name"], who["msg"], self.sub.text()] if who else
+                 [self.headline.text(), self.sub.text()])
+        return {"stories": stories, "running": running, "finished": bool(p and p.finished),
+                "stage": who["stage"] if who else None, "stage_pct": who.get("stage_pct", 0) if who else 0,
+                "overall": p.overall() if p else 0, "lines": [t for t in lines if t],
+                "any_done": any(s["status"] == "done" for s in stories),
+                "can_start": self.btn_go.isEnabled(), "can_stop": self.btn_stop.isEnabled()}
+
+    def _board_refresh(self):
+        if theme.mode == "vector":
+            self.board.refresh()
+
+    def _board_action(self, name):
+        if name.startswith("remove:"):
+            i = int(name.split(":")[1])
+            if i < len(self.cards):
+                self._remove(self.cards[i])
+            return
+        {"pick": self._pick, "parent": self._pick_parent, "clear": self.clear,
+         "start": self.start.emit, "stop": self.stop.emit, "open": self.btn_open.click,
+         "settings": self.btn_settings.toggle, "nav": self.nav.emit}[name]()
+
+    # ទម្លាក់ Folder បានគ្រប់កន្លែងលើផ្ទាំង (ប្រអប់ទម្លាក់លាក់ពេលមានរឿងហើយ)
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        self.add_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
+
+    def paintEvent(self, e):
+        if theme.mode == "vector":  # ផ្ទៃខាងក្រោយបន្ទះសៀគ្វីស្រាលៗ (ឃើញនៅចន្លោះទទេ)
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            vector_fx.paint_backdrop(p, self.rect())
+        super().paintEvent(e)
+
+    def boot(self, tries=0):
+        """Vector: ចលនាបើកម៉ាស៊ីន (Linking... → ផ្ទាំងឡើងពីក្រោម)"""
+        if theme.mode != "vector":
+            return
+        if not self.isVisible() or self.width() < 200:  # បង្អួចមិនទាន់បង្ហាញ → រង់ចាំបន្តិច
+            if tries < 20:
+                QTimer.singleShot(150, lambda: self.boot(tries + 1))
+            return
+        vector_fx.BootOverlay(self)
 
     @staticmethod
     def _label(text):
@@ -498,15 +692,19 @@ class SimplePage(QWidget):
         self.bar.set_pct(0)
         self.steps.set_stage(None)
         self.btn_open.hide()
+        self.receipt.hide()
 
     def _sync_count(self):
         n = len(self.cards)
         parts = sum(len(c.story["videos"]) for c in self.cards)
         self.count.setText(f"{n} រឿង · {parts} Part" if n else "មិនទាន់មានរឿង")
+        self.drop.setVisible(n == 0)
         if not self.running():
             self.headline.setText(f"✨ ត្រៀមរួច {n} រឿង — ចុច ▶ ចាប់ផ្តើម" if n else
                                   "ទម្លាក់ Folder រឿង ហើយចុច ▶ ចាប់ផ្តើម")
         self.btn_go.setEnabled(n > 0 and not self.running())
+        self._sync_serial()
+        self._board_refresh()
 
     def stories(self):
         return [c.story for c in self.cards]
@@ -530,6 +728,7 @@ class SimplePage(QWidget):
         self.btn_stop.setEnabled(True)
         self.btn_open.hide()
         self.btn_clear.setEnabled(False)
+        self.receipt.hide()
         self.timer.start(250)
         self._refresh()
 
@@ -538,6 +737,7 @@ class SimplePage(QWidget):
         if not p:
             return
         self._tick += 1
+        self._sync_serial()
         for card, st in zip(self.cards, p.state):
             card.update_from(st, self._tick)
         running = [st for st in p.state if st["status"] == "running"]
@@ -545,6 +745,7 @@ class SimplePage(QWidget):
         dub = next((st for st in running if st["stage"] in ("tts", "video")), None)
         self.steps.set_stage((dub or current)["stage"] if (dub or current) else None, finished=p.finished)
         total = p.overall()
+        self._who = dub or current
         self.bar.set_pct(total)
         done = sum(st["status"] == "done" for st in p.state)
         failed = sum(st["status"] == "failed" for st in p.state)
@@ -559,8 +760,20 @@ class SimplePage(QWidget):
             self.headline.setText((f"🎉 រួចរាល់ទាំង {done} រឿង!" if ok else f"ចប់ — ✓ {done} · ✕ {failed}") +
                                   f"  ⏱ {fmt_dur(elapsed)}")
             self.sub.setText("វីដេអូនៅក្នុងថត Output · SRT ខ្មែរនៅក្នុង Folder រឿងនីមួយៗ")
+            self._board_refresh()
             self.btn_open.show()
+            self.leds.setText("■ ■ ■")
+            if theme.mode == "vector":
+                self._place_receipt()
+                self.receipt.print_out("Dub Complete" if ok else "Finished", [
+                    f"✓ {done} រឿង" + (f" · ✕ {failed}" if failed else ""),
+                    f"⏱ {fmt_dur(elapsed)}",
+                    f"{sum(len(c.story['videos']) for c in self.cards)} Part → ថត Output"])
             return
+        if theme.mode == "vector":  # LED ៣ ដុំរត់ជាជួរ ពេលកំពុងធ្វើ
+            lit = self._tick % 3
+            self.leds.setText(" ".join(f'<span style="color:{theme.C["accent"] if i == lit else theme.C["faint"]}">'
+                                       "■</span>" for i in range(3)))
         who = dub or current
         self.headline.setText(f"{SPIN[self._tick % 4]}  {total}% · រឿង {done + 1}/{len(p.state)}"
                               + (f" — {who['name']}: {who['msg']}" if who else ""))
@@ -568,11 +781,36 @@ class SimplePage(QWidget):
         if total >= 3:
             eta = f" · នៅសល់ប្រហែល {fmt_dur(elapsed * (100 - total) / total)}"
         self.sub.setText(f"⏱ {fmt_dur(elapsed)}{eta}" + (f" · ✕ {failed}" if failed else ""))
+        self._board_refresh()
 
     # ---------- រចនាប័ទ្ម ----------
+    def _sync_serial(self):
+        p = self.pipeline
+        state = ("RUN" if self.running() else "DONE" if p and p.finished else "READY" if self.cards else "IDLE")
+        self.serial_state.setText(f"● {state}")
+
     def restyle(self):
         c = theme.C
         grad = theme.GRAD.format(a=c["grad_a"], b=c["grad_b"])
+        vector = theme.mode == "vector"
+        self.serial_row.setVisible(vector)
+        self.board.setVisible(vector)
+        # Vector: បន្ទះសៀគ្វីពេញផ្ទាំង (ទម្លាក់ Folder · បញ្ជីរឿង · START ទាំងអស់នៅលើបន្ទះ)
+        self.body_w.setVisible(not vector)
+        self.foot.setVisible(not vector)
+        self.layout().setStretchFactor(self.hero, 1 if vector else 0)
+        self._board_refresh()
+        self.title.setVisible(not vector)
+        self.steps.setVisible(not vector)
+        self.drop.icon.setVisible(not vector)  # Vector: ទុកកន្លែងឲ្យបន្ទះសៀគ្វី
+        for card in self.cards:
+            card.sync_skin()
+        self.steps.sync_skin()
+        self.leds.setText("■ ■ ■")
+        if not vector:
+            self.receipt.hide()
+        for w in (self.headline, self.serial, self.serial_state):
+            w.setFont(theme.mono(w.font()) if vector else self.font())
         self.setStyleSheet(theme.hackify(f"""
 QFrame#simpleHero, QFrame#simpleSide, QFrame#simpleFoot {{ background: {c['surface']};
     border: 1px solid {c['border']}; border-radius: 18px; }}

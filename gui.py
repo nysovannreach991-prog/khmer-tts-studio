@@ -41,8 +41,9 @@ import watermark
 import whisper_srt as whisper_mod
 import funasr_srt as funasr_mod
 import auto_pipeline
-import matrix_rain
+import logo_page as logo_page_mod
 import simple_ui
+import vector_fx
 import vocal_remove
 
 OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
@@ -442,8 +443,7 @@ class MainWindow(QMainWindow):
         self.text_tab, self.srt_tab = self._build_text_tab(), self._build_srt_tab()
         self.tabs.addTab(self.text_tab, "✍️ អត្ថបទ")
         self.tabs.addTab(self.srt_tab, "🎬 SRT→វីដេអូ")
-        self.overlay_tab = self._build_overlay_tab()
-        self.tabs.addTab(self.overlay_tab, "🏷 Logo && Ads")
+        self.overlay_tab = self._build_overlay_tab()  # បង្ហាញក្នុងទំព័រ 🏷 Logo & Ads (មិនមែន tab)
         self.brand_tab = self._build_brand_tab()
         self.tabs.addTab(self.brand_tab, "🎨 Logo ប៉ុណ្ណោះ")
         self.stt_tab, self.vsrt_tab = self._build_stt_tab(), self._build_vsrt_tab()
@@ -456,8 +456,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.files_tab, "📁 ឯកសារ")
         self.tabs.currentChanged.connect(
             lambda i: self.refresh_files() if self.tabs.widget(i) is self.files_tab else None)
-        self.tabs.currentChanged.connect(
-            lambda i: self._ov_timer.start(50) if self.tabs.widget(i) is self.overlay_tab else None)
         self.tabs.currentChanged.connect(
             lambda i: self._brand_summary() if self.tabs.widget(i) is self.brand_tab else None)
 
@@ -490,9 +488,12 @@ class MainWindow(QMainWindow):
         self.simple_page.start.connect(self._simple_start)
         self.simple_page.stop.connect(self._simple_stop)
         self.simple_page.btn_open.clicked.connect(lambda: open_path(OUTPUT_DIR))
+        self.logo_page = logo_page_mod.LogoPage(self)
+        self.simple_page.nav.connect(lambda: self._go_page(self.logo_page))
         self.stack = QStackedWidget()
-        self.stack.addWidget(splitter)
+        self.stack.addWidget(splitter)  # ប្លង់ចាស់ (មិនបង្ហាញទៀតទេ — រក្សាការកំណត់ដែលទំព័រថ្មីប្រើ)
         self.stack.addWidget(self.simple_page)
+        self.stack.addWidget(self.logo_page)
         lay.addWidget(self.stack, 1)
         self.status_box = QWidget()
         status_lay = self._build_status_bar()
@@ -1131,9 +1132,12 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidget(left_w)
+        self.ov_settings_panel = scroll  # ទំព័រ Logo & Ads: ក្នុងប៊ូតុង ⚙ ការកំណត់
         outer.addWidget(scroll, 3)
 
-        right = QVBoxLayout()
+        self.ov_preview_panel = QWidget()  # ទំព័រ Logo & Ads: ផ្ទាំង Preview
+        right = QVBoxLayout(self.ov_preview_panel)
+        right.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
         title = QLabel("👀 មើលជាមុន")
         title.setStyleSheet("font-weight:bold")
@@ -1164,11 +1168,11 @@ class MainWindow(QMainWindow):
         self.btn_ov_clip.setCursor(Qt.PointingHandCursor)
         self.btn_ov_clip.clicked.connect(self._overlay_clip)
         right.addWidget(self.btn_ov_clip)
-        self.ov_preview_note = QLabel("ប្រើវីដេអូក្នុងផ្ទាំង SRT → វីដេអូ (បើមាន) · Lower third លេចនៅវិនាទីទី 1")
+        self.ov_preview_note = QLabel("ចុចលើវីដេអូក្នុងបញ្ជីខាងឆ្វេង ដើម្បីមើល Preview · Lower third លេចនៅវិនាទីទី 1")
         self.ov_preview_note.setProperty("role", "muted")
         self.ov_preview_note.setWordWrap(True)
         right.addWidget(self.ov_preview_note)
-        outer.addLayout(right, 2)
+        outer.addWidget(self.ov_preview_panel, 2)
 
         self._ov_pixmap = None
         self._ov_pending = False
@@ -1562,7 +1566,7 @@ class MainWindow(QMainWindow):
         video = videos[0][1]
         result = OverlayConfirmDialog(self, videos, specs, ads).exec_()
         if result == OverlayConfirmDialog.EDIT:
-            self.tabs.setCurrentWidget(self.overlay_tab)
+            self._go_page(self.logo_page)
             if os.path.isfile(video) and not self.video_path.text().strip():
                 self.video_path.setText(video)  # មើលជាមុនលើវីដេអូដដែល
             self.set_status("កែទីតាំង Logo / Lower third ហើយចុចដំណើរការម្តងទៀត")
@@ -1748,7 +1752,7 @@ class MainWindow(QMainWindow):
         row.addStretch()
         edit = QPushButton("⚙ កំណត់")
         edit.setToolTip("កំណត់ Logo, Lower third, Watermark និង Ads ក្នុងផ្ទាំង 🏷 Logo & Ads")
-        edit.clicked.connect(lambda: self.tabs.setCurrentWidget(self.overlay_tab))
+        edit.clicked.connect(lambda: self._go_page(self.logo_page))
         row.addWidget(edit)
         lay.addLayout(row)
         self.brand_info = QLabel()
@@ -4003,16 +4007,10 @@ class MainWindow(QMainWindow):
         titles.addWidget(sub)
         lay.addLayout(titles, 1)
 
-        self.btn_simple = QPushButton("✨ Simple")
-        self.btn_simple.setCheckable(True)
-        self.btn_simple.setToolTip("ផ្ទាំងសាមញ្ញ: ទម្លាក់ Folder រឿង → ចុចមួយ → វីដេអូខ្មែរ "
-                                   "(Merge → SRT → បកប្រែ → សំឡេង)")
-        self.btn_simple.toggled.connect(self._toggle_simple)
         self.btn_explorer = QPushButton("📂 Explorer")
         self.btn_explorer.setCheckable(True)
         self.btn_explorer.setToolTip("បង្ហាញ/លាក់ Explorer ខាងឆ្វេង — ជ្រើសវីដេអូផ្ទាល់ពីក្នុងកម្មវិធី")
         self.btn_explorer.toggled.connect(self._toggle_explorer)
-        self.btn_theme = QPushButton()
         self.btn_update = QPushButton("🔄 Update")
         about = QPushButton("ⓘ")
         self.btn_scale = QPushButton(f"🔍 {self._scale_label(self.settings.value('ui_scale', 'auto'))} ▾")
@@ -4021,24 +4019,14 @@ class MainWindow(QMainWindow):
         for key, label in UI_SCALES:
             menu.addAction(label, lambda k=key: self._set_ui_scale(k))
         self.btn_scale.setMenu(menu)
-        for b in (self.btn_simple, self.btn_explorer, self.btn_scale, self.btn_theme, self.btn_update, about):
+        for b in (self.btn_explorer, self.btn_scale, self.btn_update, about):
             b.setObjectName("ghost")
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
-        self.btn_theme.setToolTip("ប្តូរ Theme: Dark / Light / Matrix")
-        theme_menu = QMenu(self.btn_theme)
-        for key, label in theme.LABELS.items():
-            theme_menu.addAction(label, lambda k=key: self.set_theme(k))
-        self.btn_theme.setMenu(theme_menu)
-        # ភ្លៀងស្រអាប់ពេលកាត់ចំណងជើង/ប៊ូតុង (widget ផ្ទាល់ក្នុង header)
-        clear = [logo, title, sub] + [b for b in header.findChildren(QPushButton)] + header.findChildren(QLabel, "pill")
-        self.header_rain = matrix_rain.MatrixRain(header, cell=15, alpha=0.42, fps=20, density=0.6, keep_clear=clear)
-        self.header_rain.hide()
         self.btn_update.setToolTip("ពិនិត្យ Update")
         about.setToolTip("អំពីកម្មវិធី")
         self.btn_update.clicked.connect(lambda: self.check_update(silent=False))
         about.clicked.connect(self._about)
-        self._sync_theme_button()
         return header
 
     @staticmethod
@@ -4065,60 +4053,38 @@ class MainWindow(QMainWindow):
         if not avail.contains(self.frameGeometry().topLeft()):
             self.move(avail.left() + 8, avail.top() + 8)
 
-    def _sync_theme_button(self):
-        self.btn_theme.setText(f"{theme.LABELS[theme.mode]} ▾")
-        self._sync_terminal_title()
-        rain = getattr(self, "header_rain", None)
-        if rain:
-            rain.start() if theme.mode == "matrix" else rain.stop()
-
-    def _sync_terminal_title(self):
-        """Matrix → ចំណងជើងដូច terminal: "> AI_TEAM#1█" (cursor ភ្លឹបភ្លែត) + ពន្លឺបៃតង"""
-        hacker = theme.mode == "matrix"
-        blink = getattr(self, "_blink", None)
-        if not hacker:
-            if blink:
-                blink.stop()
-            self.app_title.setText("AI Team #1")
-            self.app_sub.setText(APP_SUB)
-            self.app_title.setGraphicsEffect(None)
-            return
-        self.app_sub.setText("root@aiteam:~$ ./dub --khmer  # " + APP_SUB.split(" — ")[0])
-        glow = QGraphicsDropShadowEffect(self.app_title)
-        glow.setColor(QColor(theme.C["accent"]))
-        glow.setBlurRadius(16)
-        glow.setOffset(0, 0)
-        self.app_title.setGraphicsEffect(glow)
-        if not blink:
-            self._blink = blink = QTimer(self)
-            self._blink_on = True
-
-            def tick():
-                self._blink_on = not self._blink_on
-                self.app_title.setText("> AI_TEAM#1" + ("█" if self._blink_on else " "))
-            blink.timeout.connect(tick)
-        self.app_title.setText("> AI_TEAM#1█")
-        blink.start(530)
-
     # ================= ✨ Simple mode =================
-    def _toggle_simple(self, on):
-        if not on and self.simple_page.running():  # កំពុងធ្វើ → កុំបិទ (មើលវឌ្ឍនភាពមិនឃើញ)
-            self.btn_simple.blockSignals(True)
-            self.btn_simple.setChecked(True)
-            self.btn_simple.blockSignals(False)
-            return
-        self.stack.setCurrentIndex(1 if on else 0)
-        self.status_box.setVisible(not on)
-        self.btn_explorer.setVisible(not on)
-        self.btn_simple.setText("✨ Simple ✓" if on else "✨ Simple")
-        self.settings.setValue("simple_mode", on)
-        if on:
-            self.simple_page.part.setValue(self.part_minutes.value())
-            self.simple_page.mute.setChecked(self.orig_mute.isChecked())
-            self.simple_page.duck.setCurrentIndex(self.orig_duck.currentIndex())
-            self.simple_page.key.setText(self.gemini_key())
-            self._simple_key_state()
+    def _show_simple(self):
+        """បើកកម្មវិធី → ទំព័រ Simple ជានិច្ច (ប្លង់ចាស់ដែលប្តូរបាន ត្រូវបានដកចេញ)"""
+        self.stack.setCurrentWidget(self.simple_page)
+        self.status_box.setVisible(False)
+        self.btn_explorer.setVisible(False)
+        self.simple_page.part.setValue(self.part_minutes.value())
+        self.simple_page.mute.setChecked(self.orig_mute.isChecked())
+        self.simple_page.duck.setCurrentIndex(self.orig_duck.currentIndex())
+        self.simple_page.key.setText(self.gemini_key())
+        self._simple_key_state()
+        if theme.mode == "vector":
+            self.simple_page.boot()  # ចលនាបើកម៉ាស៊ីន (Linking... → ផ្ទាំងឡើង)
+        else:
             simple_ui._fade_in(self.simple_page, 260)
+
+    def _go_page(self, page):
+        """ប្តូរទំព័រ ជាមួយចលនារំកិល (ទៅ Logo & Ads = ចូលពីស្តាំ · ត្រឡប់ = ចូលពីឆ្វេង)"""
+        cur = self.stack.currentWidget()
+        if page is cur:
+            return
+        if cur.btn_settings.isChecked():  # បិទផ្ទាំងការកំណត់មុនចាកចេញ
+            cur.btn_settings.setChecked(False)
+        if page is self.logo_page:
+            page.restyle()
+            self._ov_timer.start(50)
+        old = self.stack.grab()
+        page.resize(self.stack.size())
+        self.stack.setCurrentWidget(page)
+        page.layout().activate()  # ទំព័រមិនទាន់ធ្លាប់បង្ហាញ → រៀបទំហំមុនថតរូប (កុំឲ្យទទេពេលរំកិល)
+        new = self.stack.grab()
+        vector_fx.SlideOverlay(self.stack, old, new, forward=page is self.logo_page)
 
     def _simple_load(self):
         sp, s = self.simple_page, self.settings
@@ -4139,9 +4105,7 @@ class MainWindow(QMainWindow):
         sp.voice.currentIndexChanged.connect(lambda _: s.setValue("simple_voice", sp.voice.currentData()))
         sp.lang.currentIndexChanged.connect(lambda _: s.setValue("simple_lang", sp.lang.currentData()))
         sp.use_brand.toggled.connect(lambda on: s.setValue("simple_brand", on))
-        on = s.value("simple_mode", "false") in (True, "true")
-        self.btn_simple.setChecked(on)
-        self._toggle_simple(on)
+        self._show_simple()
 
     def _simple_key_state(self):
         key = self.gemini_key()
@@ -4196,8 +4160,9 @@ class MainWindow(QMainWindow):
         key = self.gemini_key()
         need_tr = [st for st in stories if not self._has_khmer_srt(st)]
         if need_tr and not key:
+            sp.show_settings()  # ការកំណត់លាក់ → បើកឲ្យឃើញប្រអប់ key
             sp.key.setFocus()
-            return sp.headline.setText(f"⚠ រឿង {len(need_tr)} ត្រូវបកប្រែ — សូមបញ្ចូល Bayon key (ខាងស្តាំ)")
+            return sp.headline.setText(f"⚠ រឿង {len(need_tr)} ត្រូវបកប្រែ — សូមបញ្ចូល Bayon key (⚙ ការកំណត់)")
         use_brand = sp.use_brand.isChecked()
         overlays = self.overlays() if use_brand else []
         ads = self.ads_spec() if use_brand else None
@@ -4279,23 +4244,6 @@ class MainWindow(QMainWindow):
         worker.done.connect(lambda _: finish(True))
         worker.failed.connect(lambda e: finish(False, e))
         self._start_worker(worker)
-
-    def set_theme(self, new):
-        if new == theme.mode:
-            return
-        theme.apply(QApplication.instance(), new)
-        self.settings.setValue("theme", new)
-        self._sync_theme_button()
-        if new == "matrix":
-            matrix_rain.cascade(self)  # ភ្លៀងអក្សរពេញបង្អួចមួយភ្លែត
-        self.simple_page.restyle()
-        # ពណ៌ក្នុង rich text / តារាង ត្រូវគូរឡើងវិញ
-        self._render_stages()
-        self._batch_render()
-        self.cue_table.blockSignals(True)
-        for r in range(min(len(self.cues), self.cue_table.rowCount())):
-            self._paint_gender(r)
-        self.cue_table.blockSignals(False)
 
     # ================= Update =================
 
@@ -4559,7 +4507,7 @@ def main():
         qt_app.setWindowIcon(QIcon(icon))
     qt_app.setStyle("Fusion")
     setup_font(qt_app)
-    theme.apply(qt_app, QSettings("KhmerTTS", "Studio").value("theme", "dark"))
+    theme.apply(qt_app, QSettings("KhmerTTS", "Studio").value("theme", "vector"))
     if not ensure_license():
         return
     window = MainWindow()
