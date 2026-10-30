@@ -32,6 +32,8 @@ def installed():
 def install(on_line=None):
     for packages in INSTALL:
         ws.pip_install(packages, on_line)
+    import funasr_srt
+    funasr_srt.ensure_gpu_torch(on_line)  # "torch" ពី PyPI ជាកំណែ CPU → Demucs យឺត
 
 
 # ---------------- process កូន ----------------

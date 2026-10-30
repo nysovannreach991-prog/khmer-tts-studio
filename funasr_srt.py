@@ -40,6 +40,14 @@ def installed():
         bool(u.find_spec("kaldi_native_fbank") or u.find_spec("torchaudio"))
 
 
+def ensure_gpu_torch(on_line=None):
+    """កាត NVIDIA + torch កំណែ CPU → ប្តូរជា torch CUDA (pip លំនាំដើមលើ Windows ផ្តល់តែកំណែ CPU)"""
+    import importlib.util as u
+    if u.find_spec("torch") and not gpu_ready() and ws.has_nvidia():
+        stop_servers()  # process ចាស់កំពុងប្រើ torch CPU → បិទសិន (Windows ចាក់សោឯកសារ)
+        ws.pip_install(GPU_PACKAGES, on_line)
+
+
 def gpu_ready():
     """torch មាន CUDA (មិនមែនកំណែ CPU) — ពិនិត្យដោយមិន import torch (យឺត)"""
     import importlib.metadata as md

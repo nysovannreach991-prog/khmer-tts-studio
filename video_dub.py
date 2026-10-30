@@ -201,8 +201,15 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
             job["video_reencode"] = True
             for f in os.listdir(dest):
                 os.remove(os.path.join(dest, f))
-            _run_ffmpeg(args + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"] + force + output,
-                        duration, progress)
+            for enc in dict.fromkeys([ov.pick_encoder(), "libx264"]):  # GPU បរាជ័យ → libx264
+                try:
+                    _run_ffmpeg(args + ov.encoder_args(enc) + force + output, duration, progress)
+                    break
+                except RuntimeError:
+                    if enc == "libx264":
+                        raise
+                    for f in os.listdir(dest):
+                        os.remove(os.path.join(dest, f))
         if keep_full and points:
             _join_parts(dest, out_dir, name_base, job)
         return folder, _collect(dest, folder, job, cues, ads if with_ads else None)

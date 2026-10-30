@@ -16,8 +16,8 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # Python ឯកជន (embeddable) មិនបន្ថែមថតកម្មវិធីខ្លួនឯង
 
-from PyQt5.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTime, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
+from PyQt5.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTime, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFontComboBox, QFormLayout, QFrame, QGraphicsDropShadowEffect, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
@@ -45,6 +45,7 @@ import logo_page as logo_page_mod
 import simple_ui
 import vector_fx
 import vocal_remove
+import sysmon
 
 OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
 DEFAULT_OUTPUT_DIR = backend.OUTPUT_DIR
@@ -500,6 +501,14 @@ class MainWindow(QMainWindow):
         status_lay.setContentsMargins(0, 0, 0, 0)
         self.status_box.setLayout(status_lay)
         lay.addWidget(self.status_box)
+        # CPU · RAM · GPU · សីតុណ្ហភាព + AI/Encode ប្រើ GPU ឬ CPU
+        self.sysbar = sysmon.SysBar()
+        self.sysbar.gpu_fix.connect(self._gpu_fix)
+        self.sysbar.driver_fix.connect(lambda: QDesktopServices.openUrl(QUrl("https://www.nvidia.com/Download/index.aspx")))
+        lay.addWidget(self.sysbar)
+        self._dev_timer = QTimer(self)
+        self._dev_timer.timeout.connect(self._poll_device)
+        self._dev_timer.start(1000)
         self.setCentralWidget(central)
 
         self._load_settings()
@@ -4064,6 +4073,7 @@ class MainWindow(QMainWindow):
         self.simple_page.duck.setCurrentIndex(self.orig_duck.currentIndex())
         self.simple_page.key.setText(self.gemini_key())
         self._simple_key_state()
+        self._gpu_check()
         if theme.mode == "vector":
             self.simple_page.boot()  # ចលនាបើកម៉ាស៊ីន (Linking... → ផ្ទាំងឡើង)
         else:
@@ -4134,15 +4144,6 @@ class MainWindow(QMainWindow):
                     return
                 return self._simple_install(lambda on_line: whisper_mod.pip_install(whisper_mod.WHISPER_PACKAGES, on_line),
                                             "Whisper", self._simple_start)
-            if not getattr(self, "_simple_gpu_asked", False) and not whisper_mod.gpu_ready() \
-                    and whisper_mod.has_nvidia():
-                self._simple_gpu_asked = True  # សួរម្តងក្នុងមួយដង (ប្រើ CPU បើមិនយល់ព្រម)
-                if QMessageBox.question(self, "បើក GPU សម្រាប់ Whisper (ណែនាំ)",
-                                        "កុំព្យូទ័រនេះមានកាត NVIDIA — ទាញយក CUDA library (~1.5 GB, ម្តងគត់)\n"
-                                        "ដើម្បីឱ្យ Whisper លឿនជាង CPU 10–30 ដង។\n\nទាញយកឥឡូវនេះ?") == QMessageBox.Yes:
-                    return self._simple_install(
-                        lambda on_line: whisper_mod.pip_install(whisper_mod.GPU_PACKAGES, on_line),
-                        "NVIDIA CUDA", self._simple_start)
         elif not funasr_mod.installed():
             if QMessageBox.question(self, "ដំឡើង SenseVoice",
                                     "ការស្តាប់សំឡេង (SenseVoice — លឿនបំផុត) ត្រូវដំឡើងម្តង (~300 MB)។\n"
@@ -4157,6 +4158,9 @@ class MainWindow(QMainWindow):
                                     "ដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
                 return
             return self._simple_install(vocal_remove.install, "Demucs", self._simple_start)
+        if not getattr(self, "_gpu_auto_tried", False) and self._gpu_missing(asr, novocal):
+            self._gpu_auto_tried = True  # ម្តងក្នុងមួយដង — បរាជ័យ (គ្មានអ៊ីនធឺណិត) → ប្រើ CPU បន្ត
+            return self._gpu_fix(then=self._simple_start)
         key = self.gemini_key()
         need_tr = [st for st in stories if not self._has_khmer_srt(st)]
         if need_tr and not key:
@@ -4221,6 +4225,81 @@ class MainWindow(QMainWindow):
             self.simple_pipe.stop.set()
             self.simple_page.btn_stop.setEnabled(False)
             self.simple_page.headline.setText("■ កំពុងបញ្ឈប់... (រង់ចាំជំហានបច្ចុប្បន្នចប់)")
+
+    # ================= GPU =================
+
+    def _gpu_check(self):
+        """ពិនិត្យនៅខាងក្រោយ: មានកាត NVIDIA? encoder វីដេអូណាដែលប្រើបាន? (nvidia-smi/ffmpeg ចំណាយពេល)"""
+        sp = self.simple_page
+        if not getattr(self, "_gpu_hooked", False):
+            self._gpu_hooked = True
+            sp.asr.currentIndexChanged.connect(self._gpu_status)
+            sp.novocal.toggled.connect(self._gpu_status)
+
+        def show(result):
+            self.has_nvidia, enc = result
+            self.sysbar.set_status(enc=enc, driver=overlay.NVENC_DRIVER)
+            if overlay.NVENC_DRIVER and enc != "h264_nvenc":
+                self._log(f"⚠ NVENC (encode វីដេអូលើកាត NVIDIA) ត្រូវការ driver ≥ {overlay.NVENC_DRIVER} — "
+                          f"ឥឡូវប្រើ {enc} · សូម Update Driver NVIDIA ដើម្បីឱ្យលឿនជាងនេះ")
+            self._gpu_status()
+        worker = Worker(lambda: (whisper_mod.has_nvidia(), overlay.pick_encoder()))
+        worker.done.connect(show)
+        self._start_worker(worker)
+
+    def _gpu_missing(self, asr, novocal):
+        """ជំហានដំឡើងដែលនៅខ្វះ ដើម្បីឱ្យ AI ប្រើ GPU (ទទេ = ប្រើ GPU រួចហើយ ឬគ្មានកាត NVIDIA)"""
+        if not getattr(self, "has_nvidia", None):
+            return []
+        steps = []
+        if asr == "whisper" and whisper_mod.installed() and not whisper_mod.gpu_ready():
+            steps.append(lambda on_line: whisper_mod.pip_install(whisper_mod.GPU_PACKAGES, on_line))
+        if ((asr != "whisper" and funasr_mod.installed()) or (novocal and vocal_remove.installed())) \
+                and not funasr_mod.gpu_ready():
+            steps.append(funasr_mod.ensure_gpu_torch)
+        return steps
+
+    def _gpu_status(self):
+        sp = self.simple_page
+        nv = getattr(self, "has_nvidia", None)
+        if nv is None:
+            return
+        missing = self._gpu_missing(sp.asr.currentData(), sp.novocal.isChecked())
+        self.sysbar.set_status(ai="fixable" if missing else "gpu" if nv else "cpu")
+
+    def _gpu_fix(self, then=None):
+        sp = self.simple_page
+        if self.busy or sp.running():
+            return
+        if not getattr(self, "has_nvidia", None):
+            return sp.headline.setText("💻 កុំព្យូទ័រនេះគ្មានកាត NVIDIA — AI ប្រើ CPU (Encode វីដេអូនៅតែប្រើ GPU បើមាន)")
+        steps = self._gpu_missing(sp.asr.currentData(), sp.novocal.isChecked())
+        if not steps:
+            return self._gpu_status()
+
+        def install(on_line):
+            for step in steps:
+                step(on_line)
+
+        def after():
+            self._gpu_status()
+            if then:
+                then()
+        self._simple_install(install, "GPU · NVIDIA CUDA (~1.5–2.5 GB ម្តងគត់)", after)
+
+    def _poll_device(self):
+        """ការងារ AI ដែលកំពុងដំណើរការ ប្រើ GPU ឬ CPU ពិតប្រាកដ"""
+        dev = None
+        try:
+            jobs = list(srt_dub.jobs.values())
+        except RuntimeError:  # thread ផ្សេងកំពុងបន្ថែម job
+            return
+        for job in jobs:
+            if job.get("status") in ("load", "running") and job.get("device"):
+                dev = job["device"]
+                if "cuda" in dev:
+                    break
+        self.sysbar.set_active(dev)
 
     def _simple_install(self, install, label, then):
         """pip install ពេលនៅ Simple mode — បង្ហាញវឌ្ឍនភាពលើផ្ទាំង Simple"""

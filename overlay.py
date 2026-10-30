@@ -17,6 +17,7 @@ overlay spec (dict):
 import functools
 import json
 import os
+import re
 import subprocess
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -228,15 +229,22 @@ def build(overlays, video_w, fps, duration, parts, first_input, main_label="0:v"
     return inputs, chains, cur
 
 
+NVENC_DRIVER = None  # កាត NVIDIA មាន តែ driver ចាស់ពេកសម្រាប់ ffmpeg នេះ → កំណែ driver ដែលត្រូវការ
+
+
 @functools.lru_cache(maxsize=1)
 def pick_encoder():
     """GPU encoder (លឿនជាង 3–10 ដង) បើមាន, បើមិនមានប្រើ libx264"""
+    global NVENC_DRIVER
     for enc in ("h264_nvenc", "h264_qsv", "h264_amf"):
-        proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                               "testsrc2=s=256x144:d=0.2", "-c:v", enc, "-f", "null", "-"],
+        proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "verbose" if enc == "h264_nvenc" else "error",
+                               "-f", "lavfi", "-i", "testsrc2=s=256x144:d=0.2", "-c:v", enc, "-f", "null", "-"],
                               capture_output=True, creationflags=_NO_WINDOW)
         if proc.returncode == 0:
             return enc
+        if enc == "h264_nvenc":
+            m = re.search(rb"minimum required Nvidia driver for nvenc is ([\d.]+)", proc.stderr)
+            NVENC_DRIVER = m.group(1).decode() if m else None
     return "libx264"
 
 
