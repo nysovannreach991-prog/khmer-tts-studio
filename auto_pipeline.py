@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import threading
 import time
+import traceback
 
 import funasr_srt
 import srt_dub
@@ -115,7 +116,8 @@ class Pipeline:
                     st.update(status="waiting", msg="បានបញ្ឈប់")
                     break
                 except Exception as e:  # noqa: BLE001
-                    st.update(status="failed", msg=str(e)[-300:], t1=time.time())
+                    st.update(status="failed", msg=str(e)[-300:], t1=time.time(),
+                              trace=traceback.format_exc()[-3000:])
                     self._say(f"✕ {st['name']}: {str(e)[-200:]}")
                 finally:
                     shutil.rmtree(tmp, ignore_errors=True)

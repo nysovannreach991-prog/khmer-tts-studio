@@ -4210,15 +4210,48 @@ class MainWindow(QMainWindow):
         while p.log:
             _, msg = p.log.pop(0)
             self._log(f"   {msg}")
+            self._file_log(msg)
         if p.finished:
             self._simple_watch.stop()
             self.set_busy(False)
             done = sum(st["status"] == "done" for st in p.state)
             self._log(f"✨ Simple Auto ចប់ — ✓ {done}/{len(p.state)} · {fmt_dur(time.time() - p.t0)}")
+            failed = [st for st in p.state if st["status"] == "failed"]
+            for st in failed:
+                self._file_log(f"✕ {st['name']} [{st.get('stage')}]\n{st.get('trace') or st['msg']}")
+            if failed:  # បង្ហាញមូលហេតុពិត (អេក្រង់ LCD តូចពេក កាត់អក្សរ)
+                self.simple_page.sub.setText(f"✕ {failed[0]['msg'][:120]}")
+                box = QMessageBox(QMessageBox.Warning, "រឿងខ្លះបរាជ័យ",
+                                  "\n\n".join(f"✕ {st['name']}\n{st['msg']}" for st in failed[:5]) +
+                                  f"\n\nកំណត់ត្រាលម្អិត (ផ្ញើឱ្យអ្នកជួសជុល):\n{self._log_path()}", parent=self)
+                btn_log = box.addButton("📂 បើកកំណត់ត្រា", QMessageBox.ActionRole)
+                box.addButton(QMessageBox.Ok)
+                box.exec_()
+                if box.clickedButton() is btn_log:
+                    reveal(self._log_path())
             outs = [st["out"] for st in p.state if st.get("out")]
             if outs:
                 self.last_result = outs[-1]
             self.refresh_files()
+
+    @staticmethod
+    def _log_path():
+        return os.path.join(whisper_mod.DATA_DIR, "logs", "auto.log")
+
+    def _file_log(self, text):
+        """កំណត់ត្រា Auto ទៅឯកសារ — មិត្តភក្តិផ្ញើមកបាន ពេលមានបញ្ហា (រក្សាតែ ~1 MB ចុងក្រោយ)"""
+        path = self._log_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    keep = f.read()[-300_000:]
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(keep)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] v{updater.local_version()} {text}\n")
+        except OSError:
+            pass
 
     def _simple_stop(self):
         if getattr(self, "simple_pipe", None):

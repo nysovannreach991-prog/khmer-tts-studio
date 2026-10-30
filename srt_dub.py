@@ -214,6 +214,7 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
         return fut
 
     clips = [None] * len(cues)
+    failed = []
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         futures = {pool.submit(synth, i): i for i in range(len(cues))}
@@ -238,7 +239,13 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
                 try:
                     clips[i] = fut.result()
                 except Exception as e:
-                    raise RuntimeError(f"បន្ទាត់ទី {cues[i]['index']}: {e}") from None
+                    # បន្ទាត់ខ្លះបរាជ័យ (បណ្តាញដាច់មួយភ្លែត, Edge បដិសេធអត្ថបទ) → ទុកស្ងាត់ មិនបញ្ឈប់រឿងទាំងមូល
+                    # តែបរាជ័យច្រើន = បញ្ហាពិត (គ្មានអ៊ីនធឺណិត, Edge TTS បិទ) → បញ្ឈប់ ហើយប្រាប់មូលហេតុ
+                    failed.append(f"បន្ទាត់ទី {cues[i]['index']}: {e}")
+                    if len(failed) > max(3, len(cues) // 50):
+                        raise RuntimeError(f"បង្កើតសំឡេងមិនបាន {len(failed)} បន្ទាត់ — {failed[0]}") from None
+                    job["warnings"].append(f"{failed[-1][:160]} — ទុកស្ងាត់")
+                    clips[i] = np.zeros(0, np.int16)
                 job["done"] += 1
             pending = {f for f in pending if clips[futures[f]] is None}
     finally:
