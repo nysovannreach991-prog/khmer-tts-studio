@@ -103,6 +103,34 @@ def has_nvidia():
         return False
 
 
+_cap = []
+
+
+def gpu_compute_cap():
+    """compute capability របស់កាត NVIDIA (ឧ. 8.9 = RTX 40, 12.0 = RTX 50) · 0 = មិនដឹង/គ្មាន"""
+    if not _cap:
+        smi = shutil.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
+        try:
+            out = subprocess.run([smi, "--query-gpu=compute_cap", "--format=csv,noheader"], capture_output=True,
+                                 text=True, timeout=10, creationflags=_NO_WINDOW).stdout
+            _cap.append(max(float(v) for v in out.split()))
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            _cap.append(0.0)
+    return _cap[0]
+
+
+def torch_device(torch):
+    """"cuda" បើ torch ដំណើរការលើកាតនេះពិតប្រាកដ — torch CUDA ខ្លះគ្មាន kernel សម្រាប់កាតថ្មី
+    (ឧ. cu126 + RTX 50 → cudaErrorNoKernelImageForDevice) → ប្រើ "cpu" ជំនួសការបរាជ័យ"""
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        (torch.ones(8, device="cuda") * 2).sum().item()
+        return "cuda"
+    except Exception:  # noqa: BLE001
+        return "cpu"
+
+
 def gpu_ready():
     dirs = gpu_dll_dirs()
     return any(glob.glob(os.path.join(d, "cublas64_12.dll")) for d in dirs) and \

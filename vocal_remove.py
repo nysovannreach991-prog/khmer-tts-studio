@@ -49,7 +49,7 @@ def _separate(media, out_audio, keep_vocals):
     def say(**msg):
         print(json.dumps(msg, ensure_ascii=False), flush=True)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = ws.torch_device(torch)
     say(phase="load", device=device)
     model = get_model(MODEL)
     model.to(device).eval()

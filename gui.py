@@ -1058,7 +1058,7 @@ class MainWindow(QMainWindow):
                                     "ទាញយកឥឡូវនេះ?") != QMessageBox.Yes:
                 return
             funasr_mod.stop_servers()  # process ចាស់កំពុងប្រើ torch CPU → បិទសិន (Windows ចាក់សោឯកសារ)
-            return self._vsrt_pip(funasr_mod.GPU_PACKAGES, "PyTorch CUDA (~2.5 GB)", self._vsrt_mode_changed)
+            return self._vsrt_pip(funasr_mod.gpu_packages(), "PyTorch CUDA (~2.5 GB)", self._vsrt_mode_changed)
         if QMessageBox.question(self, "បើក GPU សម្រាប់ Whisper",
                                 "ទាញយក NVIDIA CUDA library (~1.5 GB, ម្តងគត់)។\n"
                                 "បន្ទាប់មក Whisper នឹងលឿនជាង CPU ច្រើនដង។\n\nទាញយកឥឡូវនេះ?") != QMessageBox.Yes:

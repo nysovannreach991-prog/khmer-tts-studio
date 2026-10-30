@@ -1,5 +1,5 @@
 {
-  "version": "2.0.3",
+  "version": "2.0.4",
   "notes": "កែលម្អ និងជួសជុលកំហុស",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
@@ -11,8 +11,8 @@
     "fonts/KantumruyPro-Bold.ttf": "464386b92203d3380b0253d67a1c02b015877160d9fd297535c53e09073e4ac5",
     "fonts/KantumruyPro-Regular.ttf": "2cd3e85c6ad5be83a4355ffcda69c9ee6437b1eb69f20061477e2cb2b2989188",
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
-    "funasr_srt.py": "621fe38ce726e16f557fb45af79537aca939e512704e0f9837775c9a8f1d6334",
-    "gui.py": "0de5823541b5f738d62e9bef7ffc4c78940133c2f3fcd74642185b9598fac14e",
+    "funasr_srt.py": "0da68bfe8a3e40aff667aef96216893dd053828620b5ec4e146905f9de5f2e9c",
+    "gui.py": "3c1a8b72da638d4e46960983c84aa64e9fae89a9e80bd19325f8fe0e3e67739a",
     "icon.ico": "e2821240052669d6f57f687ce40c1e0442d2c84c5aeeb93574036fc8d66f2462",
     "images/vector_board.png": "e3d531a0f6fdc09b3ee44cc2b0f3f47c6c39a617d116a2c915cd3f741b1c15f6",
     "launcher.ps1": "0b5ca98aa5b43d63a1f77e9962ba5309120614668623b7fe2a16659b0752d0c4",
@@ -33,8 +33,8 @@
     "vector_fx.py": "c7ddf2a3b4cee4ea0ead10187fb3b4c289fe3417c6b6cd9ea1d98bfe2d5ecefc",
     "video_dub.py": "1a06a5378e8e11792979f372ecbd6a774193b1a131f47adf90a354471c133a57",
     "video_merge.py": "acfb10d064bfdfaee4e3546cfd2809273877ac4cba3f2da15be69ed100a79417",
-    "vocal_remove.py": "8b9ff00f76d847e2d036caa0f7451b0e33b3fc43daebb661191422b495672098",
+    "vocal_remove.py": "89d9daec3dbb58ff510bed770dc4bf39e82ca71dcf618307bb5847db40c89062",
     "watermark.py": "71d4b372977b8bbf853ddd143b83c6e12395a33fae73a43c458f32811602dabb",
-    "whisper_srt.py": "b99a1148d6f55003728e3c1b2ac3e4d0998d99ebb2408b6e666436c80330373e"
+    "whisper_srt.py": "06c6fe35c3390169d6292d8de4e52bdcc81b7b2691f00db699958702fe19772b"
   }
 }
