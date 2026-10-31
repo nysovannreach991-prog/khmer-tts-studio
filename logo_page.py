@@ -2,6 +2,7 @@
 ឆ្វេង = បញ្ជីវីដេអូ + ជម្រើស + ចាប់ផ្តើម · ស្តាំ = Preview · ⚙ ការកំណត់ Logo & Ads = ផ្ទាំងរំកិលពីស្តាំ
 (រក្សាសំឡេងដែលមាន មិនបកប្រែ — video_dub.start_brand_job)"""
 import os
+import shutil
 import time
 
 from PyQt5.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer, pyqtSignal
@@ -19,13 +20,27 @@ VIDEO_EXT = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".ts")
 KINDS = [("lg", "🏷 Logo"), ("lt", "📺 Lower third"), ("wm", "💧 Watermark"), ("ad", "📢 Ads")]
 
 
+def _videos_in(folder):
+    return sorted(os.path.join(folder, f) for f in os.listdir(folder)
+                  if f.lower().endswith(VIDEO_EXT) and os.path.isfile(os.path.join(folder, f)))
+
+
+def _unique_dir(path):
+    """<ឈ្មោះ>_logo មានរួច → <ឈ្មោះ>_logo_2, _3 ... (មិនជាន់លទ្ធផលចាស់)"""
+    out, n = path, 1
+    while os.path.exists(out):
+        n += 1
+        out = f"{path}_{n}"
+    return out
+
+
 class VideoCard(StoryCard):
-    """ជួរវីដេអូមួយ (រចនាដូចកាតរឿង) — ចុច = មើល Preview លើវីដេអូនេះ"""
+    """Folder មួយ (វីដេអូទាំងអស់ក្នុងនោះ) រចនាដូចកាតរឿង — ចុច = មើល Preview លើវីដេអូទីមួយ"""
     clicked = pyqtSignal(object)
 
-    def __init__(self, path):
-        super().__init__({"folder": path, "videos": [path], "srts": []})
-        self.path = path
+    def __init__(self, folder, videos):
+        super().__init__({"folder": folder, "videos": videos, "srts": []})
+        self.path, self.videos = folder, videos
         self.setCursor(Qt.PointingHandCursor)
         self.st = {"status": "waiting", "stage": None, "pct": 0, "msg": "", "t0": None, "t1": None, "notes": [],
                    "out": None}
@@ -66,14 +81,15 @@ class LogoPage(QWidget):
         back = self._button("‹‹  ត្រឡប់", lambda: host._go_page(host.simple_page))
         title = QLabel("🏷 LOGO & ADS")
         title.setStyleSheet("font-size: 15pt; font-weight: bold;")
-        note = QLabel("ដាក់ Logo · Lower third · Watermark · Ads លើវីដេអូដែល Dub រួច")
+        note = QLabel("Folder ចូល → Folder ចេញ (<ឈ្មោះ>_logo, ឈ្មោះឯកសារដដែល)")
         note.setProperty("role", "muted")
         bl.addWidget(back)
         bl.addWidget(title)
         bl.addWidget(note, 1)
         bl.addWidget(self._button("🎬 យកពីទំព័រ Dub", self.import_dubbed,
                                   "យកវីដេអូដែលទើប Dub រួចនៅទំព័រមុខ មកដាក់ Logo"))
-        bl.addWidget(self._button("➕ វីដេអូ", self._pick, "ជ្រើសវីដេអូផ្សេងៗ (ឬអូសទម្លាក់លើទំព័រនេះ)"))
+        bl.addWidget(self._button("➕ Folder", self._pick,
+                                  "ជ្រើស Folder វីដេអូ (Folder មេ → Folder រងនីមួយៗ) · ឬអូសទម្លាក់លើទំព័រនេះ"))
         self.btn_settings = self._button("⚙ ការកំណត់ Logo && Ads", None,
                                          "កំណត់ Logo, Lower third, Watermark និង Ads")
         self.btn_settings.setCheckable(True)
@@ -91,7 +107,7 @@ class LogoPage(QWidget):
         ll.setContentsMargins(14, 12, 14, 14)
         ll.setSpacing(8)
         head = QHBoxLayout()
-        self.count = QLabel("មិនទាន់មានវីដេអូ")
+        self.count = QLabel("មិនទាន់មាន Folder")
         self.count.setObjectName("sideHead")
         head.addWidget(self.count, 1)
         self.btn_clear = self._button("សម្អាត", self.clear)
@@ -101,7 +117,7 @@ class LogoPage(QWidget):
         self.list_lay = QVBoxLayout(self.list_box)
         self.list_lay.setContentsMargins(0, 0, 4, 0)
         self.list_lay.setSpacing(8)
-        self.empty = QLabel("🎬 ចុច \"យកពីទំព័រ Dub\"\nឬ ➕ វីដេអូ · អូសទម្លាក់វីដេអូនៅទីនេះ")
+        self.empty = QLabel("🎬 ចុច \"យកពីទំព័រ Dub\"\nឬ ➕ Folder · អូសទម្លាក់ Folder នៅទីនេះ")
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setProperty("role", "muted")
         self.list_lay.addWidget(self.empty)
@@ -254,38 +270,43 @@ class LogoPage(QWidget):
         self.add_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
 
     def _pick(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "ជ្រើសវីដេអូដើម្បីដាក់ Logo", self.host_out(),
-            "វីដេអូ (*.mp4 *.mkv *.mov *.avi *.webm *.flv *.m4v *.ts);;ឯកសារទាំងអស់ (*)")
-        if files:
-            self.add_paths(files)
+        folder = QFileDialog.getExistingDirectory(self, "ជ្រើស Folder វីដេអូដើម្បីដាក់ Logo", self.host_out())
+        if folder:
+            self.add_paths([folder])
 
     def import_dubbed(self, quiet=False):
-        """វីដេអូដែល Dub រួចនៅទំព័រមុខ (Folder លទ្ធផលនៃរឿងនីមួយៗ)"""
+        """Folder លទ្ធផលនៃរឿងនីមួយៗ ដែល Dub រួចនៅទំព័រមុខ"""
         pipe = self.host.simple_page.pipeline
         folders = [st["out"] for st in (pipe.state if pipe else []) if st.get("out") and os.path.isdir(st["out"])]
-        files = []
-        for folder in folders:
-            files += sorted(os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(VIDEO_EXT))
-        if files:
-            self.add_paths(files)
+        if folders:
+            self.add_paths(folders)
         elif not quiet:
-            self.headline.setText("⚠ មិនទាន់មានវីដេអូដែល Dub រួចនៅទំព័រមុខ — ចុច ➕ វីដេអូ")
+            self.headline.setText("⚠ មិនទាន់មានរឿងដែល Dub រួចនៅទំព័រមុខ — ចុច ➕ Folder")
 
     def add_paths(self, paths):
+        """Folder → កាតមួយ (វីដេអូទាំងអស់ក្នុងនោះ) · Folder មេ (គ្មានវីដេអូផ្ទាល់) → Folder រងនីមួយៗ
+        · ឯកសារវីដេអូដែលទម្លាក់ → ដាក់ជាក្រុមតាម Folder របស់វា"""
         if self.active:
             return
-        files = []
+        groups = {}
         for p in paths:
+            p = os.path.normpath(p)
             if os.path.isdir(p):
-                files += sorted(os.path.join(p, f) for f in os.listdir(p) if f.lower().endswith(VIDEO_EXT))
+                vids = _videos_in(p)
+                if vids:
+                    groups.setdefault(p, []).extend(vids)
+                else:
+                    for sub in sorted(os.listdir(p)):
+                        d = os.path.join(p, sub)
+                        if os.path.isdir(d) and _videos_in(d):
+                            groups.setdefault(d, []).extend(_videos_in(d))
             elif p.lower().endswith(VIDEO_EXT) and os.path.isfile(p):
-                files.append(p)
+                groups.setdefault(os.path.dirname(p), []).append(p)
         known = {c.path for c in self.cards}
-        for path in dict.fromkeys(os.path.normpath(f) for f in files):
-            if path in known:
+        for folder, videos in groups.items():
+            if folder in known:
                 continue
-            card = VideoCard(path)
+            card = VideoCard(folder, list(dict.fromkeys(videos)))
             card.remove.connect(self._remove)
             card.clicked.connect(self._select)
             self.list_lay.insertWidget(self.list_lay.count() - 1, card)
@@ -298,7 +319,7 @@ class LogoPage(QWidget):
     def _select(self, card):
         for c in self.cards:
             c.set_selected(c is card)
-        self.host.video_path.setText(card.path)  # Preview លើវីដេអូនេះ
+        self.host.video_path.setText(card.videos[0])  # Preview លើវីដេអូទីមួយក្នុង Folder
         self.host._ov_timer.start(50)
 
     def _remove(self, card):
@@ -338,7 +359,8 @@ class LogoPage(QWidget):
         self.ready = ready
         n = len(self.cards)
         self.empty.setVisible(n == 0)
-        self.count.setText(f"🎬 {n} វីដេអូ" if n else "មិនទាន់មានវីដេអូ")
+        vids = sum(len(c.videos) for c in self.cards)
+        self.count.setText(f"📁 {n} Folder · {vids} វីដេអូ" if n else "មិនទាន់មាន Folder")
         self.btn_clear.setEnabled(n > 0 and not self.active)
         self.btn_go.setEnabled(n > 0 and not self.active)
         if self.active:
@@ -362,7 +384,7 @@ class LogoPage(QWidget):
             self._sync()
             return self.btn_settings.setChecked(True)
         todo = [c for c in self.cards if c.st["status"] != "done"] or self.cards
-        if not host.confirm_overlays([(os.path.basename(c.path), c.path) for c in todo], overlays, ads,
+        if not host.confirm_overlays([(os.path.basename(c.path), c.videos[0]) for c in todo], overlays, ads,
                                      use_ads=bool(ads)):
             return
         for c in todo:
@@ -379,37 +401,79 @@ class LogoPage(QWidget):
         self._next()
 
     def _next(self):
+        """Folder បន្ទាប់ → Output/<ឈ្មោះ Folder>_logo (វីដេអូម្តងមួយ ឈ្មោះឯកសារដដែល)"""
         if self.stop_req or not self.queue:
             return self._finish()
         card = self.cur = self.queue.pop(0)
-        overlays, ads, part_sec = self.specs
-        name = os.path.splitext(os.path.basename(card.path))[0]
-        base = f"{backend.safe_name(name) or 'video'}_logo_{time.strftime('%Y%m%d_%H%M%S')}"
-        self.job = video_dub.start_brand_job(card.path, self.host_out(), base, overlays, ads, part_sec)
-        card.st.update(status="running", stage="video", pct=0, msg="កំពុងរកចន្លោះស្ងាត់...", t0=time.time(),
-                       since=time.time())
+        name = backend.safe_name(os.path.basename(card.path)) or "video"
+        self.target = _unique_dir(os.path.join(self.host_out(), f"{name}_logo"))
+        self.work = os.path.join(self.target, ".work")  # លទ្ធផលបណ្តោះអាសន្នរបស់ start_brand_job
+        os.makedirs(self.work, exist_ok=True)
+        self.vi, self.v_failed = 0, []
+        card.st.update(status="running", stage="video", pct=0, msg="", t0=time.time(), since=time.time(),
+                       out=self.target)
+        self._next_video()
+
+    def _next_video(self):
+        card, (overlays, ads, part_sec) = self.cur, self.specs
+        video = card.videos[self.vi]
+        stem = backend.safe_name(os.path.splitext(os.path.basename(video))[0]) or f"video{self.vi + 1}"
+        self.job = video_dub.start_brand_job(video, self.work, f"{stem}_{self.vi}", overlays, ads, part_sec)
         self.timer.start(300)
+
+    def _collect_video(self, s):
+        """ផ្លាស់លទ្ធផលពី .work ទៅ Folder ចេញ — ផ្នែកតែមួយ = ឈ្មោះឯកសារដើម · ច្រើនផ្នែក = <ឈ្មោះ>_partNN"""
+        video = self.cur.videos[self.vi]
+        stem = os.path.splitext(os.path.basename(video))[0]
+        src_dir = os.path.join(self.work, s["folder"])
+        files = sorted(f for f in os.listdir(src_dir) if f.lower().endswith(".mp4"))
+        for n, f in enumerate(files, 1):
+            dst = f"{stem}.mp4" if len(files) == 1 else f"{stem}_part{n:02d}.mp4"
+            os.replace(os.path.join(src_dir, f), os.path.join(self.target, dst))
+        shutil.rmtree(src_dir, ignore_errors=True)
+        return len(files)
 
     def _poll(self):
         self._tick += 1
         card, s = self.cur, srt_dub.jobs.get(self.job)
         if not card or s is None:
             return
-        st = card.st
-        if s["status"] == "error":
-            st.update(status="failed", msg=f"✕ {s['error'][-120:]}", t1=time.time())
-        elif s["status"] == "done":
-            out = os.path.join(self.host_out(), s["folder"])
-            extra = f" · Ads {s['ads_inserted']}" if s.get("ads_inserted") else ""
-            st.update(status="done", pct=100, msg=f"រួចរាល់ {len(s['parts'])} ផ្នែក{extra}", out=out, t1=time.time())
-            self.done_n += 1
+        st, n = card.st, len(card.videos)
+        if s["status"] in ("error", "done"):  # វីដេអូនេះចប់ → វីដេអូបន្ទាប់ក្នុង Folder ដដែល
+            if s["status"] == "error":
+                self.v_failed.append(f"{os.path.basename(card.videos[self.vi])}: {s['error'][-120:]}")
+            else:
+                try:
+                    self._collect_video(s)
+                except OSError as e:
+                    self.v_failed.append(f"{os.path.basename(card.videos[self.vi])}: {e}")
+            self.vi += 1
+            if self.vi < n and not self.stop_req:
+                st.update(pct=int(100 * self.vi / n), since=time.time())
+                card.update_from(st, self._tick)
+                self.timer.stop()
+                return self._next_video()
+            shutil.rmtree(self.work, ignore_errors=True)
+            ok = self.vi - len(self.v_failed)
+            if ok == 0:
+                st.update(status="failed", msg=f"✕ {self.v_failed[0]}", t1=time.time())
+                shutil.rmtree(self.target, ignore_errors=True)  # គ្មានវីដេអូណាជោគជ័យ → កុំទុក Folder ទទេ
+            else:
+                fail = f" · ✕ {len(self.v_failed)}" if self.v_failed else ""
+                stop = f" · ឈប់ ({n - self.vi} មិនទាន់ធ្វើ)" if self.vi < n else ""
+                st.update(status="done", pct=100, msg=f"រួចរាល់ {ok}/{n} វីដេអូ{fail}{stop} → "
+                                                     f"{os.path.basename(self.target)}", t1=time.time())
+                st["notes"] = self.v_failed[:3]
+                self.done_n += 1
         else:
             pct = int(s.get("stage_pct", 0)) if s["status"] == "video" else 0
-            msg = {"analyzing": "កំពុងរកចន្លោះស្ងាត់...", "trimming": "កំពុងកាត់..."}.get(
+            step = {"analyzing": "កំពុងរកចន្លោះស្ងាត់...", "trimming": "កំពុងកាត់..."}.get(
                 s["status"], f"កំពុងដាក់ Logo {pct}%")
-            if (pct, msg) != (st["pct"], st["msg"]):
+            msg = f"វីដេអូ {self.vi + 1}/{n} · {step}"
+            total = int((100 * self.vi + pct) / n)
+            if (total, msg) != (st["pct"], st["msg"]):
                 st["since"] = time.time()
-            st.update(pct=pct, msg=msg)
+            st.update(pct=total, msg=msg)
         card.update_from(st, self._tick)
         finished = self.done_n + sum(c.st["status"] == "failed" for c in self.cards)
         overall = (finished - (0 if st["status"] == "running" else 1) + st["pct"] / 100) / max(self.total, 1)
@@ -418,13 +482,14 @@ class LogoPage(QWidget):
             self.timer.stop()
             QTimer.singleShot(200, self._next)
             return
-        self.headline.setText(f"{SPIN[self._tick % 4]}  {self.total - len(self.queue)}/{self.total} — "
-                              f"{os.path.basename(card.path)} · ⏱ {fmt_dur(time.time() - self.t0)}")
+        self.headline.setText(f"{SPIN[self._tick % 4]}  Folder {self.total - len(self.queue)}/{self.total} — "
+                              f"{os.path.basename(card.path)} · វីដេអូ {self.vi + 1}/{len(card.videos)} · "
+                              f"⏱ {fmt_dur(time.time() - self.t0)}")
 
     def _request_stop(self):
         self.stop_req = True
         self.btn_stop.setEnabled(False)
-        self.headline.setText("■ នឹងបញ្ឈប់បន្ទាប់ពីវីដេអូនេះចប់")
+        self.headline.setText("■ នឹងបញ្ឈប់បន្ទាប់ពីវីដេអូនេះចប់ (វីដេអូដែលរួចហើយ នៅក្នុង Folder ចេញ)")
 
     def _finish(self):
         self.timer.stop()

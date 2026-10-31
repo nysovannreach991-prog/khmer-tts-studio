@@ -263,6 +263,11 @@ class Pipeline:
         j = _poll(job, tick, self.stop)
         st["out"] = os.path.join(o["out_dir"], j["folder"])
         parts = len(j.get("parts") or [])
+        # វីដេអូពេញ (សម្រាប់ Upload ទៅ Google Drive): _full.mp4 ពេលកាត់ជាផ្នែក ឬវីដេអូតែមួយ
+        if j.get("full"):
+            st["full_file"] = os.path.join(o["out_dir"], j["full"])
+        elif parts == 1:
+            st["full_file"] = os.path.join(o["out_dir"], j["parts"][0]["path"])
         self._set(i, "video", 100, f"{parts} ផ្នែក · {st['lines']} បន្ទាត់" if parts > 1 else f"{st['lines']} បន្ទាត់")
         # ការព្រមានសំខាន់ៗប៉ុណ្ណោះ (មិនមែន "ពន្យារ 0.0s" ដែលមិនមានន័យ)
         st["notes"] += [w for w in j.get("warnings", []) if "ត្រូវបានពន្យារ" not in w][:3]

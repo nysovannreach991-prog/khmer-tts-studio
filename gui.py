@@ -46,6 +46,7 @@ import simple_ui
 import vector_fx
 import vocal_remove
 import sysmon
+import gdrive
 
 OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
 DEFAULT_OUTPUT_DIR = backend.OUTPUT_DIR
@@ -4118,6 +4119,14 @@ class MainWindow(QMainWindow):
         sp.voice.currentIndexChanged.connect(lambda _: s.setValue("simple_voice", sp.voice.currentData()))
         sp.lang.currentIndexChanged.connect(lambda _: s.setValue("simple_lang", sp.lang.currentData()))
         sp.use_brand.toggled.connect(lambda on: s.setValue("simple_brand", on))
+        # ☁ Google Drive — Link/ពាក្យសម្ងាត់ នៅក្នុង QSettings តែប៉ុណ្ណោះ (មិនមែនក្នុងឯកសារកម្មវិធី)
+        sp.gd_on.setChecked(s.value("gd_on", "false") in (True, "true"))
+        sp.gd_url.setText(s.value("gd_url", ""))
+        sp.gd_secret.setText(s.value("gd_secret", ""))
+        sp.gd_on.toggled.connect(lambda on: s.setValue("gd_on", on))
+        sp.gd_url.textChanged.connect(lambda t: s.setValue("gd_url", t.strip()))
+        sp.gd_secret.textChanged.connect(lambda t: s.setValue("gd_secret", t))
+        sp.btn_gd_test.clicked.connect(self._gd_test)
         self._show_simple()
 
     def _simple_key_state(self):
@@ -4170,6 +4179,13 @@ class MainWindow(QMainWindow):
             sp.show_settings()  # ការកំណត់លាក់ → បើកឲ្យឃើញប្រអប់ key
             sp.key.setFocus()
             return sp.headline.setText(f"⚠ រឿង {len(need_tr)} ត្រូវបកប្រែ — សូមបញ្ចូល Bayon key (⚙ ការកំណត់)")
+        gdrive = None
+        if sp.gd_on.isChecked():
+            if not sp.gd_url.text().strip() or not sp.gd_secret.text():
+                sp.show_settings()
+                sp.gd_url.setFocus()
+                return sp.headline.setText("⚠ ☁ Google Drive: សូមបញ្ចូល Link និងពាក្យសម្ងាត់ (⚙ ការកំណត់)")
+            gdrive = (sp.gd_url.text().strip(), sp.gd_secret.text(), self._gd_sub())
         use_brand = sp.use_brand.isChecked()
         overlays = self.overlays() if use_brand else []
         ads = self.ads_spec() if use_brand else None
@@ -4187,7 +4203,9 @@ class MainWindow(QMainWindow):
                 "novocal": novocal,
                 "duck": sp.duck.currentIndex() if novocal or not sp.mute.isChecked() else 0,
                 "part_sec": part_sec, "overlays": overlays, "ads": ads,
-                "keep_full": part_sec > 0 and self.keep_full.isChecked()}
+                # Upload វីដេអូពេញ → ត្រូវការ _full.mp4 ពេលកាត់ជាផ្នែក
+                "keep_full": part_sec > 0 and (self.keep_full.isChecked() or bool(gdrive)),
+                "gdrive": gdrive}
         self.simple_pipe = auto_pipeline.Pipeline(stories, opts)
         self.set_busy(True)
         self._log(f"✨ Simple Auto — {len(stories)} រឿង")
@@ -4214,6 +4232,11 @@ class MainWindow(QMainWindow):
             _, msg = p.log.pop(0)
             self._log(f"   {msg}")
             self._file_log(msg)
+        if p.opts.get("gdrive"):  # រឿងនីមួយៗរួច → Upload ភ្លាម (មិនរង់ចាំរឿងផ្សេង)
+            for st in p.state:
+                if st["status"] == "done" and st.get("full_file") and not st.get("gd_queued"):
+                    st["gd_queued"] = True
+                    self._gd_add(st["full_file"], *p.opts["gdrive"])
         if p.finished:
             self._simple_watch.stop()
             self.set_busy(False)
@@ -4236,6 +4259,60 @@ class MainWindow(QMainWindow):
             if outs:
                 self.last_result = outs[-1]
             self.refresh_files()
+
+    # ================= ☁ Google Drive =================
+
+    @staticmethod
+    def _gd_sub():
+        """Folder រងលើ Drive តាមឈ្មោះកុំព្យូទ័រ/អ្នកប្រើ — ម្ចាស់ដឹងថាមិត្តភក្តិណា Upload"""
+        return f"{os.environ.get('USERNAME', 'user')} @ {os.environ.get('COMPUTERNAME', 'PC')}"
+
+    def _gd_test(self):
+        sp = self.simple_page
+        url, secret = sp.gd_url.text().strip(), sp.gd_secret.text()
+        if not url or not secret:
+            return sp.gd_state.setText("⚠ សូមបញ្ចូល Link និងពាក្យសម្ងាត់")
+        sp.gd_state.setText("⏳ កំពុងសាកភ្ជាប់...")
+        sp.btn_gd_test.setEnabled(False)
+        worker = Worker(lambda: gdrive.check(url, secret))
+
+        def end(text):
+            sp.btn_gd_test.setEnabled(True)
+            sp.gd_state.setText(text)
+        worker.done.connect(lambda _: end("✓ ភ្ជាប់ Google Drive បាន — វីដេអូនឹង Upload ទៅ Folder របស់អ្នក"))
+        worker.failed.connect(lambda e: end(f"✕ {e.strip().splitlines()[-1][:200]}"))
+        self._start_worker(worker)
+
+    def _gd_add(self, path, url, secret, sub):
+        if not getattr(self, "uploader", None):
+            self.uploader = gdrive.Uploader()
+            self._gd_timer = QTimer(self)
+            self._gd_timer.timeout.connect(self._gd_poll)
+        self.uploader.add(path, url, secret, sub)
+        self._gd_timer.start(300)
+        self._log(f"☁ ដាក់ក្នុងជួរ Upload: {os.path.basename(path)}")
+
+    def _gd_poll(self):
+        u, sp = self.uploader, self.simple_page
+        cur = u.current
+        if cur and cur["total"]:
+            mb = f"{cur['done'] / 2 ** 20:,.0f}/{cur['total'] / 2 ** 20:,.0f} MB"
+            speed = f" · {cur['speed'] / 2 ** 20:.1f} MB/s" if cur["speed"] else ""
+            more = f" (+{u.pending - 1})" if u.pending > 1 else ""
+            self.sysbar.set_upload(cur["done"] / cur["total"], f"☁ {cur['name'][:28]}{more}  {mb}{speed}")
+        elif u.busy():
+            self.sysbar.set_upload(-1, "☁ កំពុងភ្ជាប់ Google Drive...")
+        while u.events:
+            kind, name, msg = u.events.pop(0)
+            text = f"☁ Upload រួច: {name} ({msg})" if kind == "done" else f"☁ Upload មិនបាន: {name} — {msg}"
+            self._log(text)
+            self._file_log(text)
+            sp.gd_state.setText(("✓ " if kind == "done" else "✕ ") + text[2:])
+            if not self.simple_page.running():
+                sp.sub.setText(text)
+        if not u.busy():
+            self._gd_timer.stop()
+            self.sysbar.set_upload(None)
 
     @staticmethod
     def _log_path():
@@ -4544,6 +4621,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self.busy and QMessageBox.question(
                 self, "កំពុងដំណើរការ", "ការងារកំពុងដំណើរការ។ បិទកម្មវិធី ហើយបោះបង់ការងារនេះ?") != QMessageBox.Yes:
+            event.ignore()
+            return
+        up = getattr(self, "uploader", None)
+        if up and up.busy() and QMessageBox.question(
+                self, "កំពុង Upload", f"កំពុង Upload ទៅ Google Drive ({up.pending} វីដេអូ)។\n"
+                                      "បិទឥឡូវ → Upload ឈប់ (វីដេអូនៅក្នុងថត Output ដដែល)។ បិទមែនទេ?") != QMessageBox.Yes:
             event.ignore()
             return
         self._save_settings()

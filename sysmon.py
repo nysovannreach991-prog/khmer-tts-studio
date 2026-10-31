@@ -204,6 +204,7 @@ class SysBar(QWidget):
         self.status = {}  # {"ai": "gpu"|"cpu"|"fixable", "enc": "h264_nvenc"..., "driver": "610.00"}
         self.active = None  # ឧបករណ៍ដែលការងារកំពុងប្រើ ("cuda"/"cpu")
         self.fix_rects = {}  # ប៊ូតុងក្នុងរបារ: "gpu"/"driver" → QRectF
+        self.upload = None  # ដូច download — Upload ទៅ Google Drive
         self.download = None  # (frac 0..1 ឬ -1 = មិនដឹង %, អក្សរ) ពេលកំពុងទាញយក/ដំឡើង
         self.setMouseTracking(True)
         self.timer = QTimer(self)
@@ -217,7 +218,15 @@ class SysBar(QWidget):
     def set_download(self, frac, text=""):
         """បង្ហាញ progress bar ទាញយកនៅខាងស្តាំរបារ — frac=None បិទវិញ"""
         self.download = None if frac is None else (frac, text)
-        self.timer.setInterval(1000 if frac is None else 120)  # ចលនាលឿនពេលទាញយក
+        self._sync_timer()
+
+    def set_upload(self, frac, text=""):
+        """progress bar Upload ទៅ Google Drive (ការទាញយក GPU មានអាទិភាពជាង) — frac=None បិទវិញ"""
+        self.upload = None if frac is None else (frac, text)
+        self._sync_timer()
+
+    def _sync_timer(self):
+        self.timer.setInterval(120 if self.download or self.upload else 1000)  # ចលនាលឿនពេលមាន progress
         self.update()
 
     def _paint_download(self, p, r, x_min, frac, text, lab_f, val_f):
@@ -351,9 +360,9 @@ class SysBar(QWidget):
             x += 8
             text(f"VRAM {d['vram'][0]:.1f}/{d['vram'][1]:.0f} GB", c["faint"], val_f, val_m)
 
-        if self.download:  # កំពុងទាញយក GPU → progress bar ជំនួសស្លាក AI/Encode
+        if self.download or self.upload:  # ទាញយក GPU / Upload → progress bar ជំនួសស្លាក AI/Encode
             self.fix_rects = {}
-            self._paint_download(p, r, x, *self.download, lab_f, val_f)
+            self._paint_download(p, r, x, *(self.download or self.upload), lab_f, val_f)
             p.end()
             return
         # ខាងស្តាំ: AI / Encode ប្រើ GPU ឬ CPU
