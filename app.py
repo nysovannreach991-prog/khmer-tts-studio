@@ -254,6 +254,41 @@ BAYON_URL = "https://bayongateway.com/v1/chat/completions"
 OPENAI_BASE_URL = ""
 
 
+def _load_relay_url():
+    """Relay របស់ម្ចាស់ (Cloudflare Worker) — មិនមែនការសម្ងាត់ទេ (key នៅលើ Relay) · ដាក់ក្នុង update_config.json"""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_config.json"),
+                  encoding="utf-8") as f:
+            return json.load(f).get("relay_url", "").strip().rstrip("/")
+    except (OSError, ValueError):
+        return ""
+
+
+# អតិថិជនគ្មាន key ផ្ទាល់ខ្លួន → GUI ប្រើ License (AT1-…) ជា "key" → បកប្រែតាម Relay (key របស់ម្ចាស់)
+RELAY_URL = _load_relay_url()
+
+
+def _relay_post(license_key, model, body):
+    import licensing
+    req = urllib.request.Request(
+        f"{RELAY_URL}/v1/generate", data=json.dumps({"model": model, "body": body}).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json", "X-License": license_key, "X-Machine": licensing.machine_code(),
+                 # Cloudflare បិទ "Python-urllib" (error 1010 — ស្គាល់ថាជា bot) → ប្រើឈ្មោះកម្មវិធីជំនួស
+                 "User-Agent": "AITeam1 (Windows)"})
+    try:
+        with urllib.request.urlopen(req, timeout=max(_timeout(body), 180)) as resp:  # Relay សាក key ច្រើន → យូរជាង
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        try:
+            detail = json.loads(detail)["error"]["message"]
+        except Exception:
+            pass
+        raise RuntimeError(f"ម៉ាស៊ីនបកប្រែ (Relay) error {e.code}: {str(detail)[:300]}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"ម៉ាស៊ីនបកប្រែ (Relay) ភ្ជាប់មិនបាន ({e.reason}) — ពិនិត្យអ៊ីនធឺណិត") from None
+
+
 def _custom_url():
     base = OPENAI_BASE_URL.strip().rstrip("/")
     if not base:
@@ -291,8 +326,8 @@ def join_keys(text):
 def is_gateway_key(key):
     """True = key ទាំងអស់ជា Bayon / server ផ្ទាល់ខ្លួន (មិនអាចប្រើ Gemini TTS)"""
     keys = parse_keys(key)
-    return bool(keys) and all(k.startswith("bayon_sk_") or (_custom_url() and not k.startswith("AIza"))
-                              for k in keys)
+    return bool(keys) and all(k.startswith("bayon_sk_") or k.upper().startswith("AT1-")
+                              or (_custom_url() and not k.startswith("AIza")) for k in keys)
 
 
 # key ដែលមានបញ្ហា → រំលងរហូតដល់ពេលនេះ (time.time()) · key_switch_hook(msg) ប្រាប់ GUI ពេលប្តូរ key
@@ -431,6 +466,8 @@ def gemini_post(api_key, model, body):
 
 def _post_one(api_key, model, body):
     api_key = clean_key(api_key)
+    if api_key.upper().startswith("AT1-") and RELAY_URL:  # License → Relay របស់ម្ចាស់
+        return _relay_post(api_key, model, body)
     if api_key.startswith("bayon_sk_"):
         return _gateway_post(api_key, model, body)
     if _custom_url() and not api_key.startswith("AIza"):  # key server ផ្ទាល់ខ្លួន (ឧ. sk-…)

@@ -16,6 +16,12 @@ $PyVersion = "3.12.10"
 $Log = Join-Path $Data "launcher.log"
 New-Item -ItemType Directory -Force $Data | Out-Null
 try { Start-Transcript -Path $Log -Force | Out-Null } catch {}
+# User names with a space give TEMP an 8.3 short path (C:\Users\KONPOV~1\...) that may not exist on that PC -
+# use our own temp folder (full path) for this script and for pip / Python started from it
+$Tmp = Join-Path $Data "tmp"
+New-Item -ItemType Directory -Force $Tmp | Out-Null
+$env:TEMP = $Tmp
+$env:TMP = $Tmp
 
 function Step($text) { Write-Host ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $text) -ForegroundColor Cyan }
 

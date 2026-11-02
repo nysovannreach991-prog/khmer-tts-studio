@@ -124,6 +124,8 @@ def c_output(folder):
 
 
 def key_kind(key):
+    if key.upper().startswith("AT1-"):
+        return "ម៉ាស៊ីនបកប្រែ (License)"
     if key.startswith("bayon_sk_"):
         return "Bayon"
     if key.startswith("AIza"):

@@ -2522,7 +2522,11 @@ class MainWindow(QMainWindow):
 
     def gemini_key(self):
         """Gemini (AIza...) ឬ Bayon Gateway (bayon_sk_...) — key ច្រើនបំបែកដោយ "," (app.gemini_post ប្តូរពេលមានបញ្ហា)"""
-        return backend.join_keys(self.api_key.text()) or os.environ.get("GEMINI_API_KEY", "")
+        own = backend.join_keys(self.api_key.text()) or os.environ.get("GEMINI_API_KEY", "")
+        if own or not backend.RELAY_URL:
+            return own
+        # អតិថិជនគ្មាន key ផ្ទាល់ខ្លួន → License (AT1-…) → បកប្រែតាម Relay របស់ម្ចាស់ (key មិនដែលនៅលើកុំព្យូទ័រនេះ)
+        return licensing.saved_key() if licensing.enabled() and not licensing.is_owner() else ""
 
     def _key_info_refresh(self):
         status = backend.key_status(self.api_key.text())
@@ -4133,7 +4137,7 @@ class MainWindow(QMainWindow):
         # លុបតែការនិយាយ (រក្សាទុក) មានអាទិភាព — កុំឱ្យ Mute ដោះវាចេញពេលបើកកម្មវិធី
         self.simple_page.mute.setChecked(self.orig_mute.isChecked() and not self.simple_page.novocal.isChecked())
         self.simple_page.duck.setCurrentIndex(self.orig_duck.currentIndex())
-        self.simple_page.key.setText(self.gemini_key())
+        self.simple_page.key.setText(backend.join_keys(self.api_key.text()))  # key ផ្ទាល់ខ្លួនតែប៉ុណ្ណោះ (មិនមែន License)
         self._simple_key_state()
         self._gpu_check()
         if theme.mode == "vector":
@@ -4207,7 +4211,10 @@ class MainWindow(QMainWindow):
         else:
             n = len(backend.parse_keys(key))
             more = f" · {n} key (ប្តូរខ្លួនឯងពេលមានបញ្ហា)" if n > 1 else ""
-            if backend._custom_url() and not all(k.startswith(("AIza", "bayon_sk_")) for k in backend.parse_keys(key)):
+            if key.upper().startswith("AT1-"):
+                who, more = "✓ ម៉ាស៊ីនបកប្រែរបស់កម្មវិធី (តាម License) — មិនចាំបាច់មាន key", ""
+            elif backend._custom_url() and not all(k.startswith(("AIza", "bayon_sk_"))
+                                                   for k in backend.parse_keys(key)):
                 who = f"✓ Server ផ្ទាល់ខ្លួន — {backend.OPENAI_BASE_URL}"
             elif backend._custom_url():  # មាន Base URL តែ key ជា Bayon/Google → មិនទៅ Server ទេ
                 who = ("⚠ មាន Server ផ្ទាល់ខ្លួន តែ key ជា Bayon/Google → បកប្រែតាម Bayon/Google · "

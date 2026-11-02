@@ -12,7 +12,8 @@ import updater
 
 APP_DIR = updater.APP_DIR
 INCLUDE_EXT = {".py", ".bat", ".txt", ".html", ".ttf", ".otf", ".json", ".md", ".ico", ".png", ".ps1"}
-EXCLUDE_DIRS = {"outputs", "__pycache__", ".git", ".update_pending", ".cache", "build", "dist"}
+EXCLUDE_DIRS = {"outputs", "__pycache__", ".git", ".update_pending", ".cache", "build", "dist",
+                "relay"}  # relay = Cloudflare Worker របស់ម្ចាស់ (មិនផ្ញើទៅអតិថិជន)
 EXCLUDE_FILES = {"manifest.json", "gui_error.log",
                  "license_admin.py", "license_admin.bat",
                  "publish.py", "publish_update.bat",
