@@ -485,6 +485,9 @@ class SimplePage(QWidget):
         self.key_state.setObjectName("simpleMuted")
         self.key_state.setWordWrap(True)
         sl.addWidget(self.key_state)
+        self.btn_check = QPushButton("🩺 ពិនិត្យថាប្រើបាន")
+        self.btn_check.setToolTip("សាក key បកប្រែនីមួយៗ, Edge TTS, ffmpeg, GPU, Whisper, Google Drive ... ហើយបង្ហាញ ✓ / ✕")
+        sl.addWidget(self.btn_check)
         sl.addWidget(self._label("☁ Google Drive"))
         self.gd_on = QCheckBox("☁ Upload វីដេអូពេញទៅ Google Drive ពេលរួច")
         self.gd_on.setToolTip("រឿងនីមួយៗរួច → Upload វីដេអូពេញ (_full.mp4 ឬវីដេអូតែមួយ) ទៅ Folder Google Drive\n"

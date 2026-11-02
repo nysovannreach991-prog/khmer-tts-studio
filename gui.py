@@ -47,6 +47,7 @@ import vector_fx
 import vocal_remove
 import sysmon
 import setup_check
+import health_check
 import gdrive
 
 OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
@@ -2698,6 +2699,17 @@ class MainWindow(QMainWindow):
         self.offer_ffmpeg()
         return False
 
+    def _health_check(self):
+        """🩺 ចុចពិនិត្យថាប្រើបាន — key, Edge TTS, ffmpeg, GPU, Whisper, Google Drive, ថត Output"""
+        sp = self.simple_page
+        gd = (sp.gd_url.text().strip(), sp.gd_secret.text()) if sp.gd_url.text().strip() and sp.gd_secret.text() \
+            else None
+        checks = health_check.build(backend.parse_keys(self.gemini_key()), sp.voice.currentData(), gd, OUTPUT_DIR)
+        dlg = health_check.CheckDialog(self, checks)
+        dlg.setStyleSheet(sp.styleSheet())
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.show()
+
     # ================= 🛠 រៀបចំកុំព្យូទ័រពេលបើកលើកដំបូង =================
 
     def _first_setup(self):
@@ -4175,6 +4187,7 @@ class MainWindow(QMainWindow):
         sp.gd_url.textChanged.connect(lambda t: s.setValue("gd_url", t.strip()))
         sp.gd_secret.textChanged.connect(lambda t: s.setValue("gd_secret", t))
         sp.btn_gd_test.clicked.connect(self._gd_test)
+        sp.btn_check.clicked.connect(self._health_check)
         # Server OpenAI-compatible ផ្ទាល់ខ្លួន (Base URL) — QSettings តែប៉ុណ្ណោះ
         backend.OPENAI_BASE_URL = s.value("openai_base_url", "")
         sp.base_url.setText(backend.OPENAI_BASE_URL)

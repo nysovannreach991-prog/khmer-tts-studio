@@ -17,6 +17,11 @@ import threading
 import time
 import uuid
 
+# process កូន (python <ឯកសារនេះ>.py) លើ Python embedded (._pth) — Folder របស់ script មិនស្ថិតក្នុង sys.path
+# → រកម៉ូឌុលកម្មវិធី (whisper_srt, ffmpeg_setup ...) មិនឃើញ · បន្ថែមវាដោយខ្លួនឯង
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "AITeam1")
 MODEL_DIR = os.path.join(DATA_DIR, "whisper")
