@@ -1,5 +1,5 @@
 {
-  "version": "2.1.4",
+  "version": "2.1.5",
   "notes": "កែលម្អ និងជួសជុលកំហុស",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
@@ -7,7 +7,7 @@
     "auto_pipeline.py": "46cc69d4e48408cf6e6e276a400d07d408830ad58c312c1f7aa4348f4dc75cbf",
     "ed25519.py": "fdfa894401dffbb67e7c1c8b930d4023344cbc677c7af21a9b2a93e9ae897060",
     "explorer.py": "aea834ef20141ac37b14c518e861be4ee8a17db8a7fd338dde004084f998b614",
-    "ffmpeg_setup.py": "1a6bafceea73465d134b99c14924929ddbdb9354916c8fb560b4afce4cae0be9",
+    "ffmpeg_setup.py": "81c89102e955b00ed672db954c8e4c02df96bea3a8c6d77503ab6383682a35b7",
     "fonts/KantumruyPro-Bold.ttf": "464386b92203d3380b0253d67a1c02b015877160d9fd297535c53e09073e4ac5",
     "fonts/KantumruyPro-Regular.ttf": "2cd3e85c6ad5be83a4355ffcda69c9ee6437b1eb69f20061477e2cb2b2989188",
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
@@ -17,7 +17,7 @@
     "health_check.py": "da2c679b14058d534314a9a9e2e50a9fd1c7252bc974a35a0949f38339fa90fa",
     "icon.ico": "e2821240052669d6f57f687ce40c1e0442d2c84c5aeeb93574036fc8d66f2462",
     "images/vector_board.png": "e3d531a0f6fdc09b3ee44cc2b0f3f47c6c39a617d116a2c915cd3f741b1c15f6",
-    "launcher.ps1": "398651d34a54d33aea75a49ed42d5a1b361d64c8aaaac74e2bda3730e87b32d8",
+    "launcher.ps1": "c7ace5034a98c65e2fae973e82d9e525e2985f6303bfeffe21017d810d0131f2",
     "licensing.py": "29718be83f670cf49c2af580348fa99a6f07cbef07f61635b9f64e811d0e2e56",
     "logo_page.py": "21492987fd625696b8a2a400a282712f1441ea441a6e4a4296d195dc5ef2d34c",
     "overlay.py": "29ea56d0d65ab40e786173101306d35a40c163674087bb1b4316e36f4773eea2",

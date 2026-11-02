@@ -4,16 +4,23 @@ ffmpeg.exe / ffprobe.exe ត្រូវរក្សាទុកក្នុង 
 របស់កម្មវិធីពេលចាប់ផ្តើម — subprocess ទាំងអស់ ("ffmpeg", "ffprobe") រកឃើញវាដោយស្វ័យប្រវត្តិ។
 """
 import os
+import re
 import shutil
 import tempfile
+import time
 import urllib.request
 import zipfile
 
 BIN_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "AITeam1", "ffmpeg")
+# GitHub លឿនបំផុតនៅកម្ពុជា (gyan.dev ផ្ទាល់ ~90KB/s → ~20 នាទី) — ដាក់ជាចុងក្រោយ
+GYAN_GITHUB = "https://github.com/GyanD/codexffmpeg/releases/download/{v}/ffmpeg-{v}-essentials_build.zip"
+GYAN_FALLBACK_VERSION = "9.0.2"
 URLS = [
-    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
     "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
 ]
+SLOW_BPS = 300_000   # យឺតជាងនេះក្រោយ SLOW_AFTER វិនាទី → ប្តូរទៅ server បន្ទាប់ (លើកលែង server ចុងក្រោយ)
+SLOW_AFTER = 25
 NEEDED = ("ffmpeg.exe", "ffprobe.exe")
 MISSING_MSG = ("រកមិនឃើញ ffmpeg — ចុច ▶ Preview វីដេអូ ឬប៊ូតុងដំណើរការណាមួយ "
                "ដើម្បីទាញយកដោយស្វ័យប្រវត្តិ")
@@ -31,17 +38,34 @@ def available():
     return all(shutil.which(n.removesuffix(".exe")) for n in NEEDED)
 
 
+def _gyan_github():
+    """កំណែចុងក្រោយរបស់ gyan essentials នៅលើ GitHub (មិនបាន → កំណែដែលស្គាល់)"""
+    version = GYAN_FALLBACK_VERSION
+    try:
+        req = urllib.request.Request("https://github.com/GyanD/codexffmpeg/releases/latest",
+                                     headers={"User-Agent": "AITeam1"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            m = re.search(r"/tag/([\w.\-]+)$", resp.url)
+            if m:
+                version = m.group(1)
+    except Exception:  # noqa: BLE001
+        pass
+    return GYAN_GITHUB.format(v=version)
+
+
 def download(progress=None, bin_dir=BIN_DIR):
     """ទាញយក ffmpeg (~110MB) ហើយពន្លាតែ ffmpeg.exe + ffprobe.exe។ progress(done_bytes, total_bytes)"""
     errors = []
-    for url in URLS:
+    urls = [_gyan_github(), *URLS]
+    for i, url in enumerate(urls):
+        last = i == len(urls) - 1
         tmp = tempfile.mkdtemp(prefix="ffmpeg_dl_")
         try:
             zip_path = os.path.join(tmp, "ffmpeg.zip")
             req = urllib.request.Request(url, headers={"User-Agent": "AITeam1"})
             with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as f:
                 total = int(resp.headers.get("Content-Length") or 0)
-                done = 0
+                done, start = 0, time.monotonic()
                 while True:
                     block = resp.read(1 << 17)
                     if not block:
@@ -50,6 +74,9 @@ def download(progress=None, bin_dir=BIN_DIR):
                     done += len(block)
                     if progress:
                         progress(done, total)
+                    took = time.monotonic() - start
+                    if not last and took > SLOW_AFTER and done / took < SLOW_BPS and done < total * 0.8:
+                        raise RuntimeError(f"យឺតពេក ({done / took / 1e3:.0f} KB/s)")
             with zipfile.ZipFile(zip_path) as z:
                 members = {os.path.basename(m): m for m in z.namelist() if m.lower().endswith(NEEDED)}
                 if not all(n in members for n in NEEDED):

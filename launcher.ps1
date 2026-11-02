@@ -190,13 +190,19 @@ try {
         & $py -c @'
 import os, sys
 sys.path.insert(0, os.environ['AITEAM1_APPDIR'])
+import time
 import ffmpeg_setup
-last = [-1]
+last = [-1, 0.0, 0.0, -1, 0]  # percent shown, time shown, start time, total, bytes so far (current server)
 def show(done, total):
+    now = time.monotonic()
+    if total != last[3] or done < last[4]:
+        last[:] = [-1, 0.0, now, total, 0]  # first block, or switched to another server
+    last[4] = done
     pct = done * 100 // total if total else 0
-    if pct >= last[0] + 5:
-        last[0] = pct
-        print(f'    {pct}%  ({done / 1e6:.0f} MB)', flush=True)
+    if pct >= last[0] + 5 or now - last[1] >= 3:
+        last[0], last[1] = pct, now
+        speed = done / max(now - last[2], 0.001) / 1e6
+        print(f'    {pct}%  ({done / 1e6:.0f} / {total / 1e6:.0f} MB, {speed:.1f} MB/s)', flush=True)
 ffmpeg_setup.download(show)
 '@
         if ($LASTEXITCODE) { Write-Host "    ffmpeg download failed - the app will offer it again later" -ForegroundColor Yellow }
