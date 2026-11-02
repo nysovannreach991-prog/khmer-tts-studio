@@ -1,6 +1,6 @@
 {
-  "version": "2.1.1",
-  "notes": "fix ffmpage not found",
+  "version": "2.1.2",
+  "notes": "everypc can use",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
     "app.py": "1df1bf4841fe5ffbc45878111681f8085dfe3f11ec271851c54e5e0d390aef09",
@@ -13,7 +13,7 @@
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
     "funasr_srt.py": "0da68bfe8a3e40aff667aef96216893dd053828620b5ec4e146905f9de5f2e9c",
     "gdrive.py": "8d74e594bc31b44a46bbc9a24dedbdd0ac7a22af3045bd571aa2a62fe912bd4f",
-    "gui.py": "586b04595f5a96be609e1a932dbebfcbc58f7a6a82a3e0b8eb92c64856580800",
+    "gui.py": "587dc26b12e23187bd23935536269a2961f4c580da9b13c45b6d5ee7acc14bdf",
     "icon.ico": "e2821240052669d6f57f687ce40c1e0442d2c84c5aeeb93574036fc8d66f2462",
     "images/vector_board.png": "e3d531a0f6fdc09b3ee44cc2b0f3f47c6c39a617d116a2c915cd3f741b1c15f6",
     "launcher.ps1": "0b5ca98aa5b43d63a1f77e9962ba5309120614668623b7fe2a16659b0752d0c4",
@@ -23,6 +23,7 @@
     "requirements.txt": "932bf739c651e39df36ad3dac833e79aaedb8cdddcc27b95e285f1d9a3269d9c",
     "revoked.json": "ebfd160c88d4fe237113c5f5a270228d97ae5707b8bd78fac0e65669a8f18133",
     "run_gui.bat": "57445400acd656f2309497efdab766097058d102ba2d319a7ae153ab3a2e0e5f",
+    "setup_check.py": "bc82a652bddb70e06637e597b06760c0c3f800f61eb668c9b8606555afa4144f",
     "simple_ui.py": "6965fee750b19fa09aeff18ad14633e001fda524c63776b101b289623993679e",
     "srt_dub.py": "3a0e9bdfa9051df4b50533346e799c0a33861d0bd0687022b2b3cf1e10bc8e9b",
     "sysmon.py": "c7eebb0bfa74bcb7b1aea0d129a07dbc09f433601173e009b7accf046195d132",

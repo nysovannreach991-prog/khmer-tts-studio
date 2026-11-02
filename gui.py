@@ -46,6 +46,7 @@ import simple_ui
 import vector_fx
 import vocal_remove
 import sysmon
+import setup_check
 import gdrive
 
 OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
@@ -523,7 +524,7 @@ class MainWindow(QMainWindow):
         if ffmpeg_setup.available():
             threading.Thread(target=overlay.pick_encoder, daemon=True).start()  # រក GPU encoder ជាមុន
         QTimer.singleShot(2000, self._check_revoked)
-        QTimer.singleShot(1200, lambda: self.offer_ffmpeg(startup=True))
+        QTimer.singleShot(1200, self._first_setup)  # កុំព្យូទ័រថ្មី → ពិនិត្យ/ដំឡើងអ្វីៗដែលខ្វះ (ម្តងគត់)
         QTimer.singleShot(1000, self._fix_edge_version)
         QTimer.singleShot(3000, lambda: self.check_update(silent=True))  # ពិនិត្យ Update ស្ងាត់ៗ
         self._update_timer = QTimer(self)  # បើកកម្មវិធីយូរ → ពិនិត្យរៀងរាល់ 1 ម៉ោង
@@ -2697,6 +2698,43 @@ class MainWindow(QMainWindow):
         self.offer_ffmpeg()
         return False
 
+    # ================= 🛠 រៀបចំកុំព្យូទ័រពេលបើកលើកដំបូង =================
+
+    def _first_setup(self):
+        """ពិនិត្យនៅខាងក្រោយ (nvidia-smi ចំណាយពេល) → ខ្វះអ្វី = បង្ហាញបញ្ជី ហើយដំឡើងម្តងមួយៗ"""
+        sp = self.simple_page
+        asr, novocal = sp.asr.currentData(), sp.novocal.isChecked()
+        worker = Worker(lambda: setup_check.plan(asr, novocal))
+        worker.done.connect(self._setup_show)
+        worker.failed.connect(lambda e: (self._file_log(f"setup check: {e[-200:]}"), self.offer_ffmpeg(startup=True)))
+        self._start_worker(worker)
+
+    def _setup_show(self, steps):
+        if not steps or self.busy:
+            return
+        self._log("🛠 រៀបចំកុំព្យូទ័រ: " + " · ".join(s.title for s in steps))
+        self.set_busy(True)
+        self.simple_page.headline.setText("🛠 កំពុងរៀបចំកុំព្យូទ័រ (ម្តងគត់)...")
+        self.setup_dlg = setup_check.SetupDialog(self, steps, self._setup_done)
+        self.setup_dlg.setStyleSheet(self.simple_page.styleSheet())
+        self.setup_dlg.show()
+        self._setup_timer = QTimer(self)
+        self._setup_timer.timeout.connect(lambda: self.sysbar.set_download(*(self.setup_dlg.progress() or (None,))))
+        self._setup_timer.start(300)
+
+    def _setup_done(self, ok):
+        self._setup_timer.stop()
+        self.sysbar.set_download(None)
+        self.set_busy(False)
+        for st in self.setup_dlg.steps:
+            line = f"🛠 {st.title}: {'✓' if st.state == 'ok' else '✕ ' + st.detail}"
+            self._log(line)
+            self._file_log(line)
+        self._gpu_check()  # ffmpeg / CUDA ទើបមាន → រក encoder និងស្ថានភាព GPU ឡើងវិញ
+        self._ov_timer.start(50)
+        self.simple_page.headline.setText("✅ កុំព្យូទ័ររួចរាល់ — ទម្លាក់ Folder រឿង ហើយចុច ▶" if ok else
+                                          "⚠ ដំឡើងខ្លះមិនបាន — ពិនិត្យអ៊ីនធឺណិត (នឹងសាកម្តងទៀតពេលបើកលើកក្រោយ)")
+
     def offer_ffmpeg(self, startup=False):
         """ffmpeg មិនទាន់មាន → ទាញយកដោយស្វ័យប្រវត្តិ (~115MB, ម្តងគត់) មិនសួរ — គ្មាន ffmpeg កម្មវិធីធ្វើអ្វីមិនបាន
         វឌ្ឍនភាព: របារខាងក្រោម + អេក្រង់ LCD កណ្តាល · បរាជ័យ (គ្មានអ៊ីនធឺណិត) → សាកម្តងទៀតពេលចុចប៊ូតុងបន្ទាប់"""
@@ -4167,6 +4205,11 @@ class MainWindow(QMainWindow):
 
     def _simple_start(self):
         sp = self.simple_page
+        dlg = getattr(self, "setup_dlg", None)
+        if dlg and not dlg.finished:  # កំពុងរៀបចំកុំព្យូទ័រ → បង្ហាញផ្ទាំងវិញ
+            dlg.show()
+            dlg.raise_()
+            return sp.headline.setText("🛠 កំពុងរៀបចំកុំព្យូទ័រ (ម្តងគត់) — សូមរង់ចាំឱ្យចប់សិន")
         if self.busy or sp.running() or not self._check_ffmpeg():
             return
         stories = sp.stories()
