@@ -476,6 +476,11 @@ class SimplePage(QWidget):
         self.key.setPlaceholderText("bayon_sk_... ឬ AIza... (ច្រើន key បំបែកដោយ ,)")
         self.key.setToolTip("key ច្រើន → key មានបញ្ហា ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ")
         sl.addWidget(self.key)
+        self.base_url = QLineEdit()
+        self.base_url.setPlaceholderText("Server ផ្ទាល់ខ្លួន (ទុកទទេ = Bayon/Google) ឧ. http://100.x.x.x:5560/v1")
+        self.base_url.setToolTip("Base URL នៃ server OpenAI-compatible (ឧ. Gemini Router របស់ម្ចាស់តាម Tailscale)\n"
+                                 "key ដែលមិនមែន AIza… នឹងទៅ server នេះជំនួស Bayon")
+        sl.addWidget(self.base_url)
         self.key_state = QLabel("")
         self.key_state.setObjectName("simpleMuted")
         self.key_state.setWordWrap(True)

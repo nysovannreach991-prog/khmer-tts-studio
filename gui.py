@@ -2698,27 +2698,32 @@ class MainWindow(QMainWindow):
         return False
 
     def offer_ffmpeg(self, startup=False):
-        """ffmpeg មិនទាន់មាន → សួរ ហើយទាញយកដោយស្វ័យប្រវត្តិ (~115MB)"""
-        if ffmpeg_setup.available() or getattr(self, "_ff_downloading", False) or self.busy:
+        """ffmpeg មិនទាន់មាន → ទាញយកដោយស្វ័យប្រវត្តិ (~115MB, ម្តងគត់) មិនសួរ — គ្មាន ffmpeg កម្មវិធីធ្វើអ្វីមិនបាន
+        វឌ្ឍនភាព: របារខាងក្រោម + អេក្រង់ LCD កណ្តាល · បរាជ័យ (គ្មានអ៊ីនធឺណិត) → សាកម្តងទៀតពេលចុចប៊ូតុងបន្ទាប់"""
+        sp = self.simple_page
+        if ffmpeg_setup.available():
             return
-        text = ("កម្មវិធីត្រូវការ ffmpeg សម្រាប់ដំណើរការសំឡេង និងវីដេអូ។\n\n"
-                "ទាញយក និងដំឡើងដោយស្វ័យប្រវត្តិឥឡូវនេះ? (~115 MB, ធ្វើតែម្តង)")
-        if QMessageBox.question(self, "ត្រូវការ ffmpeg", text) != QMessageBox.Yes:
+        if getattr(self, "_ff_downloading", False):
             if not startup:
-                self.set_status(ffmpeg_setup.MISSING_MSG, True)
+                sp.headline.setText("⏳ កំពុងទាញយក ffmpeg — សូមរង់ចាំបន្តិច រួចចុចម្តងទៀត")
+            return
+        if self.busy:
             return
         self._ff_downloading = True
         self._ff_prog = [0, 0]
-        self.begin_stages("ដំឡើង ffmpeg", ["ទាញយក ffmpeg"])
-        self.enter_stage("ទាញយក ffmpeg")
-        self.set_busy(True, "កំពុងទាញយក ffmpeg...")
+        self.set_busy(True)
+        sp.headline.setText("⬇ កំពុងទាញយក ffmpeg (ម្តងគត់)...")
+        self._log("⬇ មិនទាន់មាន ffmpeg — កំពុងទាញយកដោយស្វ័យប្រវត្តិ (~115 MB)")
         poll = QTimer(self)
 
         def tick():
             done, total = self._ff_prog
             if total:
-                self.progress.setValue(int(done * 100 / total))
-                self.progress.setFormat(f"{done / 1e6:.0f}/{total / 1e6:.0f} MB · %p%")
+                size = f"{done / 2 ** 20:,.0f}/{total / 2 ** 20:,.0f} MB"
+                self.sysbar.set_download(done / total, f"⬇ ffmpeg  {size}")
+                sp.headline.setText(f"⬇ ទាញយក ffmpeg (ម្តងគត់) {done * 100 / total:.0f}% · {size}")
+            else:
+                self.sysbar.set_download(-1, "⬇ ffmpeg — កំពុងភ្ជាប់...")
 
         poll.timeout.connect(tick)
         poll.start(300)
@@ -2726,13 +2731,18 @@ class MainWindow(QMainWindow):
         def finish(ok, msg):
             poll.stop()
             self._ff_downloading = False
+            self.sysbar.set_download(None)
+            self.set_busy(False)
             if ok:
-                self.set_busy(False)
-                threading.Thread(target=overlay.pick_encoder, daemon=True).start()
-                self.set_result(None, "✓ បានដំឡើង ffmpeg — អាចប្រើកម្មវិធីបានហើយ")
+                self._gpu_check()  # ffmpeg ទើបមាន → រក GPU encoder (NVENC/QSV/AMF) ឡើងវិញ
+                sp.headline.setText("✓ បានដំឡើង ffmpeg — អាចប្រើកម្មវិធីបានហើយ")
+                self._log("✓ បានដំឡើង ffmpeg")
                 self._ov_timer.start(50)
             else:
-                self.fail(msg)
+                err = msg.strip().splitlines()[-1][:160] if msg.strip() else ""
+                sp.headline.setText("✕ ទាញយក ffmpeg មិនបាន — ពិនិត្យអ៊ីនធឺណិត ហើយចុច ▶ ម្តងទៀត")
+                self._log(f"✕ ទាញយក ffmpeg មិនបាន: {err}")
+                self._file_log(f"✕ ffmpeg download: {err}")
 
         def progress(done, total):
             self._ff_prog = [done, total]
@@ -4127,6 +4137,15 @@ class MainWindow(QMainWindow):
         sp.gd_url.textChanged.connect(lambda t: s.setValue("gd_url", t.strip()))
         sp.gd_secret.textChanged.connect(lambda t: s.setValue("gd_secret", t))
         sp.btn_gd_test.clicked.connect(self._gd_test)
+        # Server OpenAI-compatible ផ្ទាល់ខ្លួន (Base URL) — QSettings តែប៉ុណ្ណោះ
+        backend.OPENAI_BASE_URL = s.value("openai_base_url", "")
+        sp.base_url.setText(backend.OPENAI_BASE_URL)
+
+        def set_base(t):
+            backend.OPENAI_BASE_URL = t.strip()
+            s.setValue("openai_base_url", t.strip())
+            self._simple_key_state()
+        sp.base_url.textChanged.connect(set_base)
         self._show_simple()
 
     def _simple_key_state(self):
@@ -4137,8 +4156,14 @@ class MainWindow(QMainWindow):
         else:
             n = len(backend.parse_keys(key))
             more = f" · {n} key (ប្តូរខ្លួនឯងពេលមានបញ្ហា)" if n > 1 else ""
-            sp.key_state.setText(("✓ Bayon Gateway — Gemini 3.8 Flash" if backend.is_gateway_key(key)
-                                  else "✓ Gemini API (Google)") + more)
+            if backend._custom_url() and not all(k.startswith(("AIza", "bayon_sk_")) for k in backend.parse_keys(key)):
+                who = f"✓ Server ផ្ទាល់ខ្លួន — {backend.OPENAI_BASE_URL}"
+            elif backend._custom_url():  # មាន Base URL តែ key ជា Bayon/Google → មិនទៅ Server ទេ
+                who = ("⚠ មាន Server ផ្ទាល់ខ្លួន តែ key ជា Bayon/Google → បកប្រែតាម Bayon/Google · "
+                       "ចង់ប្រើ Server សូមដាក់ key sk-… ដែលម្ចាស់ផ្តល់ឱ្យ")
+            else:
+                who = "✓ Bayon Gateway — Gemini 3.8 Flash" if backend.is_gateway_key(key) else "✓ Gemini API (Google)"
+            sp.key_state.setText(who + more)
 
     def _simple_start(self):
         sp = self.simple_page

@@ -249,6 +249,16 @@ def split_text(text, limit=GEMINI_CHUNK_CHARS):
 
 
 BAYON_URL = "https://bayongateway.com/v1/chat/completions"
+# Server OpenAI-compatible ផ្ទាល់ខ្លួន (ឧ. Gemini Router របស់ម្ចាស់តាម Tailscale) — GUI កំណត់ពី QSettings
+# មាន → key ដែលមិនមែន Google (AIza…) ទៅទីនេះជំនួស Bayon
+OPENAI_BASE_URL = ""
+
+
+def _custom_url():
+    base = OPENAI_BASE_URL.strip().rstrip("/")
+    if not base:
+        return ""
+    return base if base.endswith("/chat/completions") else base + "/chat/completions"
 # model ដែល Bayon មិនមាន → model ជិតបំផុតដែលមាន
 BAYON_MODELS = {"gemini-3.5-flash": "gemini-3.8-flash", "gemini-3.1-pro-preview": "gemini-3.7-pro",
                 "gemini-2.5-flash": "gemini-3-flash"}
@@ -262,7 +272,8 @@ def clean_key(key):
     return key.split()[0] if key.split() else ""
 
 
-_KEY_RE = re.compile(r"bayon_sk_[A-Za-z0-9_\-]+|AIza[0-9A-Za-z_\-]{30,}")
+# sk-… = key server ផ្ទាល់ខ្លួន (ឧ. sk-team-… របស់ Share Gate) — កុំឱ្យបាត់ពេលដាក់ជាមួយ key Bayon/Google
+_KEY_RE = re.compile(r"bayon_sk_[A-Za-z0-9_\-]+|AIza[0-9A-Za-z_\-]{30,}|\bsk-[A-Za-z0-9_\-]{16,}")
 
 
 def parse_keys(text):
@@ -278,9 +289,10 @@ def join_keys(text):
 
 
 def is_gateway_key(key):
-    """True = key ទាំងអស់ជា Bayon (មិនអាចប្រើ Gemini TTS)"""
+    """True = key ទាំងអស់ជា Bayon / server ផ្ទាល់ខ្លួន (មិនអាចប្រើ Gemini TTS)"""
     keys = parse_keys(key)
-    return bool(keys) and all(k.startswith("bayon_sk_") for k in keys)
+    return bool(keys) and all(k.startswith("bayon_sk_") or (_custom_url() and not k.startswith("AIza"))
+                              for k in keys)
 
 
 # key ដែលមានបញ្ហា → រំលងរហូតដល់ពេលនេះ (time.time()) · key_switch_hook(msg) ប្រាប់ GUI ពេលប្តូរ key
@@ -340,11 +352,13 @@ def _timeout(body):
     return 300 if has_audio or "AUDIO" in config.get("responseModalities", []) else 120
 
 
-def _gateway_post(api_key, model, body):
-    """Bayon Gateway (OpenAI chat/completions) — បម្លែង body ទម្រង់ Gemini ទៅ/មក ដើម្បីឱ្យកូដផ្សេងមិនបាច់ដឹង"""
+def _gateway_post(api_key, model, body, url=None):
+    """Bayon Gateway ឬ server OpenAI-compatible ផ្ទាល់ខ្លួន (url) — បម្លែង body ទម្រង់ Gemini ទៅ/មក
+    ដើម្បីឱ្យកូដផ្សេងមិនបាច់ដឹង"""
+    name = "Server ផ្ទាល់ខ្លួន" if url else "Bayon"
     config = body.get("generationConfig", {})
     if "AUDIO" in config.get("responseModalities", []):
-        raise RuntimeError("Gemini TTS មិនអាចប្រើតាម Bayon key បានទេ — សូមប្រើ Edge TTS (ឥតគិតថ្លៃ) "
+        raise RuntimeError(f"Gemini TTS មិនអាចប្រើតាម {name} បានទេ — សូមប្រើ Edge TTS (ឥតគិតថ្លៃ) "
                            "ឬ Gemini API Key ពី Google (AIza...)")
     content = []
     for part in body["contents"][0]["parts"]:
@@ -358,12 +372,14 @@ def _gateway_post(api_key, model, body):
     if want_json:
         schema = json.dumps(_schema_lower(config.get("responseSchema", {})), ensure_ascii=False)
         content.append({"type": "text", "text": f"Reply with ONLY valid JSON (no markdown) matching this JSON schema: {schema}"})
-    payload = {"model": BAYON_MODELS.get(model, model), "messages": [{"role": "user", "content": content}],
+    payload = {"model": model if url else BAYON_MODELS.get(model, model),
+               "messages": [{"role": "user", "content": content}],
                "reasoning_effort": "low"}  # low = លឿនជាងច្រើនដង គុណភាពដដែល
-    req = urllib.request.Request(BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
+    req = urllib.request.Request(url or BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", "Authorization": f"Bearer {clean_key(api_key)}"})
     try:
-        with urllib.request.urlopen(req, timeout=_timeout(body)) as resp:
+        # server ផ្ទាល់ខ្លួន (Router តាម Chrome) យឺត ហើយរង់ចាំជាជួរពេលមិត្តភក្តិច្រើនប្រើ → រង់ចាំយូរជាង
+        with urllib.request.urlopen(req, timeout=max(_timeout(body), 300) if url else _timeout(body)) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
@@ -371,11 +387,18 @@ def _gateway_post(api_key, model, body):
             detail = json.loads(detail)["error"]["message"]
         except Exception:
             pass
-        raise RuntimeError(f"Bayon API error {e.code}: {detail}") from None
+        if url and e.code == 401:
+            detail = (f"key {key_label(clean_key(api_key))} មិនត្រូវ — សូមប្រើ key ដែលម្ចាស់ Server ផ្តល់ឱ្យ "
+                      f"(ឧ. sk-team-… ពី share_gate.json) មិនមែន key Bayon/Router ទេ")
+        raise RuntimeError(f"{name} API error {e.code}: {str(detail)[:300]}") from None
+    except urllib.error.URLError as e:
+        if not url:
+            raise
+        raise RuntimeError(f"{name}: ភ្ជាប់ {url} មិនបាន ({e.reason}) — កុំព្យូទ័រម្ចាស់បើក? Tailscale ភ្ជាប់?") from None
     try:
         text = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
-        raise RuntimeError(f"Bayon ឆ្លើយតបមិនត្រឹមត្រូវ: {json.dumps(data)[:300]}") from None
+        raise RuntimeError(f"{name} ឆ្លើយតបមិនត្រឹមត្រូវ: {json.dumps(data)[:300]}") from None
     return {"candidates": [{"content": {"parts": [{"text": _json_text(text) if want_json else text}]}}]}
 
 
@@ -410,6 +433,8 @@ def _post_one(api_key, model, body):
     api_key = clean_key(api_key)
     if api_key.startswith("bayon_sk_"):
         return _gateway_post(api_key, model, body)
+    if _custom_url() and not api_key.startswith("AIza"):  # key server ផ្ទាល់ខ្លួន (ឧ. sk-…)
+        return _gateway_post(api_key, model, body, url=_custom_url())
     req = urllib.request.Request(
         GEMINI_URL.format(model=model),
         data=json.dumps(body).encode("utf-8"),
