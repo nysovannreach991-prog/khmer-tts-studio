@@ -224,13 +224,27 @@ def _load_audio(media):
     import numpy as np
     import ffmpeg_setup
     ffmpeg_setup.add_to_path()
+    if not ffmpeg_setup.available():
+        try:
+            ffmpeg_setup.download()  # កុំព្យូទ័រគ្មាន ffmpeg → ទាញយកឥឡូវ (~5 វិនាទី តាម GitHub)
+        except Exception:  # noqa: BLE001
+            return media  # ទាញយកមិនបាន → ឲ្យ faster-whisper (PyAV) អានខ្លួនឯង
     try:
-        out = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", media,
-                              "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
-                             capture_output=True, check=True, creationflags=_NO_WINDOW).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return media  # ffmpeg មិនបាន → ឲ្យ faster-whisper អានខ្លួនឯង
-    return np.frombuffer(out, np.float32).copy()
+        proc = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", media,
+                               "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                              capture_output=True, creationflags=_NO_WINDOW)
+    except OSError:
+        return media
+    err = proc.stderr.decode("utf-8", "replace").strip()
+    no_audio = re.search(r"matches no streams|does not contain any stream", err)
+    if no_audio or (proc.returncode == 0 and not proc.stdout):
+        raise RuntimeError(f"វីដេអូនេះគ្មានសំឡេង (audio) — សូមពិនិត្យឯកសារ ឬទាញយកវីដេអូម្តងទៀត: "
+                           f"{os.path.basename(media)}")
+    if proc.returncode:
+        # កុំប្តូរទៅ PyAV (វាបង្ហាញតែ "tuple index out of range") — ប្រាប់មូលហេតុពិតពី ffmpeg
+        raise RuntimeError(f"ffmpeg អានវីដេអូមិនបាន (ឯកសារខូច ឬទាញយកមិនទាន់ចប់?): "
+                           f"{os.path.basename(media)} — {err[-300:]}")
+    return np.frombuffer(proc.stdout, np.float32).copy()
 
 
 def _patch_av():
