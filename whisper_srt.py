@@ -233,6 +233,28 @@ def _load_audio(media):
     return np.frombuffer(out, np.float32).copy()
 
 
+def _patch_av():
+    """PyAV ថ្មី (>=15) លុប metadata_errors ចោល ប៉ុន្តែ faster-whisper នៅតែផ្ញើវា → ទម្លាក់វាចោល"""
+    try:
+        import av
+    except ImportError:
+        return
+    real = av.open
+    if getattr(real, "_aiteam1", False):
+        return
+
+    def open_(*args, **kwargs):
+        try:
+            return real(*args, **kwargs)
+        except TypeError as e:
+            if "metadata_errors" not in str(e):
+                raise
+            kwargs.pop("metadata_errors", None)
+            return real(*args, **kwargs)
+    open_._aiteam1 = True
+    av.open = open_
+
+
 def _transcribe(media, out_srt, model_name, lang, device):
     """ដំណើរការក្នុង process កូន — បោះពុម្ព JSON មួយបន្ទាត់ៗសម្រាប់វឌ្ឍនភាព"""
     for d in gpu_dll_dirs():  # cuBLAS / cuDNN ពី pip (nvidia-*-cu12)
@@ -242,6 +264,7 @@ def _transcribe(media, out_srt, model_name, lang, device):
         except OSError:
             pass
     from faster_whisper import WhisperModel
+    _patch_av()
 
     def say(**msg):
         print(json.dumps(msg, ensure_ascii=False), flush=True)

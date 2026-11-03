@@ -425,6 +425,9 @@ def _gateway_post(api_key, model, body, url=None):
         if url and e.code == 401:
             detail = (f"key {key_label(clean_key(api_key))} មិនត្រូវ — សូមប្រើ key ដែលម្ចាស់ Server ផ្តល់ឱ្យ "
                       f"(ឧ. sk-team-… ពី share_gate.json) មិនមែន key Bayon/Router ទេ")
+        elif not url and (e.code == 402 or "credit" in str(detail).lower()):
+            detail = (f"key {key_label(clean_key(api_key))} អស់ credit — បញ្ចូលលុយនៅ bayongateway.com "
+                      f"ឬប្តូរ key ក្នុង ⚙ ការកំណត់ ({str(detail)[:120]})")
         raise RuntimeError(f"{name} API error {e.code}: {str(detail)[:300]}") from None
     except urllib.error.URLError as e:
         if not url:

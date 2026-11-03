@@ -1,9 +1,9 @@
 {
-  "version": "2.1.5",
-  "notes": "កែលម្អ និងជួសជុលកំហុស",
+  "version": "2.1.6",
+  "notes": "ជួសជុល Whisper (metadata_errors) និងសារ Bayon អស់ credit",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
-    "app.py": "0923d51145f6425900d581f1b7780cff82e4a0a24114ded95845ac7b82db3fb7",
+    "app.py": "f638dd319a34d26331e1b0ea73137f43f64b00b38ad59c7644834667da5350be",
     "auto_pipeline.py": "46cc69d4e48408cf6e6e276a400d07d408830ad58c312c1f7aa4348f4dc75cbf",
     "ed25519.py": "fdfa894401dffbb67e7c1c8b930d4023344cbc677c7af21a9b2a93e9ae897060",
     "explorer.py": "aea834ef20141ac37b14c518e861be4ee8a17db8a7fd338dde004084f998b614",
@@ -38,6 +38,6 @@
     "video_merge.py": "acfb10d064bfdfaee4e3546cfd2809273877ac4cba3f2da15be69ed100a79417",
     "vocal_remove.py": "f07cb0424ca8336d35f1d0d79cdc86f4e10fd12a5dee7251f2b734b6114ed5a3",
     "watermark.py": "71d4b372977b8bbf853ddd143b83c6e12395a33fae73a43c458f32811602dabb",
-    "whisper_srt.py": "b4de61a1564709a0216d2ff33b44e84417d198cc44e5cbf19722cf6019eba6ba"
+    "whisper_srt.py": "8e06944b7a1bd34e0ef286eb28c23dd4593a56caccdd7361570eb5a2e0f8110f"
   }
 }
