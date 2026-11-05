@@ -28,7 +28,8 @@ def _probe(path):
         "duration": float(info["format"].get("duration") or 0),
         "video": (v.get("codec_name"), v.get("width"), v.get("height"), v.get("pix_fmt"),
                   v.get("r_frame_rate"), v.get("profile")),
-        "audio": (a.get("codec_name"), a.get("sample_rate"), a.get("channels")) if a else None,
+        # profile: HE-AAC ≠ AAC-LC — ចម្លងផ្ទាល់ចូលគ្នា → សំឡេងខូចចាប់ពីផ្នែកដែលប្តូរ (ffmpeg "Error number -1145393733")
+        "audio": (a.get("codec_name"), a.get("profile"), a.get("sample_rate"), a.get("channels")) if a else None,
         "width": v.get("width"), "height": v.get("height"),
         "fps": float(Fraction(v.get("r_frame_rate") or "25/1")) or 25.0,
     }
@@ -59,6 +60,24 @@ def _concat_copy(paths, out, total, job, tmp):
             f.write("file '" + os.path.abspath(p).replace("'", "'\\''") + "'\n")
     _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", lst, "-map", "0:v:0", "-map", "0:a:0?",
                  "-c", "copy", "-movflags", "+faststart", out], total, job)
+
+
+def _concat_audio_fix(paths, infos, out, total, job, tmp):
+    """វីដេអូដូចគ្នា តែសំឡេងខុសគ្នា (ឧ. HE-AAC + AAC-LC) → encode តែសំឡេងនៃផ្នែកនីមួយៗជា AAC-LC ដូចគ្នា
+    ចម្លងរូបភាពផ្ទាល់ (លឿនជាង encode វីដេអូទាំងមូលច្រើន) រួចភ្ជាប់ដោយចម្លងផ្ទាល់"""
+    parts, offset = [], 0.0
+    for i, (p, info) in enumerate(zip(paths, infos)):
+        if info["audio"]:
+            src = ["-i", p, "-map", "0:v:0", "-map", "0:a:0", "-af", "aresample=48000,apad"]
+        else:
+            src = ["-i", p, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]
+        part = os.path.join(tmp, f"a{i:04d}.mp4")
+        share = 95 * info["duration"] / (total or 1)
+        _run_ffmpeg([*src, "-t", f"{info['duration']:.3f}", "-c:v", "copy", "-c:a", "aac", "-profile:a", "aac_low",
+                     "-b:a", "192k", "-ar", "48000", "-ac", "2", part], info["duration"], _Scaled(job, offset, share))
+        parts.append(part)
+        offset += share
+    _concat_copy(parts, out, total, _Scaled(job, offset, 100 - offset), tmp)
 
 
 def _concat_reencode(paths, infos, out, total, job, tmp):
@@ -191,7 +210,8 @@ def _run_job(job_id, paths, out_dir, name_base, force_reencode, temp_files):
     try:
         infos = [_probe(p) for p in paths]
         total = sum(i["duration"] for i in infos)
-        same = all(i["video"] == infos[0]["video"] and i["audio"] == infos[0]["audio"] for i in infos)
+        same_video = all(i["video"] == infos[0]["video"] for i in infos)
+        same = same_video and all(i["audio"] == infos[0]["audio"] for i in infos)
         name = f"{name_base}_merged_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
         out = os.path.join(out_dir, name)
         t0 = time.time()
@@ -201,6 +221,14 @@ def _run_job(job_id, paths, out_dir, name_base, force_reencode, temp_files):
                 _concat_copy(paths, out, total, job, tmp)
             except RuntimeError:
                 job["warnings"].append("ការចម្លងផ្ទាល់បរាជ័យ — កំពុង encode ឡើងវិញ")
+                job["mode"] = "reencode"
+                _concat_reencode(paths, infos, out, total, job, tmp)
+        elif same_video and not force_reencode:
+            job["mode"] = "audio"
+            job["warnings"].append("សំឡេងនៃ Part ខុសគ្នា (ឧ. HE-AAC / AAC-LC) — encode តែសំឡេង")
+            try:
+                _concat_audio_fix(paths, infos, out, total, job, tmp)
+            except RuntimeError:
                 job["mode"] = "reencode"
                 _concat_reencode(paths, infos, out, total, job, tmp)
         else:

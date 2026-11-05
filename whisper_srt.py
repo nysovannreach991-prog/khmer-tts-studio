@@ -308,6 +308,34 @@ def _fill_gaps(model, audio, found, language, prompt):
     return extra
 
 
+def _compute_type(device):
+    """កាត GPU ចាស់ (ឧ. GTX 10xx) មិនគាំទ្រ float16 → ប្រើប្រភេទផ្សេងលើ GPU ដដែល (កុំធ្លាក់ទៅ CPU)"""
+    if device != "cuda":
+        return "int8"
+    import ctranslate2
+    ok = ctranslate2.get_supported_compute_types("cuda")
+    return next((t for t in ("float16", "int8_float16", "int8_float32", "float32") if t in ok), "float32")
+
+
+# GPU បរាជ័យ → មូលហេតុជាភាសាខ្មែរ (កម្មវិធីមិនប្តូរទៅ CPU ទេ ព្រោះ CPU យឺតជាង 10–20 ដង)
+_GPU_HINTS = [
+    (r"driver version is insufficient|CUDA driver|cudaErrorInsufficientDriver",
+     "Driver NVIDIA ចាស់ពេក — សូម Update driver ពី nvidia.com/drivers (ឬ GeForce Experience / NVIDIA App) "
+     "រួចបើកកម្មវិធីម្តងទៀត"),
+    (r"out of memory|CUBLAS_STATUS_ALLOC_FAILED",
+     "GPU អស់ VRAM — សូមបិទកម្មវិធីផ្សេងដែលប្រើ GPU (ហ្គេម, Chrome ...) រួចព្យាយាមម្តងទៀត"),
+    (r"cublas|cudnn|\.dll|LoadLibrary|Could not load library",
+     "ឯកសារ CUDA (cuBLAS / cuDNN) ខូច ឬខ្វះ — កម្មវិធីបានដំឡើងឡើងវិញ តែនៅតែមិនដំណើរការ"),
+]
+
+
+def _gpu_error(text):
+    for pattern, hint in _GPU_HINTS:
+        if re.search(pattern, text, re.I):
+            return f"GPU ប្រើមិនបាន: {hint} ({text[-150:]})"
+    return f"GPU ប្រើមិនបាន: {text[-200:]}"
+
+
 def _transcribe(media, out_srt, model_name, lang, device):
     """ដំណើរការក្នុង process កូន — បោះពុម្ព JSON មួយបន្ទាត់ៗសម្រាប់វឌ្ឍនភាព"""
     for d in gpu_dll_dirs():  # cuBLAS / cuDNN ពី pip (nvidia-*-cu12)
@@ -323,8 +351,7 @@ def _transcribe(media, out_srt, model_name, lang, device):
         print(json.dumps(msg, ensure_ascii=False), flush=True)
 
     say(phase="load", device=device)
-    model = WhisperModel(model_name, device=device, compute_type="float16" if device == "cuda" else "int8",
-                         download_root=MODEL_DIR)
+    model = WhisperModel(model_name, device=device, compute_type=_compute_type(device), download_root=MODEL_DIR)
     say(phase="listen", device=device)
     audio = _load_audio(media)
     prompt = "以下是普通话的句子。" if lang == "zh" else None  # ចិនអក្សរសាមញ្ញ
@@ -406,15 +433,26 @@ def start_job(media, out_srt, model_name, lang, use_gpu):
 
     def run():
         try:
-            devices = ["cuda", "cpu"] if use_gpu else ["cpu"]
-            for device in devices:
+            # កុំព្យូទ័រមានកាត NVIDIA → ប្រើតែ GPU ជានិច្ច (មិនធ្លាក់ទៅ CPU ស្ងាត់ៗទេ) · គ្មាន → CPU
+            # use_gpu ទុកសម្រាប់ភាពត្រូវគ្នាជាមួយកូដចាស់ (GUI ខ្លះផ្ញើ False ពេល CUDA មិនទាន់ដំឡើង)
+            if not has_nvidia():
+                run_once("cpu")
+            else:
+                if not gpu_ready():  # cuBLAS / cuDNN មិនទាន់មាន → ដំឡើងឥឡូវ (~1.5 GB ម្តងគត់)
+                    job.update(status="download", done=0, total=100)
+                    pip_install(GPU_PACKAGES)
                 try:
-                    run_once(device)
-                    break
+                    run_once("cuda")
                 except RuntimeError as e:
-                    if device == "cpu":
-                        raise
-                    job["warnings"].append(f"GPU ប្រើមិនបាន ({str(e)[-120:]}) — ប្រើ CPU ជំនួស (យឺតជាង)")
+                    if not re.search(r"cuda|cublas|cudnn|gpu|\.dll|LoadLibrary|float16|out of memory", str(e), re.I):
+                        raise  # មិនមែនបញ្ហា GPU (ឧ. វីដេអូគ្មានសំឡេង) → ប្រាប់ដដែល
+                    if not re.search(_GPU_HINTS[2][0], str(e), re.I):
+                        raise RuntimeError(_gpu_error(str(e))) from None
+                    pip_install(["--force-reinstall", "--no-deps", *GPU_PACKAGES])  # DLL ខូច → ដំឡើងឡើងវិញម្តង
+                    try:
+                        run_once("cuda")
+                    except RuntimeError as e2:
+                        raise RuntimeError(_gpu_error(str(e2))) from None
             job["done"] = job["total"]
             job["status"] = "done"
         except Exception as e:  # noqa: BLE001
