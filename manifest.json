@@ -1,6 +1,6 @@
 {
-  "version": "2.1.7",
-  "notes": "កែលម្អ និងជួសជុលកំហុស",
+  "version": "2.1.8",
+  "notes": "SRT ចាប់ការនិយាយបានគ្រប់ (ពាក្យខ្លីៗ មិនបាត់)",
   "files": {
     "ads.py": "8b7f2671cbdf2c0315769764470e56fd1ba854aae21f066fc00701479f4f2569",
     "app.py": "f638dd319a34d26331e1b0ea73137f43f64b00b38ad59c7644834667da5350be",
@@ -38,6 +38,6 @@
     "video_merge.py": "acfb10d064bfdfaee4e3546cfd2809273877ac4cba3f2da15be69ed100a79417",
     "vocal_remove.py": "f07cb0424ca8336d35f1d0d79cdc86f4e10fd12a5dee7251f2b734b6114ed5a3",
     "watermark.py": "71d4b372977b8bbf853ddd143b83c6e12395a33fae73a43c458f32811602dabb",
-    "whisper_srt.py": "f7c3aae8a3ffcd29bf7188b1ae967c8c485f2683494ddccb1ff2cd21312521c9"
+    "whisper_srt.py": "6840e780bd1aaef39704233cf2baae72e1093663acd2a0d8d6dd55f3846357e3"
   }
 }

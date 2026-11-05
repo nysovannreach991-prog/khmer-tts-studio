@@ -26,8 +26,9 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "AITeam1")
 MODEL_DIR = os.path.join(DATA_DIR, "whisper")
 # (ឈ្មោះ model, ស្លាក, ទំហំប្រហែល MB)
-MODELS = [("small", "⚡ លឿន · small", 480), ("large-v3-turbo", "👍 ល្អ · turbo", 1600),
-          ("large-v3", "🏆 ល្អបំផុត · large-v3", 3100)]
+# សាកលើរឿងចិន: turbo ចាប់ការនិយាយបានច្រើនជាង large-v3 (large-v3 រំលងប្រយោគពេលមានភ្លេង) ហើយលឿនជាង 5–10 ដង
+MODELS = [("small", "⚡ លឿន · small", 480), ("large-v3-turbo", "🏆 ល្អបំផុត · turbo", 1600),
+          ("large-v3", "large-v3 (យឺត)", 3100)]
 LANGUAGES = [("", "🔍 រកឃើញខ្លួនឯង"), ("zh", "中文 ចិន"), ("en", "English"), ("th", "ไทย ថៃ"), ("ko", "한국어 កូរ៉េ"),
              ("ja", "日本語 ជប៉ុន"), ("vi", "Tiếng Việt"), ("id", "Indonesia"), ("hi", "हिन्दी ហិណ្ឌូ"),
              ("km", "ខ្មែរ")]
@@ -269,6 +270,44 @@ def _patch_av():
     av.open = open_
 
 
+# សាកលើរឿងចិនពិត: VAD ដើម (threshold 0.5, ស្ងាត់ 2វិ) រំលងពាក្យខ្លីៗ ("好了", "我送你吧") និងសំឡេងតិចៗក្រោមភ្លេង
+ASR_OPTS = dict(
+    vad_filter=True, vad_parameters=dict(threshold=0.25, min_silence_duration_ms=500, speech_pad_ms=300),
+    condition_on_previous_text=False,  # កុំឱ្យជាប់ធ្វើដដែលៗ (hallucination) ក្នុងរឿងវែង
+    no_speech_threshold=0.9, log_prob_threshold=None,  # កុំបោះចោលប្រយោគដែល model មិនសូវប្រាកដ
+    compression_ratio_threshold=2.6, beam_size=5, temperature=[0.0, 0.2, 0.4])
+# អក្សរដែល Whisper បង្កើតលើភ្លេង/ស្ងាត់ (មិនមែនការនិយាយពិត)
+_FAKE = re.compile(r"字幕|订阅|點贊|点赞|关注|謝謝觀看|谢谢观看|独播剧场|獨播劇場|Amara|Subtitles? by|"
+                   r"Thanks for watching|請不吝|请不吝|明镜", re.I)
+
+
+def _fill_gaps(model, audio, found, language, prompt):
+    """កន្លែងដែល VAD រសើប (0.2) ឮសំឡេងនិយាយ តែជុំទី 1 គ្មាន subtitle → ស្តាប់តែឃ្លានោះម្តងទៀត"""
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+    sr = 16000
+    spans = [(words[0][0], words[-1][1]) for words in found]
+    extra = []
+    chunks = get_speech_timestamps(audio, VadOptions(threshold=0.2, min_silence_duration_ms=300, speech_pad_ms=100))
+    for c in chunks:
+        a, b = c["start"] / sr, c["end"] / sr
+        covered = sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans)
+        if b - a < 0.4 or covered > 0.3 * (b - a):
+            continue  # មាន subtitle រួចហើយ (ឬខ្លីពេក)
+        start = max(0.0, a - 0.3)
+        segs, _ = model.transcribe(audio[int(start * sr): int((b + 0.3) * sr)], language=language,
+                                   word_timestamps=True, initial_prompt=prompt, vad_filter=False,
+                                   condition_on_previous_text=False, beam_size=5)
+        for s in segs:
+            text = s.text.strip()
+            if not text or s.no_speech_prob > 0.6 or s.avg_logprob < -1.0 or _FAKE.search(text):
+                continue
+            words = [(start + w.start, start + w.end, w.word) for w in (s.words or [])] or \
+                    [(start + s.start, start + s.end, s.text)]
+            if all(max(0.0, min(words[-1][1], y) - max(words[0][0], x)) < 0.3 for x, y in spans):
+                extra.append(words)
+    return extra
+
+
 def _transcribe(media, out_srt, model_name, lang, device):
     """ដំណើរការក្នុង process កូន — បោះពុម្ព JSON មួយបន្ទាត់ៗសម្រាប់វឌ្ឍនភាព"""
     for d in gpu_dll_dirs():  # cuBLAS / cuDNN ពី pip (nvidia-*-cu12)
@@ -287,16 +326,23 @@ def _transcribe(media, out_srt, model_name, lang, device):
     model = WhisperModel(model_name, device=device, compute_type="float16" if device == "cuda" else "int8",
                          download_root=MODEL_DIR)
     say(phase="listen", device=device)
-    segments, info = model.transcribe(
-        _load_audio(media), language=lang or None, vad_filter=True, word_timestamps=True,
-        condition_on_previous_text=False,  # កុំឱ្យជាប់ធ្វើដដែលៗ (hallucination) ក្នុងរឿងវែង
-        initial_prompt="以下是普通话的句子。" if lang == "zh" else None)  # ចិនអក្សរសាមញ្ញ
+    audio = _load_audio(media)
+    prompt = "以下是普通话的句子。" if lang == "zh" else None  # ចិនអក្សរសាមញ្ញ
+    segments, info = model.transcribe(audio, language=lang or None, word_timestamps=True, **ASR_OPTS,
+                                      initial_prompt=prompt)
     say(phase="listen", total=round(info.duration, 1), language=info.language)
-    lines = []
+    found = []
     for seg in segments:
-        words = [(w.start, w.end, w.word) for w in (seg.words or [])] or [(seg.start, seg.end, seg.text)]
-        lines += split_words(words)
         say(progress=round(seg.end, 1))
+        if _FAKE.search(seg.text) and len(seg.text.strip()) < 30:
+            continue
+        found.append([(w.start, w.end, w.word) for w in (seg.words or [])] or [(seg.start, seg.end, seg.text)])
+    if not isinstance(audio, str):  # ជុំទី 2: ស្តាប់កន្លែងដែលមានសំឡេងនិយាយ តែគ្មាន subtitle ម្តងទៀត
+        found += _fill_gaps(model, audio, found, info.language, prompt)
+    found.sort(key=lambda words: words[0][0])
+    lines = []
+    for words in found:
+        lines += split_words(words)
     with open(out_srt, "w", encoding="utf-8") as f:
         for i, (a, b, text) in enumerate(lines, 1):
             f.write(f"{i}\n{_fmt(a)} --> {_fmt(b)}\n{text}\n\n")
