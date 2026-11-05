@@ -18,7 +18,8 @@ def _probe(path):
     proc = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
                           capture_output=True, creationflags=_NO_WINDOW)
     if proc.returncode != 0:
-        raise RuntimeError(f"មិនអាចអាន {os.path.basename(path)}")
+        raise RuntimeError(f"មិនអាចអាន {os.path.basename(path)} — ឯកសារខូច ឬទាញយកមិនទាន់ចប់ "
+                           f"(សូមទាញយក Part នេះម្តងទៀត ឬលុបវាចេញ)")
     info = json.loads(proc.stdout.decode("utf-8", "replace"))
     v = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
     a = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)

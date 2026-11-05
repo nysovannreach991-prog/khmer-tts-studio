@@ -11,6 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import numpy as np
 
 SAMPLE_RATE = 24000
+CATCHUP_MAX = 2.0  # បន្ទាត់វែងពេក (ក្រោយ max_speed) នឹងរុញបន្ទាត់បន្ទាប់ឱ្យយឺត → ពន្លឿនបន្ថែមរហូតដល់ 2x
 STALL_SECONDS = 240  # គ្មានបន្ទាត់ណាចប់ក្នុងរយៈពេលនេះ = ជាប់ → ធ្វើបន្ទាត់នោះម្តងទៀត
 _TIME_RE = re.compile(r"(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)")
 
@@ -130,22 +131,24 @@ class Skipped(Exception):
 
 
 def _synth_edge(text, voice, opts, edge_audio):
-    try:
-        mp3 = edge_audio(text, voice, opts["rate"], opts["pitch"], opts["volume"])
-    except RuntimeError as e:
-        if "No audio" not in str(e) and "មិនបានផ្ញើសំឡេង" not in str(e):
-            raise
-        # Edge មិនផ្ញើសំឡេង = អត្ថបទមានតែអក្សរដែលសំឡេងនេះអានមិនបាន ឬតែវណ្ណយុត្តិ
-        if voice.startswith(("zh-", "ja-", "ko-")):
-            raise Skipped() from None
-        clean = _UNSPEAKABLE.sub(" ", text).strip()
-        if clean == text or not _HAS_WORD.search(clean):
-            raise Skipped() from None
+    for attempt in range(3):
         try:
-            mp3 = edge_audio(clean, voice, opts["rate"], opts["pitch"], opts["volume"])
-        except RuntimeError:
-            raise Skipped() from None
-    return decode_to_pcm(mp3)
+            return decode_to_pcm(edge_audio(text, voice, opts["rate"], opts["pitch"], opts["volume"]))
+        except RuntimeError as e:
+            if "No audio" not in str(e) and "មិនបានផ្ញើសំឡេង" not in str(e):
+                raise
+            # ពេលស្របគ្នាច្រើន Edge ជួនកាលមិនផ្ញើសំឡេងមួយភ្លែត (អត្ថបទដដែលអានបានពេលសាកម្តងទៀត)
+            time.sleep(1 + attempt)
+    # នៅតែគ្មានសំឡេង = អត្ថបទមានតែអក្សរដែលសំឡេងនេះអានមិនបាន ឬតែវណ្ណយុត្តិ
+    if voice.startswith(("zh-", "ja-", "ko-")):
+        raise Skipped()
+    clean = _UNSPEAKABLE.sub(" ", text).strip()
+    if clean == text or not _HAS_WORD.search(clean):
+        raise Skipped()
+    try:
+        return decode_to_pcm(edge_audio(clean, voice, opts["rate"], opts["pitch"], opts["volume"]))
+    except RuntimeError:
+        raise Skipped() from None
 
 
 def _synth_gemini(text, voice, opts, gemini_call):
@@ -185,6 +188,7 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
     """បង្កើតសំឡេងគ្រប់បន្ទាត់ ហើយដាក់តាមពេលវេលា — ត្រឡប់ PCM int16 (SAMPLE_RATE, mono)"""
     synth_fn = _synth_gemini if engine == "gemini" else _synth_edge
     backend = gemini_call if engine == "gemini" else edge_audio
+    factors = [1.0] * len(cues)  # ល្បឿនដែលបានពន្លឿនរួច (ក្នុង synth)
 
     def synth(i):
         # cue["voice"] = សំឡេងស្រី/ប្រុសដែលជ្រើសដោយស្វ័យប្រវត្តិ
@@ -198,7 +202,8 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
         next_start = cues[i + 1]["start"] if i + 1 < len(cues) else cue["end"]
         slot = (max(cue["end"], next_start) - cue["start"]) * SAMPLE_RATE // 1000
         if fit and slot > 0 and len(clip) > slot:
-            clip = speed_up(clip, min(len(clip) / slot, max_speed))
+            factors[i] = min(len(clip) / slot, max_speed)
+            clip = speed_up(clip, factors[i])
         return clip
 
     def respawn(i):
@@ -253,7 +258,16 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
 
     job["status"] = "mixing"
     pieces, cursor = [], 0  # cursor = ចុងបញ្ចប់នៃ clip មុន (គិតជា sample)
-    for cue, clip in zip(cues, clips):
+    limit = max(CATCHUP_MAX, max_speed)
+    for n, (cue, clip) in enumerate(zip(cues, clips)):
+        start = max(cue["start"] * SAMPLE_RATE // 1000, cursor)
+        # វែងជាងពេលវេលា (រហូតដល់បន្ទាត់បន្ទាប់) → ពន្លឿនបន្ថែម កុំឱ្យបន្ទាត់បន្ទាប់ៗយឺតជាប់ៗគ្នា
+        nxt = cues[n + 1]["start"] * SAMPLE_RATE // 1000 if n + 1 < len(cues) else None
+        if fit and nxt and len(clip) and start + len(clip) > nxt and factors[n] < limit:
+            room = nxt - start
+            extra = min(len(clip) / room, limit / factors[n]) if room > SAMPLE_RATE // 10 else limit / factors[n]
+            if extra > 1.02:
+                clip = speed_up(clip, extra)
         start = cue["start"] * SAMPLE_RATE // 1000
         if cursor > start:
             job["warnings"].append(

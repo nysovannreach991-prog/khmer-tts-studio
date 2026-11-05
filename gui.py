@@ -2719,7 +2719,7 @@ class MainWindow(QMainWindow):
     def _first_setup(self):
         """ពិនិត្យនៅខាងក្រោយ (nvidia-smi ចំណាយពេល) → ខ្វះអ្វី = បង្ហាញបញ្ជី ហើយដំឡើងម្តងមួយៗ"""
         sp = self.simple_page
-        asr, novocal = sp.asr.currentData(), sp.novocal.isChecked()
+        asr, novocal = sp.asr.currentData(), sp.novocal.isChecked() or sp.clean_voice.isChecked()
         worker = Worker(lambda: setup_check.plan(asr, novocal))
         worker.done.connect(self._setup_show)
         worker.failed.connect(lambda e: (self._file_log(f"setup check: {e[-200:]}"), self.offer_ffmpeg(startup=True)))
@@ -4168,7 +4168,9 @@ class MainWindow(QMainWindow):
         self._select_data(sp.lang, s.value("simple_lang", "zh"))
         sp.use_brand.setChecked(s.value("simple_brand", "false") in (True, "true"))
         sp.novocal.setChecked(s.value("simple_novocal", "false") in (True, "true"))
-        self._select_data(sp.asr, s.value("simple_asr", "whisper"))
+        self._select_data(sp.asr, s.value("simple_asr", "gemini"))
+        sp.clean_voice.setChecked(s.value("simple_clean_voice", "true") in (True, "true"))
+        sp.clean_voice.toggled.connect(lambda on: s.setValue("simple_clean_voice", on))
         sp.asr.currentIndexChanged.connect(lambda _: s.setValue("simple_asr", sp.asr.currentData()))
         sp.novocal.toggled.connect(lambda on: s.setValue("simple_novocal", on))
         # ការកំណត់រួមជាមួយផ្ទាំងធម្មតា
@@ -4236,7 +4238,7 @@ class MainWindow(QMainWindow):
         if not stories:
             return sp.headline.setText("⚠ សូមទម្លាក់ Folder រឿងជាមុនសិន")
         asr = sp.asr.currentData()
-        if asr == "whisper":
+        if asr in ("whisper", "gemini"):
             if not whisper_mod.installed():
                 if QMessageBox.question(self, "ដំឡើង Whisper",
                                         "ការស្តាប់សំឡេង (Whisper turbo) ត្រូវដំឡើងម្តង (~100 MB)។\n"
@@ -4252,7 +4254,7 @@ class MainWindow(QMainWindow):
             return self._simple_install(lambda on_line: whisper_mod.pip_install(funasr_mod.PACKAGES, on_line),
                                         "SenseVoice", self._simple_start)
         novocal = sp.novocal.isChecked()
-        if novocal and not vocal_remove.installed():
+        if (novocal or sp.clean_voice.isChecked()) and not vocal_remove.installed():
             if QMessageBox.question(self, "ដំឡើងមុខងារលុបការនិយាយ",
                                     "លុបសំឡេងនិយាយ (រក្សាភ្លេង) ត្រូវដំឡើង Demucs ម្តង (~100 MB)។\n\n"
                                     "ដំឡើងឥឡូវនេះ?") != QMessageBox.Yes:
@@ -4281,14 +4283,15 @@ class MainWindow(QMainWindow):
                                                    overlays, ads, use_ads=bool(ads)):
             return
         dub = self.voice_settings()
-        dub.update(engine="edge", voice=sp.voice.currentData(), auto_gender=False, api_key="",
+        dub.update(engine="edge", voice=sp.voice.currentData(), auto_gender=True, api_key="",
+                   voice_female="km-KH-SreymomNeural", voice_male="km-KH-PisethNeural",  # ស្រី/ប្រុស តាម Gemini
                    fit=self.fit.isChecked(), max_speed=self.max_speed.value(), format="mp3",
                    workers=max(self.workers.value(), 48))  # Edge ស្របគ្នា 48 → លឿនបំផុតដែលនៅតែស្ថិតស្ថេរ
         part_sec = sp.part.value() * 60
         opts = {"key": key, "model": "gemini-3.8-flash", "engine": asr, "gpu": True, "lang": sp.lang.currentData(),
                 "dub": dub, "dub_setup": backend._dub_setup, "safe_name": backend.safe_name, "out_dir": OUTPUT_DIR,
                 "orig_volume": 1.0 if novocal else 0.0 if sp.mute.isChecked() else self.orig_volume.value() / 100,
-                "novocal": novocal,
+                "novocal": novocal, "clean_voice": sp.clean_voice.isChecked(),
                 "duck": sp.duck.currentIndex() if novocal or not sp.mute.isChecked() else 0,
                 "part_sec": part_sec, "overlays": overlays, "ads": ads,
                 # Upload វីដេអូពេញ → ត្រូវការ _full.mp4 ពេលកាត់ជាផ្នែក
@@ -4453,9 +4456,9 @@ class MainWindow(QMainWindow):
         if not getattr(self, "has_nvidia", None):
             return []
         steps = []
-        if asr == "whisper" and whisper_mod.installed() and not whisper_mod.gpu_ready():
+        if asr in ("whisper", "gemini") and whisper_mod.installed() and not whisper_mod.gpu_ready():
             steps.append(lambda on_line: whisper_mod.pip_install(whisper_mod.GPU_PACKAGES, on_line))
-        if ((asr != "whisper" and funasr_mod.installed()) or (novocal and vocal_remove.installed())) \
+        if ((asr not in ("whisper", "gemini") and funasr_mod.installed()) or (novocal and vocal_remove.installed())) \
                 and not funasr_mod.gpu_ready():
             steps.append(funasr_mod.ensure_gpu_torch)
         return steps

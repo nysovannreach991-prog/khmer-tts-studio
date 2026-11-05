@@ -133,7 +133,7 @@ def plan(asr="whisper", novocal=False):
     if not ffmpeg_setup.available():
         steps.append(Step("ffmpeg", "🎬 ffmpeg (សំឡេង និងវីដេអូ)", "~115 MB", run_ffmpeg))
     nvidia = whisper_srt.has_nvidia()
-    if asr == "whisper":
+    if asr in ("whisper", "gemini"):
         if not whisper_srt.installed():
             steps.append(Step("whisper", "🎙 ម៉ាស៊ីនស្តាប់ Whisper", "~100 MB", _pip([whisper_srt.WHISPER_PACKAGES])))
         if nvidia and not whisper_srt.gpu_ready():

@@ -372,6 +372,7 @@ def _transcribe(media, out_srt, model_name, lang, device):
         lines += split_words(words)
     with open(out_srt, "w", encoding="utf-8") as f:
         for i, (a, b, text) in enumerate(lines, 1):
+            b = max(b, a + 0.3)  # ពាក្យដែល timestamp ចាប់ផ្តើម = បញ្ចប់ → subtitle 0 វិនាទី (អានមិនបាន)
             f.write(f"{i}\n{_fmt(a)} --> {_fmt(b)}\n{text}\n\n")
     say(done=len(lines), language=info.language)
 

@@ -467,6 +467,16 @@ def gemini_post(api_key, model, body):
     raise RuntimeError(f"Key ទាំង {len(order)} មានបញ្ហា — {last}")
 
 
+def hears_audio(api_key):
+    """True = key ទាំងអស់ទៅកាន់ server ដែលស្តាប់សំឡេងបាន (Google / Bayon / Relay)។
+    Server ផ្ទាល់ខ្លួន (Gemini Router តាម Chrome) ទទួលសំឡេងតែមិនបាន upload ទៅ Gemini (សាក: "NO AUDIO")"""
+    for k in parse_keys(api_key) or [clean_key(api_key)]:
+        if _custom_url() and not k.startswith("AIza") and not k.startswith("bayon_sk_") \
+                and not (k.upper().startswith("AT1-") and RELAY_URL):
+            return False
+    return True
+
+
 def _post_one(api_key, model, body):
     api_key = clean_key(api_key)
     if api_key.upper().startswith("AT1-") and RELAY_URL:  # License → Relay របស់ម្ចាស់

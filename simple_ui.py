@@ -433,9 +433,12 @@ class SimplePage(QWidget):
         sl.addWidget(self.lang)
         sl.addWidget(self._label("📝 Model ស្តាប់"))
         self.asr = QComboBox()
-        self.asr.addItem("🎯 Whisper turbo · GPU (ណែនាំ)", "whisper")
+        self.asr.addItem("🤖 Whisper + Gemini · ចាប់ភេទ ស្រី/ប្រុស (ល្អបំផុត)", "gemini")
+        self.asr.addItem("🎯 Whisper turbo · GPU", "whisper")
         self.asr.addItem("⚡ SenseVoice (លឿនបំផុត)", "sensevoice")
-        self.asr.setToolTip("Whisper turbo លើ GPU: ច្បាស់ជាង មិនបាត់ពាក្យខ្លីៗ (ណែនាំ)\n"
+        self.asr.setToolTip("Whisper + Gemini: Whisper ធ្វើ SRT (គ្រប់ពាក្យ ពេលវេលាត្រូវ) រួច Gemini ស្តាប់សំឡេង\n"
+                            "ដើម្បីចាប់ភេទ ស្រី/ប្រុស កែពាក្យខុស និងបកប្រែ → សំឡេងខ្មែរ ស្រី/ប្រុស តាមតួអង្គ\n"
+                            "Whisper turbo លើ GPU: ច្បាស់ មិនបាត់ពាក្យខ្លីៗ (សំឡេងខ្មែរតែមួយ)\n"
                             "SenseVoice: លឿនជាង ~3 ដង តែអាចខុសពាក្យខ្លះ")
         self.asr.currentIndexChanged.connect(lambda _: self._sync_engine_note())
         sl.addWidget(self.asr)
@@ -460,6 +463,11 @@ class SimplePage(QWidget):
         self.novocal.toggled.connect(lambda on: on and self.mute.setChecked(False))
         self.mute.toggled.connect(lambda on: on and self.novocal.setChecked(False))
         sl.addWidget(self.novocal)
+        self.clean_voice = QCheckBox("📞 ចាប់សំឡេងទូរស័ព្ទ / តិចៗក្រោមភ្លេង")
+        self.clean_voice.setToolTip("បំបែកសំឡេងនិយាយចេញពីភ្លេង (Demucs, GPU) មុនស្តាប់ — ចាប់បានការនិយាយតាមទូរស័ព្ទ\n"
+                                    "និងសំឡេងតិចៗដែលលាក់ក្រោមភ្លេង (យឺតជាងបន្តិច ~15%)\n"
+                                    "បើធីក \"លុបតែការនិយាយ\" ផង — ប្រើលទ្ធផលដដែល មិនយឺតបន្ថែម")
+        sl.addWidget(self.clean_voice)
         duck_row = QHBoxLayout()
         duck_row.addWidget(QLabel("🔉 បន្ថយភ្លេងពេលនិយាយ"))
         self.duck = QComboBox()
@@ -761,9 +769,11 @@ class SimplePage(QWidget):
         return bool(self.pipeline and not self.pipeline.finished)
 
     def _sync_engine_note(self):
-        asr = ("📝 Whisper turbo · GPU (ច្បាស់ មិនបាត់ពាក្យ)" if self.asr.currentData() == "whisper"
-               else "📝 SenseVoice + VAD (លឿនបំផុត)")
-        self.engine_note.setText(f"{asr}\n🌐 Gemini 3.8 Flash តាម Bayon\n🔊 Edge TTS ស្របគ្នា 48 បន្ទាត់\n"
+        engine = self.asr.currentData()
+        asr = {"gemini": "📝 Whisper turbo + 🤖 Gemini ស្តាប់ (👩 ស្រី / 👨 ប្រុស)",
+               "whisper": "📝 Whisper turbo · GPU (ច្បាស់ មិនបាត់ពាក្យ)"}.get(engine, "📝 SenseVoice + VAD (លឿនបំផុត)")
+        self.engine_note.setText(f"{asr}\n🌐 Gemini 3.8 Flash តាម Bayon\n🔊 Edge TTS ស្របគ្នា 48 បន្ទាត់"
+                                 f"{' · ស្រី/ប្រុស' if engine == 'gemini' else ''}\n"
                                  "🎬 ធ្វើម្តងមួយរឿង (មិនប្រជែង GPU)")
 
     def attach(self, pipeline):

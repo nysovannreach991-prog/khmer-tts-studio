@@ -18,6 +18,7 @@ import transcribe
 import video_dub
 import video_merge
 import vocal_remove
+import voice_gender
 import whisper_srt
 
 WHISPER_MODEL = "large-v3-turbo"  # GPU: លឿន និងច្បាស់ជាង SenseVoice (ពាក្យខ្លីៗ មិនបាត់)
@@ -52,7 +53,10 @@ def _write_srt(path, cues, field="text"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         for i, c in enumerate(cues, 1):
-            f.write(f"{i}\n{transcribe._fmt(c['start'] / 1000)} --> {transcribe._fmt(c['end'] / 1000)}\n{c[field]}\n\n")
+            # "(ស្រី) ..." / "(ប្រុស) ..." — srt_dub.parse_srt អានភេទវិញ (ប្រើឡើងវិញពេលក្រោយ មិនសួរ Gemini ម្តងទៀត)
+            label = transcribe.GENDER_LABEL.get(c.get("gender") or "")
+            text = f"({label}) {c[field]}" if label else c[field]
+            f.write(f"{i}\n{transcribe._fmt(c['start'] / 1000)} --> {transcribe._fmt(c['end'] / 1000)}\n{text}\n\n")
 
 
 class Pipeline:
@@ -69,6 +73,7 @@ class Pipeline:
         self.finished = False
         self.log = []  # (ពេល, សារ) — GUI បង្ហាញ
         self.sep = {}  # រឿង → (job លុបការនិយាយ, ឯកសារភ្លេង)
+        self.vocals = {}  # រឿង → សំឡេងនិយាយសុទ្ធ (Demucs) — Gemini ស្តាប់ភេទច្បាស់ជាង
 
     # ---------- progress ----------
     def _set(self, i, stage, pct, msg=None):
@@ -160,11 +165,12 @@ class Pipeline:
             self._set(i, "asr", 100, f"SRT ភាសាដើមមានស្រាប់ ({len(cues)} បន្ទាត់)")
         else:
             out = os.path.join(tmp, "orig.srt")
+            asr_src = self._clean_voice(i, video, tmp) if o.get("clean_voice") or o.get("novocal") else video
             self._set(i, "asr", 0, "កំពុងបើក model ស្តាប់...")
-            if o["engine"] == "whisper":  # process ដាច់ដោយឡែក → ចប់ហើយ VRAM ទំនេរវិញ
-                job = whisper_srt.start_job(video, out, WHISPER_MODEL, o["lang"], o.get("gpu", True))
+            if o["engine"] in ("whisper", "gemini"):  # process ដាច់ដោយឡែក → ចប់ហើយ VRAM ទំនេរវិញ
+                job = whisper_srt.start_job(asr_src, out, WHISPER_MODEL, o["lang"], o.get("gpu", True))
             else:
-                job = funasr_srt.start_job(video, out, o["engine"], o["lang"])
+                job = funasr_srt.start_job(asr_src, out, o["engine"], o["lang"])
 
             def tick(j):
                 if j["status"] == "download" and not j["done"]:
@@ -178,7 +184,7 @@ class Pipeline:
                               f"កំពុងស្តាប់ ({'GPU' if 'cuda' in (j.get('device') or '') else 'CPU'})")
             j = _poll(job, tick, self.stop)
             st["notes"] += j.get("warnings", [])[:1]  # ឧ. GPU ប្រើមិនបាន → CPU
-            if o["engine"] != "whisper" and o.get("novocal"):
+            if o["engine"] not in ("whisper", "gemini") and o.get("novocal"):
                 funasr_srt.stop_servers()  # ដោះ VRAM ឱ្យ Demucs
             cues = _read_srt(out)
             if not cues:
@@ -190,18 +196,42 @@ class Pipeline:
 
         self._start_novocal(i, video, tmp)  # ស្របពេលជាមួយការបកប្រែ + TTS (បណ្តាញ មិនប្រើ GPU)
 
-        # 3) បកប្រែ (ដុំៗស្របគ្នា)
-        total = -(-len(cues) // transcribe.TRANSLATE_BATCH)
-        count = [0]
+        from app import gemini_post, hears_audio
+        if o["engine"] == "gemini":  # 3) ភេទ ស្រី/ប្រុស + កែពាក្យ + បកប្រែ
+            voice_src = self.vocals.get(i) or video
+            if hears_audio(o["key"]):  # Gemini ស្តាប់សំឡេង (Relay / Bayon / Google) — ម្តងតែមួយ
+                def window_done(done, total):
+                    self._set(i, "translate", 100 * done / total, f"Gemini ស្តាប់ + ចាប់ភេទ + បកប្រែ {done}/{total}")
+                self._set(i, "translate", 0, f"Gemini ស្តាប់ + ចាប់ភេទ ស្រី/ប្រុស ({len(cues)} បន្ទាត់)...")
+                km = transcribe.gemini_voice_lines(voice_src, cues, "km", o["key"], o["model"], gemini_post,
+                                                   on_window=window_done)
+            else:  # Server ផ្ទាល់ខ្លួន (Router) មិនបាន upload សំឡេងទៅ Gemini → បកប្រែអត្ថបទ · ភេទតាម pitch ខាងក្រោម
+                st["notes"].append("Server ផ្ទាល់ខ្លួនមិនស្តាប់សំឡេង — ចាប់ភេទតាមកម្ពស់សំឡេង (pitch) លើកុំព្យូទ័រ")
+                km = self._translate_text(i, cues, o, gemini_post)
+            if any(c["gender"] is None for c in km):  # Gemini មិនប្រាប់ (ឬមិនប្រាកដ) → pitch លើកុំព្យូទ័រផ្ទាល់
+                self._set(i, "translate", 99, "ចាប់ភេទតាមកម្ពស់សំឡេង...")
+                try:
+                    audio = whisper_srt._load_audio(voice_src)
+                    if isinstance(audio, str):
+                        raise RuntimeError("ffmpeg")
+                    for c, g in zip(km, voice_gender.detect(audio, km)):
+                        if c["gender"] is None:
+                            c["gender"] = g
+                except Exception as e:  # noqa: BLE001 — គ្មានភេទ → សំឡេងដែលជ្រើស (មិនបញ្ឈប់រឿង)
+                    st["notes"].append(f"ចាប់ភេទតាម pitch មិនបាន ({str(e)[:60]})")
+            try:
+                _write_srt(orig_path, km, "original")
+                _write_srt(km_path, km)
+            except OSError:
+                pass
+            st["lines"] = len(km)
+            female = sum(c["gender"] == "female" for c in km)
+            male = sum(c["gender"] == "male" for c in km)
+            st["notes"].append(f"👩 ស្រី {female} · 👨 ប្រុស {male} បន្ទាត់")
+            self._set(i, "translate", 100, f"បកប្រែរួច {len(km)} បន្ទាត់ (👩 {female} · 👨 {male})")
+            return video, km
 
-        def batch_done():
-            count[0] += 1
-            self._set(i, "translate", 100 * count[0] / total, f"កំពុងបកប្រែ {count[0]}/{total} ដុំ")
-        self._set(i, "translate", 0, f"កំពុងបកប្រែ {len(cues)} បន្ទាត់...")
-        from app import gemini_post
-        texts = transcribe.translate_lines([c["text"] for c in cues], "km", o["key"], o["model"], gemini_post,
-                                           on_batch=batch_done)
-        km = [dict(c, original=c["text"], text=t) for c, t in zip(cues, texts)]
+        km = self._translate_text(i, cues, o, gemini_post)  # 3) បកប្រែអត្ថបទ (ដុំៗស្របគ្នា)
         try:
             _write_srt(km_path, km)
         except OSError:
@@ -210,9 +240,46 @@ class Pipeline:
         self._set(i, "translate", 100, f"បកប្រែរួច {len(km)} បន្ទាត់")
         return video, km
 
+    def _translate_text(self, i, cues, o, gemini_post):
+        """បកប្រែបន្ទាត់ (អត្ថបទ) → cue ដដែល + original · gender រក្សាដូចដើម (None = មិនដឹង)"""
+        total = -(-len(cues) // transcribe.TRANSLATE_BATCH)
+        count = [0]
+
+        def batch_done():
+            count[0] += 1
+            self._set(i, "translate", 100 * count[0] / total, f"កំពុងបកប្រែ {count[0]}/{total} ដុំ")
+        self._set(i, "translate", 0, f"កំពុងបកប្រែ {len(cues)} បន្ទាត់...")
+        texts = transcribe.translate_lines([c["text"] for c in cues], "km", o["key"], o["model"], gemini_post,
+                                           on_batch=batch_done)
+        return [dict(c, original=c["text"], text=t, gender=c.get("gender")) for c, t in zip(cues, texts)]
+
+    def _clean_voice(self, i, video, tmp):
+        """បំបែកសំឡេងនិយាយចេញពីភ្លេង (Demucs) មុនស្តាប់ — ចាប់បានការនិយាយតាមទូរស័ព្ទ / តិចៗក្រោមភ្លេង
+        (សាក: សំឡេងទូរស័ព្ទក្រោមភ្លេង 5 → 22 បន្ទាត់) · ភ្លេង (គ្មានការនិយាយ) ប្រើឡើងវិញសម្រាប់ "លុបតែការនិយាយ"
+        បរាជ័យ → ស្តាប់វីដេអូដើម (មិនបញ្ឈប់រឿង)"""
+        bg = os.path.join(tmp, "novocal.flac")
+
+        def tick(j):
+            if j["status"] == "download":
+                self._set(i, "asr", 0, f"ទាញយក model បំបែកសំឡេង (ម្តងគត់) {j['done']}%")
+            elif j["status"] == "running":
+                self._set(i, "asr", 0, f"បំបែកសំឡេងនិយាយចេញពីភ្លេង {100 * j['done'] // max(j['total'], 1)}%")
+        try:
+            job = vocal_remove.start_job(video, bg, keep_vocals=True)
+            vocal_remove.wait(job, tick, self.stop)
+        except InterruptedError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            self.state[i]["notes"].append(f"បំបែកសំឡេងមិនបាន ({str(e)[:80]}) — ស្តាប់វីដេអូដើម")
+            return video
+        if self.opts.get("novocal"):
+            self.sep[i] = (job, bg)  # ចប់រួចហើយ → _start_novocal មិនធ្វើម្តងទៀត
+        self.vocals[i] = os.path.splitext(bg)[0] + "_vocals.wav"
+        return self.vocals[i]
+
     def _start_novocal(self, i, video, tmp):
         """លុបការនិយាយ (GPU) ក្រោយការស្តាប់ចប់ — រង់ចាំវាពេលដាក់ចូលវីដេអូ"""
-        if self.opts.get("novocal"):
+        if self.opts.get("novocal") and i not in self.sep:
             bg = os.path.join(tmp, "novocal.flac")
             self.sep[i] = (vocal_remove.start_job(video, bg), bg)
 
