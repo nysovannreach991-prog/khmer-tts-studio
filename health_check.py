@@ -130,7 +130,9 @@ def key_kind(key):
         return "Bayon"
     if key.startswith("AIza"):
         return "Google Gemini"
-    return "Server ផ្ទាល់ខ្លួន" if backend._custom_url() else "Bayon"
+    if backend._custom_url():
+        return "Server ផ្ទាល់ខ្លួន"
+    return "OpenAI (ChatGPT)" if key.startswith("sk-") else "Bayon"
 
 
 def build(keys, voice, gd=None, out_dir=""):

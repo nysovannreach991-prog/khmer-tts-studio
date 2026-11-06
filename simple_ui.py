@@ -436,12 +436,20 @@ class SimplePage(QWidget):
         self.asr.addItem("🤖 Whisper + Gemini · ចាប់ភេទ ស្រី/ប្រុស (ល្អបំផុត)", "gemini")
         self.asr.addItem("🎯 Whisper turbo · GPU", "whisper")
         self.asr.addItem("⚡ SenseVoice (លឿនបំផុត)", "sensevoice")
+        self.asr.addItem("☁ Gemini តែមួយ · ស្តាប់ + បកប្រែ + ភេទ (មិនប្រើ Whisper / GPU)", "gemini_only")
         self.asr.setToolTip("Whisper + Gemini: Whisper ធ្វើ SRT (គ្រប់ពាក្យ ពេលវេលាត្រូវ) រួច Gemini ស្តាប់សំឡេង\n"
                             "ដើម្បីចាប់ភេទ ស្រី/ប្រុស កែពាក្យខុស និងបកប្រែ → សំឡេងខ្មែរ ស្រី/ប្រុស តាមតួអង្គ\n"
                             "Whisper turbo លើ GPU: ច្បាស់ មិនបាត់ពាក្យខ្លីៗ (សំឡេងខ្មែរតែមួយ)\n"
                             "SenseVoice: លឿនជាង ~3 ដង តែអាចខុសពាក្យខ្លះ")
         self.asr.currentIndexChanged.connect(lambda _: self._sync_engine_note())
         sl.addWidget(self.asr)
+        self.merge = QCheckBox("🧩 Merge Part ទាំងអស់ជាវីដេអូមួយ")
+        self.merge.setChecked(True)
+        self.merge.setToolTip("ធីក: Part ទាំងអស់ក្នុង Folder → Merge → វីដេអូមួយ (កាត់ជាផ្នែកបានខាងក្រោម)\n"
+                              "មិនធីក: Part នីមួយៗធ្វើដាច់ដោយឡែក → វីដេអូមួយក្នុងមួយ Part (ឈ្មោះដូច Part) · "
+                              "SRT ឈ្មោះដូច Part ប្រើសម្រាប់ Part នោះ")
+        self.merge.toggled.connect(lambda _: self._sync_engine_note())
+        sl.addWidget(self.merge)
         sl.addWidget(self._label("✂ កាត់ជាផ្នែក"))
         self.part = QSpinBox()
         self.part.setRange(0, 120)
@@ -453,6 +461,20 @@ class SimplePage(QWidget):
                                   "ជា <ឈ្មោះ>_full.mp4 ក្នុងថត Output ក្រៅពីផ្នែកៗ\n"
                                   "(\"មិនកាត់\" → វីដេអូចេញជាវីដេអូពេញស្រាប់ហើយ)")
         sl.addWidget(self.keep_full)
+        sl.addWidget(self._label("💾 ថត Output"))
+        out_row = QHBoxLayout()
+        self.out_dir = QLineEdit()
+        self.out_dir.setReadOnly(True)
+        self.out_dir.setToolTip("ថតដែលវីដេអូលទ្ធផលទាំងអស់ត្រូវរក្សាទុក (រឿងនីមួយៗមាន Folder ផ្ទាល់ខ្លួនក្នុងនេះ)")
+        out_row.addWidget(self.out_dir, 1)
+        self.btn_out_pick = QPushButton("📁 ជ្រើស")
+        self.btn_out_pick.setToolTip("ជ្រើសថត Output ផ្សេង (ឧ. លើ Drive D:)")
+        out_row.addWidget(self.btn_out_pick)
+        self.btn_out_reset = QPushButton("↺")
+        self.btn_out_reset.setFixedWidth(34)
+        self.btn_out_reset.setToolTip("ត្រឡប់ទៅថតដើម")
+        out_row.addWidget(self.btn_out_reset)
+        sl.addLayout(out_row)
         self.use_brand = QCheckBox("🏷 ដាក់ Logo && Ads (តាមការកំណត់)")
         sl.addWidget(self.use_brand)
         self.mute = QCheckBox("🔇 Mute សំឡេងដើម")
@@ -478,17 +500,45 @@ class SimplePage(QWidget):
         sync = lambda: self.duck.setEnabled(self.novocal.isChecked() or not self.mute.isChecked())  # noqa: E731
         self.mute.toggled.connect(lambda _: sync())
         self.novocal.toggled.connect(lambda _: sync())
-        sl.addWidget(self._label("🔑 Bayon / Gemini key (សម្រាប់បកប្រែ)"))
+        sl.addWidget(self._label("🔑 Bayon / Gemini / OpenAI key (សម្រាប់បកប្រែ)"))
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
-        self.key.setPlaceholderText("bayon_sk_... ឬ AIza... (ច្រើន key បំបែកដោយ ,)")
-        self.key.setToolTip("key ច្រើន → key មានបញ្ហា ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ")
+        self.key.setPlaceholderText("bayon_sk_... · AIza... (Gemini) · sk-... (OpenAI/ChatGPT) — ច្រើន key បំបែកដោយ ,")
+        self.key.setToolTip("key ច្រើន → key មានបញ្ហា ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ\n"
+                            "sk-… (OpenAI): ជ្រើស model + តម្លៃក្នុង 1M token ខាងក្រោម · Whisper ស្តាប់ · ភេទតាម pitch")
         sl.addWidget(self.key)
         self.base_url = QLineEdit()
         self.base_url.setPlaceholderText("Server ផ្ទាល់ខ្លួន (ទុកទទេ = Bayon/Google) ឧ. http://100.x.x.x:5560/v1")
         self.base_url.setToolTip("Base URL នៃ server OpenAI-compatible (ឧ. Gemini Router របស់ម្ចាស់តាម Tailscale)\n"
                                  "key ដែលមិនមែន AIza… នឹងទៅ server នេះជំនួស Bayon")
         sl.addWidget(self.base_url)
+        # Model របស់ Server ផ្ទាល់ខ្លួន (Router មាន Gemini ច្រើន: 3.8 Flash, 3.1 Pro, 4 Argon …) — បង្ហាញតែពេលប្រើ Server
+        self.model_row = QWidget()
+        mr = QHBoxLayout(self.model_row)
+        mr.setContentsMargins(0, 0, 0, 0)
+        mr.addWidget(QLabel("🧠 Model"))
+        self.model = QComboBox()
+        self.model.setToolTip("Model Gemini ទាំងអស់ដែល Server ផ្ទាល់ខ្លួនមាន (GET /v1/models)\n"
+                              "3.8 Flash = លឿន · Pro / -high = គិតយូរជាង (យឺតជាង)")
+        mr.addWidget(self.model, 1)
+        self.btn_models = QPushButton("↻")
+        self.btn_models.setFixedWidth(34)
+        self.btn_models.setToolTip("ទាញបញ្ជី model ពី Server ម្តងទៀត")
+        mr.addWidget(self.btn_models)
+        self.model_row.hide()
+        sl.addWidget(self.model_row)
+        # OpenAI: Tracking ID (ស្រេចចិត្ត) — ផ្ញើជាមួយសំណើ ឱ្យឃើញ/ចែកការប្រើក្នុង Usage dashboard · បង្ហាញតែពេល key sk-…
+        self.tracking_row = QWidget()
+        tr = QHBoxLayout(self.tracking_row)
+        tr.setContentsMargins(0, 0, 0, 0)
+        tr.addWidget(QLabel("🏷 Tracking ID"))
+        self.tracking_id = QLineEdit()
+        self.tracking_id.setPlaceholderText("ឧ. ឈ្មោះអតិថិជន / ក្រុម (ស្រេចចិត្ត)")
+        self.tracking_id.setToolTip("ផ្ញើជាមួយសំណើ OpenAI នីមួយៗ (field user) → ឃើញនៅ "
+                                    "platform.openai.com/usage ថាអ្នកណា/រឿងណាប្រើ token ប៉ុន្មាន")
+        tr.addWidget(self.tracking_id, 1)
+        self.tracking_row.hide()
+        sl.addWidget(self.tracking_row)
         self.key_state = QLabel("")
         self.key_state.setObjectName("simpleMuted")
         self.key_state.setWordWrap(True)
@@ -771,10 +821,11 @@ class SimplePage(QWidget):
     def _sync_engine_note(self):
         engine = self.asr.currentData()
         asr = {"gemini": "📝 Whisper turbo + 🤖 Gemini ស្តាប់ (👩 ស្រី / 👨 ប្រុស)",
+               "gemini_only": "☁ Gemini ស្តាប់ផ្ទាល់ + បកប្រែ + ភេទ (មិនប្រើ Whisper / GPU)",
                "whisper": "📝 Whisper turbo · GPU (ច្បាស់ មិនបាត់ពាក្យ)"}.get(engine, "📝 SenseVoice + VAD (លឿនបំផុត)")
+        merge = "🎬 ធ្វើម្តងមួយរឿង (មិនប្រជែង GPU)" if self.merge.isChecked() else "🎬 ម្តងមួយ Part · វីដេអូមួយក្នុងមួយ Part (មិន Merge)"
         self.engine_note.setText(f"{asr}\n🌐 Gemini 3.8 Flash តាម Bayon\n🔊 Edge TTS ស្របគ្នា 48 បន្ទាត់"
-                                 f"{' · ស្រី/ប្រុស' if engine == 'gemini' else ''}\n"
-                                 "🎬 ធ្វើម្តងមួយរឿង (មិនប្រជែង GPU)")
+                                 f"{' · ស្រី/ប្រុស' if engine in ('gemini', 'gemini_only') else ''}\n{merge}")
 
     def attach(self, pipeline):
         """ចាប់ផ្តើមបង្ហាញវឌ្ឍនភាពនៃ pipeline"""

@@ -98,6 +98,99 @@ def media_info(path):
     return _media_info(path, os.path.getmtime(path))
 
 
+# ---------- ⚡ បង្រួម Logo / Lower third ឲ្យតូច ----------
+# Logo ធំ (PNG 4000px ឬវីដេអូ Greenscreen 1080p/4K) ត្រូវ decode + លុបពណ៌ + scale រាល់ស៊ុម → ដាក់ Logo យឺត 4–6 ដង។
+# បង្រួមម្តង: លុបពណ៌បៃតងជាមុន + scale ត្រឹមទំហំដែលបង្ហាញពិត → ឯកសារតូច (VP9 alpha ~100KB) ដាក់ចូលលឿនស្មើនឹងគ្មាន Logo
+SMALL_SUFFIX = "_small"
+REF_WIDTH = 1920       # ទទឹងវីដេអូយោង (Full HD) — វីដេអូធំជាងនេះ (4K) ប្រើទទឹងពិតរបស់វា
+SHRINK_MAX_FPS = 30.0
+
+
+def target_width(size_pct, ref_w=REF_WIDTH):
+    """ទទឹង (px) ដែល Logo បង្ហាញពិតលើវីដេអូទទឹង ref_w (យ៉ាងតិច Full HD) — គុណ 1.25 ទុកបើបង្កើនទំហំបន្តិច"""
+    w = max(ref_w or 0, REF_WIDTH) * float(size_pct) / 100 * 1.25
+    return max(64, int(round(w / 2)) * 2)
+
+
+def fmt_size(n):
+    return f"{n / 1e6:.1f} MB" if n >= 1e6 else f"{n / 1e3:.0f} KB"
+
+
+def is_small(path):
+    return os.path.splitext(os.path.basename(path))[0].endswith(SMALL_SUFFIX)
+
+
+def needs_shrink(path, size_pct, ref_w=REF_WIDTH):
+    """True បើការបង្រួមនឹងជួយឲ្យលឿន: រូបភាពធំជាងទំហំបង្ហាញ 2 ដង · វីដេអូ Greenscreen (លុបពណ៌រាល់ស៊ុម) · វីដេអូថ្លាធំ"""
+    try:
+        info = media_info(path)
+    except RuntimeError:
+        return False
+    w, tw = info["width"] or 0, target_width(size_pct, ref_w)
+    if info["image"]:
+        return w > tw * 2 or os.path.getsize(path) > 3e6
+    return not info["alpha"] or w > tw * 1.5 or info["fps"] > SHRINK_MAX_FPS + 1
+
+
+def _small_path(path, ext, out_dir=None):
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if stem.endswith(SMALL_SUFFIX):
+        stem = stem[:-len(SMALL_SUFFIX)]
+    folder = os.path.dirname(os.path.abspath(path))
+    if out_dir and not os.access(folder, os.W_OK):  # Folder ដើមសរសេរមិនបាន (ឧ. USB read-only) → ថត Output
+        folder = out_dir
+        os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"{stem}{SMALL_SUFFIX}{ext}")
+
+
+def _ffmpeg(args):
+    proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
+                          capture_output=True, creationflags=_NO_WINDOW)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode("utf-8", "replace").strip()[-300:] or "ffmpeg បរាជ័យ")
+
+
+def shrink(path, size_pct, ref_w=REF_WIDTH, key="auto", strength=0.15, out_dir=None):
+    """បង្រួម Logo / Lower third → ឯកសារថ្មី <ឈ្មោះ>_small.png (រូបភាព) ឬ _small.webm (វីដេអូ · VP9 ថ្លា)។
+    វីដេអូ Greenscreen → លុបពណ៌ជាមុន (key/strength ដូចការកំណត់) ក្លាយជាវីដេអូថ្លា — ពេលដាក់មិនបាច់ chromakey ទៀត។
+    ត្រឡប់ {"path", "before", "after", "width", "height"}"""
+    info = media_info(path)
+    src_w = info["width"] or 0
+    tw = target_width(size_pct, ref_w)
+    if src_w and src_w < tw:  # មិនពង្រីក
+        tw = src_w - src_w % 2
+    before = os.path.getsize(path)
+    if info["image"]:
+        out = _small_path(path, ".png", out_dir)
+        tmp = out[:-4] + ".tmp.png"
+        fmt = "format=rgba," if info["alpha"] else ""
+        _ffmpeg(["-i", path, "-vf", f"{fmt}scale={tw}:-1:flags=lanczos", "-frames:v", "1", "-update", "1", tmp])
+    else:
+        chain = []
+        k = _key_mode({"key": key}, info)
+        if k in KEY_COLOR:
+            sim = min(max(float(strength), 0.01), 0.6)
+            chain += [f"chromakey={KEY_COLOR[k]}:{sim:.3f}:0.08", f"despill=type={k}"]
+        chain.append("format=rgba")
+        if info["fps"] > SHRINK_MAX_FPS + 1:
+            chain.append(f"fps={SHRINK_MAX_FPS:g}")
+        chain.append(f"scale={tw}:-2:flags=lanczos")
+        decoder = ["-c:v", info["decoder"]] if info["decoder"] else []
+        out = _small_path(path, ".webm", out_dir)
+        tmp = out[:-5] + ".tmp.webm"
+        try:  # VP9 ថ្លា — តូចបំផុត (~50 ដងតូចជាង PNG), decode លឿនដូចគ្នា
+            _ffmpeg([*decoder, "-i", path, "-vf", ",".join(chain), "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+                     "-b:v", "0", "-crf", "20", "-row-mt", "1", "-an", tmp])
+        except RuntimeError:  # ffmpeg គ្មាន libvpx → PNG ក្នុង MOV (ធំជាង តែដំណើរការគ្រប់ទីកន្លែង)
+            out = _small_path(path, ".mov", out_dir)
+            tmp = out[:-4] + ".tmp.mov"
+            _ffmpeg([*decoder, "-i", path, "-vf", ",".join(chain), "-c:v", "png", "-pix_fmt", "rgba", "-an", tmp])
+    os.replace(tmp, out)
+    _media_info.cache_clear()
+    new = media_info(out)
+    return {"path": out, "before": before, "after": os.path.getsize(out), "width": new["width"], "height": new["height"]}
+
+
 def describe(path):
     """អត្ថបទខ្លីសម្រាប់ GUI — ប្រភេទឯកសារដែលបានរកឃើញ"""
     info = media_info(path)

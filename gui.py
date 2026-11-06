@@ -1203,9 +1203,15 @@ class MainWindow(QMainWindow):
         c["on"] = QCheckBox(hint)
         form.addRow(c["on"])
         c["path"], row = self._file_row("ជ្រើស PNG / MP4 Greenscreen / MOV ថ្លា", overlay.OVERLAY_FILTER)
+        c["shrink"] = QPushButton("⚡ បង្រួម")
+        c["shrink"].setToolTip("បង្រួមឯកសារឲ្យតូចត្រឹមទំហំដែលបង្ហាញពិតលើវីដេអូ (វីដេអូ Greenscreen → លុបពណ៌ជាមុន ក្លាយជាវីដេអូថ្លា)\n"
+                               "→ ដាក់ Logo លឿនជាង 4–6 ដង ស៊ី CPU/RAM តិច · ឯកសារដើមមិនប៉ះពាល់ (បង្កើត <ឈ្មោះ>_small)")
+        c["shrink"].clicked.connect(lambda _, p=prefix: self._shrink_overlay(p))
+        row.addWidget(c["shrink"])
         form.addRow("ឯកសារ", row)
         c["info"] = QLabel()
         c["info"].setProperty("role", "muted")
+        c["info"].setWordWrap(True)
         form.addRow("", c["info"])
 
         c["key"] = QComboBox()
@@ -1377,12 +1383,16 @@ class MainWindow(QMainWindow):
         a["on"] = QCheckBox("សៀតវីដេអូ Ads ខ្លីចូលក្នុងវីដេអូ")
         form.addRow(a["on"])
         a["path"], row = self._file_row("ជ្រើសវីដេអូ Ads (.mp4, .mov ...)", VIDEO_FILTER)
+        a["shrink"] = self._ad_shrink_button("path", "info")
+        row.addWidget(a["shrink"])
         form.addRow("⏸ Ads កណ្តាល", row)
         a["info"] = QLabel()
         a["info"].setProperty("role", "muted")
         form.addRow("", a["info"])
         a["path_end"], row = self._file_row("ទុកទទេ = ប្រើវីដេអូដូច Ads កណ្តាល", VIDEO_FILTER)
         a["path_end"].setToolTip("វីដេអូ Ads ផ្សេងសម្រាប់ដាក់នៅចុង — ទុកទទេ ដើម្បីប្រើ Ads កណ្តាលដដែល")
+        a["shrink_end"] = self._ad_shrink_button("path_end", "info_end")
+        row.addWidget(a["shrink_end"])
         form.addRow("⏹ Ads ចុង", row)
         a["info_end"] = QLabel()
         a["info_end"].setProperty("role", "muted")
@@ -1412,7 +1422,10 @@ class MainWindow(QMainWindow):
                 return a[info_key].setText("⚠ រកមិនឃើញឯកសារ")
             try:
                 info = overlay.media_info(path)
-                a[info_key].setText(f"🎞 {info['width']}×{info['height']} · {info['duration']:.1f}s")
+                text = f"🎞 {info['width']}×{info['height']} · {info['duration']:.1f}s · {fmt_size(os.path.getsize(path))}"
+                if ads_mod.needs_shrink(path):
+                    text += "  ·  ⚡ ធំ — ចុច បង្រួម ឲ្យសៀតចូលលឿន"
+                a[info_key].setText(text)
                 if not a["on"].isChecked() and not self._ov_loading:
                     a["on"].setChecked(True)
             except Exception as e:  # noqa: BLE001
@@ -1466,12 +1479,100 @@ class MainWindow(QMainWindow):
             c["info"].setText("⚠ រកមិនឃើញឯកសារ")
         else:
             try:
-                c["info"].setText(overlay.describe(path))
+                text = f"{overlay.describe(path)} · {fmt_size(os.path.getsize(path))}"
+                if overlay.needs_shrink(path, c["size"].value(), self._ref_width()):
+                    text += "  ·  ⚡ ធំ — ចុច បង្រួម ឲ្យដាក់លឿន"
+                elif overlay.is_small(path):
+                    text += "  ·  ⚡ បង្រួមរួច"
+                c["info"].setText(text)
                 if not c["on"].isChecked() and not self._ov_loading:  # ទើបជ្រើសឯកសារ → បើកស្វ័យប្រវត្តិ
                     c["on"].setChecked(True)
             except Exception as e:  # noqa: BLE001
                 c["info"].setText("⚠ រកមិនឃើញ ffmpeg" if not ffmpeg_setup.available() else f"⚠ {e}")
         self._ov_timer.start()
+
+    def _ref_width(self):
+        """ទទឹងវីដេអូដែលកំពុង Preview (សម្រាប់គណនាទំហំ Logo ពេលបង្រួម) · គ្មាន → Full HD"""
+        video = self.video_path.text().strip()
+        try:
+            return (overlay.media_info(video)["width"] or overlay.REF_WIDTH) if os.path.isfile(video) else overlay.REF_WIDTH
+        except Exception:  # noqa: BLE001
+            return overlay.REF_WIDTH
+
+    def _shrink_overlay(self, prefix):
+        """⚡ បង្រួម Logo / Lower third នៅ background → ប្តូរឯកសារទៅ <ឈ្មោះ>_small, លុបពណ៌ = ស្វ័យប្រវត្តិ (លុបរួចហើយ)"""
+        c = self.ov[prefix]
+        path = c["path"].text().strip()
+        if not os.path.isfile(path):
+            c["info"].setText("⚠ ជ្រើសឯកសារសិន")
+            return
+        if not self._check_ffmpeg():
+            return
+        size, key, strength, ref_w = c["size"].value(), c["key"].currentData(), c["strength"].value() / 100, self._ref_width()
+        btn = c["shrink"]
+        btn.setEnabled(False)
+        btn.setText("⏳ កំពុងបង្រួម...")
+
+        def restore():
+            btn.setEnabled(True)
+            btn.setText("⚡ បង្រួម")
+
+        def done(r):
+            restore()
+            self._select_data(c["key"], "auto")  # ពណ៌លុបរួចក្នុងឯកសារថ្មី — កុំលុបម្តងទៀត (អាចលុបពណ៌ Logo ខ្លួនឯង)
+            c["path"].setText(r["path"])
+            c["info"].setText(f"{c['info'].text().replace('  ·  ⚡ បង្រួមរួច', '')}\n✓ បង្រួមរួច {overlay.fmt_size(r['before'])} → "
+                              f"{overlay.fmt_size(r['after'])} · {r['width']}×{r['height']}")
+            self._log(f"⚡ បង្រួម {os.path.basename(path)} → {os.path.basename(r['path'])} "
+                      f"({overlay.fmt_size(r['before'])} → {overlay.fmt_size(r['after'])})")
+
+        def failed(e):
+            restore()
+            c["info"].setText(f"⚠ បង្រួមមិនបាន: {e[-160:]}")
+
+        worker = Worker(lambda: overlay.shrink(path, size, ref_w, key, strength, out_dir=OUTPUT_DIR))
+        worker.done.connect(done)
+        worker.failed.connect(failed)
+        self._start_worker(worker)
+
+    def _ad_shrink_button(self, key, info_key):
+        btn = QPushButton("⚡ បង្រួម")
+        btn.setToolTip("បង្រួម Ads ត្រឹម Full HD 30fps H.264 + AAC (ដូចទម្រង់លទ្ធផល) → សៀតចូលវីដេអូលឿន ឯកសារតូច\n"
+                       "ឯកសារដើមមិនប៉ះពាល់ (បង្កើត <ឈ្មោះ>_small.mp4)")
+        btn.clicked.connect(lambda: self._shrink_ad(key, info_key, btn))
+        return btn
+
+    def _shrink_ad(self, key, info_key, btn):
+        a = self.ad
+        path = a[key].text().strip()
+        if not os.path.isfile(path):
+            a[info_key].setText("⚠ ជ្រើសវីដេអូ Ads សិន")
+            return
+        if not self._check_ffmpeg():
+            return
+        btn.setEnabled(False)
+        btn.setText("⏳ កំពុងបង្រួម...")
+
+        def restore():
+            btn.setEnabled(True)
+            btn.setText("⚡ បង្រួម")
+
+        def done(r):
+            restore()
+            a[key].setText(r["path"])
+            a[info_key].setText(f"{a[info_key].text()}  ·  ✓ បង្រួមរួច {overlay.fmt_size(r['before'])} → "
+                                f"{overlay.fmt_size(r['after'])}")
+            self._log(f"⚡ បង្រួម Ads {os.path.basename(path)} → {os.path.basename(r['path'])} "
+                      f"({overlay.fmt_size(r['before'])} → {overlay.fmt_size(r['after'])})")
+
+        def failed(e):
+            restore()
+            a[info_key].setText(f"⚠ បង្រួមមិនបាន: {e[-160:]}")
+
+        worker = Worker(lambda: ads_mod.shrink(path, out_dir=OUTPUT_DIR))
+        worker.done.connect(done)
+        worker.failed.connect(failed)
+        self._start_worker(worker)
 
     def overlays(self):
         """spec ទាំងអស់ដែលបើក ហើយមានឯកសារ (សម្រាប់ video_dub.mix_and_split)"""
@@ -2529,6 +2630,8 @@ class MainWindow(QMainWindow):
         return licensing.saved_key() if licensing.enabled() and not licensing.is_owner() else ""
 
     def _key_info_refresh(self):
+        if hasattr(self, "simple_page"):  # key ប្តូរប្រភេទ (OpenAI ↔ Gemini) → បញ្ជី Model នៃផ្ទាំងផ្សេងៗប្តូរតាម
+            self._sync_model_combos()
         status = backend.key_status(self.api_key.text())
         if len(status) <= 1 and not any(bad for _, bad in status):
             self.key_info.setVisible(False)
@@ -3758,6 +3861,8 @@ class MainWindow(QMainWindow):
             self.settings.setValue("output_dir", "" if path == os.path.normpath(DEFAULT_OUTPUT_DIR) else path)
             self.set_status(f"💾 លទ្ធផលនឹងរក្សាទុកក្នុង: {path}")
         self._sync_outdir_button()
+        if hasattr(self, "simple_page") and hasattr(self.simple_page, "out_dir"):
+            self.simple_page.out_dir.setText(path)
         self.refresh_files()
         return True
 
@@ -4171,6 +4276,12 @@ class MainWindow(QMainWindow):
         self._select_data(sp.asr, s.value("simple_asr", "gemini"))
         sp.clean_voice.setChecked(s.value("simple_clean_voice", "true") in (True, "true"))
         sp.clean_voice.toggled.connect(lambda on: s.setValue("simple_clean_voice", on))
+        sp.merge.setChecked(s.value("simple_merge", "true") in (True, "true"))
+        sp.merge.toggled.connect(lambda on: s.setValue("simple_merge", on))
+        # 💾 ថត Output — ការកំណត់តែមួយជាមួយផ្ទាំងផ្សេង (set_output_dir)
+        sp.out_dir.setText(OUTPUT_DIR)
+        sp.btn_out_pick.clicked.connect(self._choose_output_dir)
+        sp.btn_out_reset.clicked.connect(lambda: self.set_output_dir(DEFAULT_OUTPUT_DIR))
         sp.asr.currentIndexChanged.connect(lambda _: s.setValue("simple_asr", sp.asr.currentData()))
         sp.novocal.toggled.connect(lambda on: s.setValue("simple_novocal", on))
         # ការកំណត់រួមជាមួយផ្ទាំងធម្មតា
@@ -4197,17 +4308,124 @@ class MainWindow(QMainWindow):
         # Server OpenAI-compatible ផ្ទាល់ខ្លួន (Base URL) — QSettings តែប៉ុណ្ណោះ
         backend.OPENAI_BASE_URL = s.value("openai_base_url", "")
         sp.base_url.setText(backend.OPENAI_BASE_URL)
+        # ឥឡូវដឹង key + Base URL → combo Model នៃផ្ទាំងផ្សេងៗ (OpenAI ឬ Gemini) ហើយជ្រើស model ដែលរក្សាទុកវិញ
+        self._sync_model_combos({self.stt_model: s.value("stt_model", ""), self.vsrt_model: s.value("vsrt_model", ""),
+                                 self.vsrt_trans_model: s.value("vsrt_trans_model", "")})
 
         def set_base(t):
             backend.OPENAI_BASE_URL = t.strip()
             s.setValue("openai_base_url", t.strip())
+            self._router_models_for = None  # Server ប្តូរ → ទាញបញ្ជី model ថ្មី
+            self._sync_model_combos()
             self._simple_key_state()
         sp.base_url.textChanged.connect(set_base)
+        # Model របស់ Server ផ្ទាល់ខ្លួន — ទាញពី /v1/models ពេល Server សកម្ម (ក្នុង _simple_key_state)
+        self._router_models_for = None
+        sp.model.currentIndexChanged.connect(
+            lambda _: sp.model.currentData() and s.setValue("simple_model", sp.model.currentData()))
+        sp.btn_models.clicked.connect(lambda: self._load_router_models(force=True))
+        sp.model.currentIndexChanged.connect(lambda _: self._uses_openai() and self._simple_key_state())  # បង្ហាញតម្លៃ
+        # 🏷 OpenAI Tracking ID — QSettings តែប៉ុណ្ណោះ · ផ្ញើជាមួយសំណើ OpenAI នីមួយៗ
+        backend.OPENAI_TRACKING_ID = s.value("openai_tracking_id", "")
+        sp.tracking_id.setText(backend.OPENAI_TRACKING_ID)
+
+        def set_tracking(t):
+            backend.OPENAI_TRACKING_ID = t.strip()
+            s.setValue("openai_tracking_id", t.strip())
+        sp.tracking_id.textChanged.connect(set_tracking)
         self._show_simple()
+
+    def _uses_router(self):
+        """key ទៅ Server ផ្ទាល់ខ្លួន (Base URL + key ដែលមិនមែន Google/Bayon/License)"""
+        key = self.gemini_key()
+        return bool(key) and bool(backend._custom_url()) and not key.upper().startswith("AT1-") \
+            and not all(k.startswith(("AIza", "bayon_sk_")) for k in backend.parse_keys(key))
+
+    def _uses_openai(self):
+        """key sk-… ដោយគ្មាន Server ផ្ទាល់ខ្លួន → OpenAI (ChatGPT) API"""
+        key = self.gemini_key()
+        keys = backend.parse_keys(key) if key else []
+        return bool(keys) and all(backend.is_openai_key(k) for k in keys)
+
+    def _model_combos(self):
+        """combo "Model" នៃផ្ទាំងផ្សេងៗ (សំឡេង→SRT · វីដេអូ→SRT · បកប្រែ SRT) — currentText() = model id"""
+        return [c for c in (getattr(self, n, None) for n in ("stt_model", "vsrt_trans_model", "vsrt_model")) if c]
+
+    def _sync_model_combos(self, saved=None):
+        """key OpenAI → combo Model បង្ហាញ model ChatGPT (tooltip = តម្លៃ) · key ផ្សេង → Gemini ដូចដើម
+        saved = {combo: model ពី settings} ឱ្យជ្រើសវិញបន្ទាប់ពីប្តូរបញ្ជី"""
+        openai = self._uses_openai()
+        want = [m[0] for m in backend.OPENAI_MODELS] if openai else list(transcribe.MODELS)
+        for combo in self._model_combos():
+            cur = (saved or {}).get(combo) or combo.currentText()
+            if [combo.itemText(i) for i in range(combo.count())] != want:
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(want)
+                if openai:
+                    for i, (_, name, inp, out) in enumerate(backend.OPENAI_MODELS):
+                        combo.setItemData(i, f"{name} · ${inp:.2f} / ${out:.2f} ក្នុង 1M token (ចូល / ចេញ)", Qt.ToolTipRole)
+                combo.blockSignals(False)
+            combo.setCurrentText(cur if cur in want else backend.OPENAI_DEFAULT_MODEL if openai else want[0])
+            combo.setToolTip("Model OpenAI (ChatGPT) · $ ក្នុង 1M token ចូល / ចេញ — ដាក់ mouse លើ model ដើម្បីមើលតម្លៃ\n"
+                             "ផ្ទាំងដែលស្តាប់សំឡេង (Gemini ស្តាប់) ត្រូវការ key Gemini/Bayon/Relay" if openai else "")
+
+    def _load_router_models(self, force=False):
+        """ទាញ model ទាំងអស់ពី Server ផ្ទាល់ខ្លួន (GET /v1/models) ទៅក្នុង combo — ម្តងក្នុងមួយ Server
+        OpenAI → បញ្ជីក្នុងកម្មវិធី ជាមួយតម្លៃក្នុង 1M token (មិនបាច់ទាញ)"""
+        sp = self.simple_page
+        url = "openai" if self._uses_openai() else backend.OPENAI_BASE_URL
+        if not force and self._router_models_for == url:
+            return
+        self._router_models_for = url
+        if url == "openai":
+            want = sp.model.currentData() or QSettings("KhmerTTS", "Studio").value("simple_model", "")
+            sp.model.blockSignals(True)
+            sp.model.clear()
+            for mid, name, inp, out in backend.OPENAI_MODELS:
+                sp.model.addItem(f"{name}  ·  ${inp:.2f} / ${out:.2f}", mid)
+            sp.model.blockSignals(False)
+            self._select_data(sp.model, want if sp.model.findData(want) >= 0 else backend.OPENAI_DEFAULT_MODEL)
+            sp.btn_models.setEnabled(False)
+            sp.model.setToolTip("Model OpenAI · តម្លៃ $ ក្នុង 1M token (ចូល / ចេញ) — ពី developers.openai.com (វិច្ឆិកា 2026)\n"
+                                "វាស់លើរឿងពិត: 1000 បន្ទាត់ ≈ 13k token ចូល + 18k ចេញ (GPT-6 Luna ≈ $0.01 · GPT-6.1 Sol ≈ $0.21)")
+            return
+        key = self.gemini_key()
+        sp.btn_models.setEnabled(False)
+
+        def show(models):
+            if backend.OPENAI_BASE_URL != url:
+                return  # Server ប្តូរទៀតពេលកំពុងទាញ
+            want = sp.model.currentData() or QSettings("KhmerTTS", "Studio").value("simple_model", "gemini-3.8-flash")
+            sp.model.blockSignals(True)
+            sp.model.clear()
+            for mid, name in models or [(m, m) for m in transcribe.MODELS]:
+                sp.model.addItem(name if name == mid else f"{name}  ({mid})", mid)
+            sp.model.blockSignals(False)
+            self._select_data(sp.model, want)
+            if sp.model.findData(want) < 0:
+                self._select_data(sp.model, "gemini-3.8-flash")
+            sp.btn_models.setEnabled(True)
+            sp.model.setToolTip(f"{sp.model.count()} model ពី {url}" if models else
+                                "ទាញបញ្ជី model ពី Server មិនបាន → បញ្ជីធម្មតា (ចុច ↻ សាកម្តងទៀត)")
+
+        def failed(e):
+            self._file_log(f"router models: {e[-200:]}")
+            self._router_models_for = None  # ឱ្យសាកម្តងទៀតពេលក្រោយ
+            show([])
+        worker = Worker(lambda: backend.custom_models(key))
+        worker.done.connect(show)
+        worker.failed.connect(failed)
+        self._start_worker(worker)
 
     def _simple_key_state(self):
         key = self.gemini_key()
         sp = self.simple_page
+        router, openai = self._uses_router(), self._uses_openai()
+        sp.model_row.setVisible(router or openai)  # ជ្រើស model តែពេល Server ផ្ទាល់ខ្លួន / OpenAI (Relay/Bayon = 3.8 Flash)
+        sp.tracking_row.setVisible(openai)
+        if router or openai:
+            self._load_router_models()
         if not key:
             sp.key_state.setText("⚠ ត្រូវការ key ដើម្បីបកប្រែ (SRT ខ្មែរដែលមានស្រាប់ មិនត្រូវការទេ)")
         else:
@@ -4221,6 +4439,10 @@ class MainWindow(QMainWindow):
             elif backend._custom_url():  # មាន Base URL តែ key ជា Bayon/Google → មិនទៅ Server ទេ
                 who = ("⚠ មាន Server ផ្ទាល់ខ្លួន តែ key ជា Bayon/Google → បកប្រែតាម Bayon/Google · "
                        "ចង់ប្រើ Server សូមដាក់ key sk-… ដែលម្ចាស់ផ្តល់ឱ្យ")
+            elif self._uses_openai():
+                used = backend.usage_text()
+                who = (f"✓ OpenAI (ChatGPT) — {backend.openai_model_label(sp.model.currentData() or backend.OPENAI_DEFAULT_MODEL)}"
+                       " · Whisper ស្តាប់ · ភេទតាម pitch" + (f"\n📊 វគ្គនេះ: {used}" if used else ""))
             else:
                 who = "✓ Bayon Gateway — Gemini 3.8 Flash" if backend.is_gateway_key(key) else "✓ Gemini API (Google)"
             sp.key_state.setText(who + more)
@@ -4246,6 +4468,11 @@ class MainWindow(QMainWindow):
                     return
                 return self._simple_install(lambda on_line: whisper_mod.pip_install(whisper_mod.WHISPER_PACKAGES, on_line),
                                             "Whisper", self._simple_start)
+        elif asr == "gemini_only":  # Gemini ស្តាប់ផ្ទាល់ — ត្រូវការ server ដែលទទួលសំឡេង (Relay / Bayon / Google)
+            key = self.gemini_key()
+            if key and not backend.hears_audio(key):
+                sp.show_settings()
+                return sp.headline.setText("⚠ Server ផ្ទាល់ខ្លួនមិនស្តាប់សំឡេង — ជ្រើស 🤖 Whisper + Gemini ឬប្រើ key Relay/Bayon/Google")
         elif not funasr_mod.installed():
             if QMessageBox.question(self, "ដំឡើង SenseVoice",
                                     "ការស្តាប់សំឡេង (SenseVoice — លឿនបំផុត) ត្រូវដំឡើងម្តង (~300 MB)។\n"
@@ -4288,10 +4515,12 @@ class MainWindow(QMainWindow):
                    fit=self.fit.isChecked(), max_speed=self.max_speed.value(), format="mp3",
                    workers=max(self.workers.value(), 48))  # Edge ស្របគ្នា 48 → លឿនបំផុតដែលនៅតែស្ថិតស្ថេរ
         part_sec = sp.part.value() * 60
-        opts = {"key": key, "model": "gemini-3.8-flash", "engine": asr, "gpu": True, "lang": sp.lang.currentData(),
+        # Server ផ្ទាល់ខ្លួន → model ដែលជ្រើស · Relay/Bayon/Google → 3.8 Flash
+        model = (sp.model.currentData() if self._uses_router() or self._uses_openai() else None) or "gemini-3.8-flash"
+        opts = {"key": key, "model": model, "engine": asr, "gpu": True, "lang": sp.lang.currentData(),
                 "dub": dub, "dub_setup": backend._dub_setup, "safe_name": backend.safe_name, "out_dir": OUTPUT_DIR,
                 "orig_volume": 1.0 if novocal else 0.0 if sp.mute.isChecked() else self.orig_volume.value() / 100,
-                "novocal": novocal, "clean_voice": sp.clean_voice.isChecked(),
+                "novocal": novocal, "clean_voice": sp.clean_voice.isChecked(), "merge": sp.merge.isChecked(),
                 "duck": sp.duck.currentIndex() if novocal or not sp.mute.isChecked() else 0,
                 "part_sec": part_sec, "overlays": overlays, "ads": ads,
                 # Upload វីដេអូពេញ → ត្រូវការ _full.mp4 ពេលកាត់ជាផ្នែក
@@ -4327,12 +4556,16 @@ class MainWindow(QMainWindow):
             for st in p.state:
                 if st["status"] == "done" and st.get("full_file") and not st.get("gd_queued"):
                     st["gd_queued"] = True
-                    self._gd_add(st["full_file"], *p.opts["gdrive"])
+                    for path in st.get("full_files") or [st["full_file"]]:  # មិន Merge → វីដេអូមួយក្នុងមួយ Part
+                        self._gd_add(path, *p.opts["gdrive"])
         if p.finished:
             self._simple_watch.stop()
             self.set_busy(False)
             done = sum(st["status"] == "done" for st in p.state)
             self._log(f"✨ Simple Auto ចប់ — ✓ {done}/{len(p.state)} · {fmt_dur(time.time() - p.t0)}")
+            if backend.usage_text():
+                self._log(f"   📊 OpenAI វគ្គនេះ: {backend.usage_text()}")
+                self._simple_key_state()
             failed = [st for st in p.state if st["status"] == "failed"]
             for st in failed:
                 self._file_log(f"✕ {st['name']} [{st.get('stage')}]\n{st.get('trace') or st['msg']}")
@@ -4458,8 +4691,8 @@ class MainWindow(QMainWindow):
         steps = []
         if asr in ("whisper", "gemini") and whisper_mod.installed() and not whisper_mod.gpu_ready():
             steps.append(lambda on_line: whisper_mod.pip_install(whisper_mod.GPU_PACKAGES, on_line))
-        if ((asr not in ("whisper", "gemini") and funasr_mod.installed()) or (novocal and vocal_remove.installed())) \
-                and not funasr_mod.gpu_ready():
+        if ((asr not in ("whisper", "gemini", "gemini_only") and funasr_mod.installed())
+                or (novocal and vocal_remove.installed())) and not funasr_mod.gpu_ready():
             steps.append(funasr_mod.ensure_gpu_torch)
         return steps
 

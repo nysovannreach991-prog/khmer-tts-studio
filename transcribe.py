@@ -103,6 +103,11 @@ class BadJSON(RuntimeError):
     """ចម្លើយមិនមែន JSON ត្រឹមត្រូវ ទោះកែរួច (ចម្លើយវែងពេកត្រូវកាត់ ឬ server មិនគោរពទម្រង់) — អ្នកហៅបំបែកសំណើឱ្យតូចជាង"""
 
 
+class TimedOut(RuntimeError):
+    """Server មិនឆ្លើយ 2 ដងជាប់គ្នា (ឧ. Router តាម Chrome រវល់ · 50 បន្ទាត់ យូរ 4–10 នាទី) — សំណើតូចឆ្លើយលឿនជាង
+    → អ្នកហៅបំបែកសំណើពាក់កណ្តាល ជាជាងផ្ញើសំណើដដែល 6 ដង (ជាប់ 30 នាទី ហើយរឿងទាំងមូលបរាជ័យ)"""
+
+
 def _brackets(t):
     """វង់ក្រចកដែលនៅបើក (តាមលំដាប់) និងថាតើចុងអត្ថបទនៅក្នុង string ឬអត់"""
     stack, in_str, esc = [], False, False
@@ -191,17 +196,26 @@ def _ask_json(parts, schema, api_key, model, gemini_post):
         "contents": [{"parts": parts}],
         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema},
     }
-    models = [model] + ([FALLBACK_MODEL] if model != FALLBACK_MODEL else [])
-    delay, bad = 5, 0
+    # model បម្រុង (Gemini) តែពេល model ដែលជ្រើសជា Gemini — OpenAI/Router model ផ្សេង → ប្រើតែ model នោះ
+    models = [model] + ([FALLBACK_MODEL] if model.startswith("gemini") and model != FALLBACK_MODEL else [])
+    delay, bad, slow = 5, 0, 0
     for attempt in range(6):
         # ព្យាយាមម្តងទៀតពេល server រវល់ ហើយប្តូរទៅ model បម្រុងបន្ទាប់ពីបរាជ័យ 2 ដង
         current = models[min(attempt // 2, len(models) - 1)]
+        t0 = time.time()
         try:
             data = gemini_post(api_key, current, body)
             text = data["candidates"][0]["content"]["parts"][0]["text"]
         except (RuntimeError, OSError, KeyError, IndexError) as e:
             # OSError = timeout (ជាប់គ្មានចម្លើយ) / បណ្តាញដាច់ → ព្យាយាមម្តងទៀត
             msg = str(e) or type(e).__name__
+            if isinstance(e, (TimeoutError, OSError)) and "timed out" in msg:
+                # server យឺតពេក (ឧ. Router តាម Chrome រវល់) — សំណើដដែលនឹងយឺតដដែល → ឱ្យអ្នកហៅបំបែកសំណើឱ្យតូច
+                slow += 1
+                if slow >= 2:
+                    raise TimedOut(f"Server មិនឆ្លើយក្នុង {time.time() - t0:.0f}វិ (timeout {slow} ដង) — "
+                                   "server យឺត ឬរវល់ពេក") from None
+                continue
             retryable = not isinstance(e, RuntimeError) or any(c in msg for c in ("429", "500", "502", "503", "504"))
             if not retryable or attempt == 5:
                 raise RuntimeError(msg if isinstance(e, RuntimeError) else f"Gemini ឆ្លើយតបមិនត្រឹមត្រូវ: {e}") from None
@@ -344,10 +358,10 @@ def gemini_voice_lines(src, cues, target, api_key, model, gemini_post, on_window
             data = _ask_json([{"inlineData": {"mimeType": "audio/mp3", "data": audio}}, {"text": prompt}],
                              _VOICE_SCHEMA, api_key, model, gemini_post)
             items = data.get("lines", []) if isinstance(data, dict) else data
-        except BadJSON:
+        except (BadJSON, TimedOut):
             if len(win) == 1:
-                return {}
-            h = len(win) // 2
+                return {}  # → បកប្រែតាមអត្ថបទខាងក្រោម (translate_lines)
+            h = len(win) // 2  # JSON ខូច / យឺតពេក → បំបែកពាក់កណ្តាល
             first = ask(win[:h], before)
             second = ask(win[h:], [c["text"] for c in win[:h][-3:]])
             return {**first, **{k + h: v for k, v in second.items()}}
@@ -477,10 +491,12 @@ def translate_lines(lines, target, api_key, model, gemini_post, on_batch=None, w
         for _ in range(3):
             try:
                 data = _ask_json([{"text": prompt}], _LINES_SCHEMA, api_key, model, gemini_post)
-            except BadJSON:
+            except (BadJSON, TimedOut) as e:
                 if len(batch) == 1:
+                    if isinstance(e, TimedOut):  # 1 បន្ទាត់ក៏មិនឆ្លើយ → server ដាច់ពិតមែន
+                        raise
                     return [""]
-                h = len(batch) // 2
+                h = len(batch) // 2  # JSON ខូច / យឺតពេក → សំណើតូចជាង
                 return ask(batch[:h], before) + ask(batch[h:], batch[:h][-3:])
             out = data.get("lines", []) if isinstance(data, dict) else data
             out = [" ".join(str(x).split()) for x in out] if isinstance(out, list) else []

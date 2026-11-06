@@ -140,7 +140,7 @@ def plan(asr="whisper", novocal=False):
             steps.append(Step("gpu", "⚡ GPU NVIDIA (CUDA)", "~1.5 GB", _pip([whisper_srt.GPU_PACKAGES])))
         if not model_ok():
             steps.append(Step("model", "🧠 Model ស្តាប់ (Whisper turbo)", "~1.6 GB", run_model))
-    elif not funasr_srt.installed():
+    elif asr != "gemini_only" and not funasr_srt.installed():  # Gemini តែមួយ → មិនត្រូវការ model ស្តាប់ទេ
         steps.append(Step("sensevoice", "🎙 ម៉ាស៊ីនស្តាប់ SenseVoice", "~300 MB",
                           _pip([funasr_srt.PACKAGES] + ([funasr_srt.ensure_gpu_torch] if nvidia else []))))
     if novocal and not vocal_remove.installed():
