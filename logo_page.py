@@ -14,6 +14,7 @@ import app as backend
 import srt_dub
 import theme
 import video_dub
+import video_merge
 from simple_ui import SPIN, SmoothBar, StoryCard, _fade_in, fmt_dur
 
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".ts")
@@ -140,6 +141,11 @@ class LogoPage(QWidget):
             grid.addWidget(cb)
         grid.addStretch()
         ll.addLayout(grid)
+        self.merge = QCheckBox("🧩 Merge សិន — ភ្ជាប់វីដេអូទាំងអស់ក្នុង Folder ជាមួយ រួចកាត់ ហើយដាក់ Logo")
+        self.merge.setToolTip("បើក: Part 100 × 1 នាទី → ភ្ជាប់ជាឯកសារមួយ (ចម្លងផ្ទាល់ លឿន) → កាត់តាមនាទីខាងក្រោម (ឧ. 30 នាទី)\n"
+                              "→ ដាក់ Logo / Lower third / Ads លើផ្នែក 30 នាទីនីមួយៗ\n"
+                              "បិទ: វីដេអូនីមួយៗក្នុង Folder ដាក់ Logo ដាច់ដោយឡែក")
+        ll.addWidget(self.merge)
         part_row = QHBoxLayout()
         lab = QLabel("✂ កាត់ជាផ្នែក")
         lab.setObjectName("sideLabel")
@@ -147,10 +153,15 @@ class LogoPage(QWidget):
         self.part.setRange(0, 120)
         self.part.setSuffix(" នាទី")
         self.part.setSpecialValueText("មិនកាត់")
-        self.part.valueChanged.connect(lambda _: self._sync())
         part_row.addWidget(lab)
         part_row.addWidget(self.part, 1)
         ll.addLayout(part_row)
+        s = getattr(host, "settings", None)
+        if s is not None:  # ចងចាំជម្រើស (ភ្ជាប់ _sync ក្រោយ — ប៊ូតុងដែល _sync ប្រើមិនទាន់បង្កើត)
+            self.merge.setChecked(s.value("logo_merge", "false") in (True, "true", "1"))
+            self.part.setValue(int(float(s.value("logo_part", 0) or 0)))
+            self.merge.toggled.connect(lambda on: s.setValue("logo_merge", on))
+            self.part.valueChanged.connect(lambda v: s.setValue("logo_part", v))
 
         self.headline = QLabel("")
         self.headline.setObjectName("simpleHeadline")
@@ -173,6 +184,8 @@ class LogoPage(QWidget):
         go_row.addWidget(self.btn_stop)
         go_row.addWidget(self.btn_go, 1)
         ll.addLayout(go_row)
+        self.merge.toggled.connect(lambda _: self._sync())  # ភ្ជាប់ក្រោយពី widget ទាំងអស់ដែល _sync ប្រើបង្កើតរួច
+        self.part.valueChanged.connect(lambda _: self._sync())
         body.addWidget(left)
 
         preview = QFrame()
@@ -372,8 +385,11 @@ class LogoPage(QWidget):
         elif not names:
             self.headline.setText("⚠ សូមធីក Logo / Ads ដែលចង់ដាក់")
         else:
-            self.headline.setText("នឹងដាក់: " + " · ".join(names) + (f" · ✂ {self.part.value()} នាទី"
-                                                                      if self.part.value() else ""))
+            plan = ["🧩 Merge សិន"] if self.merge.isChecked() and any(len(c.videos) > 1 for c in self.cards) else []
+            plan += [f"✂ កាត់ {self.part.value()} នាទី"] if self.part.value() else []
+            self.headline.setText("នឹងដាក់: " + " · ".join(names) + "".join(f" · {x}" for x in plan))
+        self.merge.setEnabled(not self.active)
+        self.part.setEnabled(not self.active)
 
     def start(self):
         host = self.host
@@ -388,10 +404,10 @@ class LogoPage(QWidget):
                                      use_ads=bool(ads)):
             return
         for c in todo:
-            c.st.update(status="waiting", stage=None, pct=0, msg="", t0=None, t1=None, out=None)
+            c.st.update(status="waiting", stage=None, pct=0, msg="", t0=None, t1=None, out=None, notes=[])
             c.update_from(c.st, 0)
         self.queue, self.total, self.done_n = list(todo), len(todo), 0
-        self.specs = (overlays, ads, self.part.value() * 60)
+        self.specs = (overlays, ads, self.part.value() * 60, self.merge.isChecked())
         self.active, self.stop_req, self.t0 = True, False, time.time()
         host.set_busy(True)
         self.btn_go.setText("⏳  កំពុងដាក់...")
@@ -409,22 +425,48 @@ class LogoPage(QWidget):
         self.target = _unique_dir(os.path.join(self.host_out(), f"{name}_logo"))
         self.work = os.path.join(self.target, ".work")  # លទ្ធផលបណ្តោះអាសន្នរបស់ start_brand_job
         os.makedirs(self.work, exist_ok=True)
-        self.vi, self.v_failed = 0, []
+        self.vi, self.v_failed, self.merged = 0, [], False
+        # videos = អ្វីដែលត្រូវដាក់ Logo · stems = ឈ្មោះលទ្ធផល (Merge → ឯកសារមួយ ឈ្មោះ Folder)
+        self.videos = list(card.videos)
+        self.stems = [os.path.splitext(os.path.basename(v))[0] for v in self.videos]
         card.st.update(status="running", stage="video", pct=0, msg="", t0=time.time(), since=time.time(),
                        out=self.target)
+        if self.specs[3] and len(card.videos) > 1:
+            self.merging = video_merge.start_job(card.videos, self.work, "merged", False, [])
+            card.st.update(stage="merge", msg=f"🧩 Merge {len(card.videos)} Part...")
+            self.timer.start(300)
+            return
+        self.merging = None
+        self._next_video()
+
+    def _merge_done(self, m):
+        """Merge ចប់ → ដាក់ Logo លើឯកសារដែលភ្ជាប់រួច (កាត់តាមនាទីកំណត់) · ឈ្មោះលទ្ធផល = ឈ្មោះ Folder"""
+        card = self.cur
+        self.merging = None
+        card.st["stage"] = "video"
+        if m["status"] == "error":
+            self.v_failed.append(f"Merge: {m['error'][-120:]}")
+            self.videos, self.vi = [], 0  # គ្មានលទ្ធផល → កាតបរាជ័យ
+            return self._finish_card(card)
+        if self.stop_req:  # ■ ចុចក្នុងពេល Merge → មិនចាប់ផ្តើមដាក់ Logo លើឯកសារវែង
+            self.videos, self.vi = [], 0
+            return self._finish_card(card, stopped=True)
+        self.merged = True
+        self.videos = [os.path.join(self.work, m["file"])]
+        self.stems = [backend.safe_name(os.path.basename(card.path)) or "video"]
+        card.st["notes"] += [f"Merge: {w}" for w in m.get("warnings", [])]
         self._next_video()
 
     def _next_video(self):
-        card, (overlays, ads, part_sec) = self.cur, self.specs
-        video = card.videos[self.vi]
+        card, (overlays, ads, part_sec, _) = self.cur, self.specs
+        video = self.videos[self.vi]
         stem = backend.safe_name(os.path.splitext(os.path.basename(video))[0]) or f"video{self.vi + 1}"
         self.job = video_dub.start_brand_job(video, self.work, f"{stem}_{self.vi}", overlays, ads, part_sec)
         self.timer.start(300)
 
     def _collect_video(self, s):
         """ផ្លាស់លទ្ធផលពី .work ទៅ Folder ចេញ — ផ្នែកតែមួយ = ឈ្មោះឯកសារដើម · ច្រើនផ្នែក = <ឈ្មោះ>_partNN"""
-        video = self.cur.videos[self.vi]
-        stem = os.path.splitext(os.path.basename(video))[0]
+        stem = self.stems[self.vi]
         src_dir = os.path.join(self.work, s["folder"])
         files = sorted(f for f in os.listdir(src_dir) if f.lower().endswith(".mp4"))
         for n, f in enumerate(files, 1):
@@ -433,58 +475,90 @@ class LogoPage(QWidget):
         shutil.rmtree(src_dir, ignore_errors=True)
         return len(files)
 
+    def _finish_card(self, card, stopped=False):
+        """Folder នេះចប់ (ឬបរាជ័យទាំងអស់ ឬបញ្ឈប់) → សម្អាត .work, សរសេរស្ថានភាពកាត"""
+        st, n = card.st, len(self.videos)
+        shutil.rmtree(self.work, ignore_errors=True)
+        ok = self.vi - len(self.v_failed)
+        if stopped:
+            st.update(status="waiting", stage=None, pct=0, msg="■ បានបញ្ឈប់ (មិនទាន់ដាក់ Logo)", t1=time.time())
+            shutil.rmtree(self.target, ignore_errors=True)
+        elif ok <= 0:
+            st.update(status="failed", msg=f"✕ {self.v_failed[0] if self.v_failed else 'បរាជ័យ'}", t1=time.time())
+            shutil.rmtree(self.target, ignore_errors=True)  # គ្មានវីដេអូណាជោគជ័យ → កុំទុក Folder ទទេ
+        else:
+            fail = f" · ✕ {len(self.v_failed)}" if self.v_failed else ""
+            stop = f" · ឈប់ ({n - self.vi} មិនទាន់ធ្វើ)" if self.vi < n else ""
+            what = f"Merge {len(card.videos)} Part" if len(self.videos) == 1 and len(card.videos) > 1 else f"{ok}/{n} វីដេអូ"
+            st.update(status="done", pct=100, msg=f"រួចរាល់ {what}{fail}{stop} → {os.path.basename(self.target)}",
+                      t1=time.time())
+            st["notes"] = st["notes"][:3] + self.v_failed[:3]
+            self.done_n += 1
+        card.update_from(st, self._tick)
+        self.timer.stop()
+        QTimer.singleShot(200, self._next)
+
     def _poll(self):
         self._tick += 1
-        card, s = self.cur, srt_dub.jobs.get(self.job)
-        if not card or s is None:
+        card = self.cur
+        if not card:
             return
-        st, n = card.st, len(card.videos)
+        st = card.st
+        if self.merging:  # ដំណាក់កាល Merge
+            m = srt_dub.jobs.get(self.merging)
+            if m is None:
+                return
+            if m["status"] in ("done", "error"):
+                return self._merge_done(m)
+            msg = f"🧩 Merge {len(card.videos)} Part... {int(m.get('done', 0))}%"
+            if msg != st["msg"]:
+                st["since"] = time.time()
+            st.update(pct=int(m.get("done", 0) * 0.2), msg=msg)
+            card.update_from(st, self._tick)
+            self._headline(card)
+            return
+        s = srt_dub.jobs.get(self.job)
+        if s is None:
+            return
+        n = len(self.videos)
         if s["status"] in ("error", "done"):  # វីដេអូនេះចប់ → វីដេអូបន្ទាប់ក្នុង Folder ដដែល
             if s["status"] == "error":
-                self.v_failed.append(f"{os.path.basename(card.videos[self.vi])}: {s['error'][-120:]}")
+                self.v_failed.append(f"{self.stems[self.vi]}: {s['error'][-120:]}")
             else:
                 try:
                     self._collect_video(s)
                 except OSError as e:
-                    self.v_failed.append(f"{os.path.basename(card.videos[self.vi])}: {e}")
+                    self.v_failed.append(f"{self.stems[self.vi]}: {e}")
             self.vi += 1
             if self.vi < n and not self.stop_req:
                 st.update(pct=int(100 * self.vi / n), since=time.time())
                 card.update_from(st, self._tick)
                 self.timer.stop()
                 return self._next_video()
-            shutil.rmtree(self.work, ignore_errors=True)
-            ok = self.vi - len(self.v_failed)
-            if ok == 0:
-                st.update(status="failed", msg=f"✕ {self.v_failed[0]}", t1=time.time())
-                shutil.rmtree(self.target, ignore_errors=True)  # គ្មានវីដេអូណាជោគជ័យ → កុំទុក Folder ទទេ
-            else:
-                fail = f" · ✕ {len(self.v_failed)}" if self.v_failed else ""
-                stop = f" · ឈប់ ({n - self.vi} មិនទាន់ធ្វើ)" if self.vi < n else ""
-                st.update(status="done", pct=100, msg=f"រួចរាល់ {ok}/{n} វីដេអូ{fail}{stop} → "
-                                                     f"{os.path.basename(self.target)}", t1=time.time())
-                st["notes"] = self.v_failed[:3]
-                self.done_n += 1
+            return self._finish_card(card)
         else:
             pct = int(s.get("stage_pct", 0)) if s["status"] == "video" else 0
             step = {"analyzing": "កំពុងរកចន្លោះស្ងាត់...", "trimming": "កំពុងកាត់..."}.get(
                 s["status"], f"កំពុងដាក់ Logo {pct}%")
-            msg = f"វីដេអូ {self.vi + 1}/{n} · {step}"
+            msg = f"វីដេអូ {self.vi + 1}/{n} · {step}" if n > 1 else step
             total = int((100 * self.vi + pct) / n)
+            if getattr(self, "merged", False):
+                total = 20 + int(total * 0.8)
             if (total, msg) != (st["pct"], st["msg"]):
                 st["since"] = time.time()
             st.update(pct=total, msg=msg)
         card.update_from(st, self._tick)
+        self._headline(card)
+
+    def _headline(self, card):
+        st = card.st
         finished = self.done_n + sum(c.st["status"] == "failed" for c in self.cards)
-        overall = (finished - (0 if st["status"] == "running" else 1) + st["pct"] / 100) / max(self.total, 1)
+        overall = (finished + st["pct"] / 100) / max(self.total, 1)
         self.bar.set_pct(100 * max(0.0, min(overall, 1.0)))
-        if st["status"] in ("done", "failed"):
-            self.timer.stop()
-            QTimer.singleShot(200, self._next)
-            return
+        where = ("🧩 Merge" if self.merging else f"វីដេអូ {self.vi + 1}/{len(self.videos)}" if len(self.videos) > 1
+                 else "ដាក់ Logo")
         self.headline.setText(f"{SPIN[self._tick % 4]}  Folder {self.total - len(self.queue)}/{self.total} — "
-                              f"{os.path.basename(card.path)} · វីដេអូ {self.vi + 1}/{len(card.videos)} · "
-                              f"⏱ {fmt_dur(time.time() - self.t0)}")
+                              f"{os.path.basename(card.path)} · {where} · ⏱ {fmt_dur(time.time() - self.t0)}")
 
     def _request_stop(self):
         self.stop_req = True

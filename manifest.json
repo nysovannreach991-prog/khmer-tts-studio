@@ -1,6 +1,6 @@
 {
-  "version": "2.2.1",
-  "notes": "កែលម្អ និងជួសជុលកំហុស",
+  "version": "2.2.2",
+  "notes": "ជួសជុល Update ឲ្យSmooth ជាងមុន",
   "files": {
     "ads.py": "a8fad1d6808cef096bb40414e4139098c7cf74f34f92ab6bdc52d339de232e81",
     "app.py": "4e09e09695a9ae1c91f8afb6ec4147cde9e6e1307aaa083b64059f1d0e3d1505",
@@ -19,7 +19,7 @@
     "images/vector_board.png": "e3d531a0f6fdc09b3ee44cc2b0f3f47c6c39a617d116a2c915cd3f741b1c15f6",
     "launcher.ps1": "c7ace5034a98c65e2fae973e82d9e525e2985f6303bfeffe21017d810d0131f2",
     "licensing.py": "29718be83f670cf49c2af580348fa99a6f07cbef07f61635b9f64e811d0e2e56",
-    "logo_page.py": "21492987fd625696b8a2a400a282712f1441ea441a6e4a4296d195dc5ef2d34c",
+    "logo_page.py": "4233c5ad280bfb75fb7f40e4355856c22558418eeaa79622b5a77311ba2422b1",
     "overlay.py": "c9dca3efe2758ea5a8600c779ee365950e344f683d6db996956b65e649007cb3",
     "requirements.txt": "932bf739c651e39df36ad3dac833e79aaedb8cdddcc27b95e285f1d9a3269d9c",
     "revoked.json": "ebfd160c88d4fe237113c5f5a270228d97ae5707b8bd78fac0e65669a8f18133",
