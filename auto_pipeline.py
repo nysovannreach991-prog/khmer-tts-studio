@@ -1,4 +1,4 @@
-"""✨ Simple Auto — Folder រឿង (Part ច្រើន) → SRT (SenseVoice) → បកប្រែខ្មែរ (Bayon/Gemini) → Merge →
+"""✨ Simple Auto — Folder រឿង (Part ច្រើន) → Merge → SRT (SenseVoice) → បកប្រែខ្មែរ (Bayon/Gemini) →
 សំឡេង Edge TTS → វីដេអូ។
 
 ធ្វើម្តងមួយរឿង (មិនស្របគ្នា) — model ស្តាប់ / លុបការនិយាយ មិនប្រជែង GPU គ្នា (VRAM ពេញ → Windows ប្រើ RAM
@@ -7,7 +7,6 @@
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import threading
 import time
@@ -25,10 +24,9 @@ import whisper_srt
 WHISPER_MODEL = "large-v3-turbo"  # GPU: លឿន និងច្បាស់ជាង SenseVoice (ពាក្យខ្លីៗ មិនបាត់)
 ROUTER_WORKERS = 4  # Server ផ្ទាល់ខ្លួន (Router តាម Chrome): សំណើស្របគ្នា ≤ ចំនួនគណនី Gemini (4–5)
 
-# លំដាប់: SRT + បកប្រែមុន រួចទើប Merge (បកប្រែបរាជ័យ → មិនខាតពេល Merge)
-STAGES = [("asr", "📝 SRT"), ("translate", "🌐 ខ្មែរ"), ("merge", "🧩 Merge"), ("tts", "🔊 សំឡេង"),
+STAGES = [("merge", "🧩 Merge"), ("asr", "📝 SRT"), ("translate", "🌐 ខ្មែរ"), ("tts", "🔊 សំឡេង"),
           ("video", "🎬 វីដេអូ")]
-WEIGHTS = {"asr": 15, "translate": 15, "merge": 5, "tts": 35, "video": 30}  # សម្រាប់ % សរុបនៃរឿងមួយ
+WEIGHTS = {"merge": 5, "asr": 15, "translate": 15, "tts": 35, "video": 30}  # សម្រាប់ % សរុបនៃរឿងមួយ
 _KHMER = re.compile(r"[ក-៿]")
 _CJK = re.compile(r"[㐀-鿿぀-ヿ가-힯]")
 
@@ -127,7 +125,7 @@ class Pipeline:
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
-        """ម្តងមួយរឿង: SRT → ខ្មែរ → Merge → សំឡេង → វីដេអូ ហើយទើបរឿងបន្ទាប់"""
+        """ម្តងមួយរឿង: Merge → SRT → ខ្មែរ → សំឡេង → វីដេអូ ហើយទើបរឿងបន្ទាប់"""
         try:
             for i in range(len(self.stories)):
                 if self.stop.is_set():
@@ -184,89 +182,22 @@ class Pipeline:
             units.append({"folder": story["folder"], "videos": [v], "srts": [srt] if srt else [], "name": stem})
         return units
 
-    # ---------- ជំហាន 1–3: SRT → ខ្មែរ → Merge ----------
-    def _merge(self, i, videos, tmp):
-        """Merge Part ទាំងអស់ (ចម្លងផ្ទាល់ — លឿន) → វីដេអូបណ្តោះអាសន្ន សម្រាប់ដាក់សំឡេង"""
-        st = self.state[i]
-        self._set(i, "merge", 0, f"Merge {len(videos)} Part...")
-        job = video_merge.start_job(videos, tmp, "merged", False, [], faststart=False)  # បណ្តោះអាសន្ន
-        m = _poll(job, lambda j: self._set(i, "merge", j["done"]), self.stop)
-        if m.get("mode") == "reencode":
-            st["notes"].append("Part មានទម្រង់ខុសគ្នា → encode ឡើងវិញ")
-        self._set(i, "merge", 100, "")
-        return os.path.join(tmp, m["file"])
-
-    def _listen_audio(self, i, videos, tmp):
-        """សំឡេងរបស់ Part ទាំងអស់ត​គ្នា (គ្មានរូបភាព) សម្រាប់ស្តាប់មុន Merge — Part នីមួយៗវែងស្មើវីដេអូរបស់វា
-        (apad + -t ដូច video_merge) ដូច្នេះពេលវេលា SRT ត្រូវនឹងវីដេអូ Merge ក្រោយ · បរាជ័យ → None (Merge សិន)
-        លុបការនិយាយ/សម្អាតសំឡេង → stereo 48k (ភ្លេងប្រើក្នុងវីដេអូចុងក្រោយ) · បើមិនដូច្នេះ mono 16k (តូច លឿន)"""
-        from concurrent.futures import ThreadPoolExecutor
-        import ffmpeg_setup
-        ffmpeg_setup.add_to_path()
-        o, n = self.opts, len(videos)
-        fmt = ["-ar", "48000", "-ac", "2"] if o.get("novocal") or o.get("clean_voice") else ["-ar", "16000", "-ac", "1"]
-        self._set(i, "asr", 0, f"រៀបចំសំឡេង {n} Part (មិនទាន់ Merge)...")
-        try:
-            infos = video_merge.probe_all(videos)
-            parts, done = [os.path.join(tmp, f"listen{k:04d}.wav") for k in range(n)], [0]
-
-            def one(k):
-                if self.stop.is_set():
-                    raise InterruptedError
-                src = (["-i", videos[k], "-map", "0:a:0", "-af", "apad"] if infos[k]["audio"]
-                       else ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"])
-                r = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *src, "-vn",
-                                    "-t", f"{infos[k]['duration']:.3f}", *fmt, "-c:a", "pcm_s16le", parts[k]],
-                                   capture_output=True, creationflags=whisper_srt._NO_WINDOW)
-                if r.returncode or r.stderr.strip():  # ffmpeg ខ្លះរាយការណ៍ error តែ exit 0
-                    raise RuntimeError(r.stderr.decode("utf-8", "replace")[-200:])
-                done[0] += 1
-                self._set(i, "asr", 0, f"រៀបចំសំឡេង Part {done[0]}/{n} (មិនទាន់ Merge)")
-            with ThreadPoolExecutor(4) as ex:
-                list(ex.map(one, range(n)))
-            lst, out = os.path.join(tmp, "listen.txt"), os.path.join(tmp, "listen.flac")
-            with open(lst, "w", encoding="utf-8") as f:
-                for p, info in zip(parts, infos):  # duration ច្បាស់លាស់ → ទីតាំង Part ត្រឹមត្រូវ (កុំឱ្យ ffmpeg ប៉ាន់)
-                    f.write("file '" + p.replace("'", "'\\''") + "'\n" + f"duration {info['duration']:.3f}\n")
-            r = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat",
-                                "-safe", "0", "-i", lst, "-c:a", "flac", "-compression_level", "0", out],
-                               capture_output=True, creationflags=whisper_srt._NO_WINDOW)
-            if r.returncode or r.stderr.strip():  # ffmpeg ខ្លះរាយការណ៍ error តែ exit 0
-                raise RuntimeError(r.stderr.decode("utf-8", "replace")[-200:])
-            for p in parts:
-                os.remove(p)
-            return out
-        except InterruptedError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            self.state[i]["notes"].append(f"រៀបចំសំឡេងមុន Merge មិនបាន ({str(e)[:80]}) — Merge សិន")
-            return None
-
+    # ---------- ជំហាន 1–3: Merge → SRT → ខ្មែរ ----------
     def _prepare(self, i, tmp, sub=None):
         st, o = self.state[i], self.opts
         story = sub or dict(self.stories[i], name=st["name"])
         name, folder, videos = story["name"], story["folder"], story["videos"]
-        # ផ្ទុក model ស្តាប់ទុកមុន កំឡុងពេល Merge (មិនធ្វើពេលត្រូវ Demucs មុន — វាត្រូវការ VRAM · ឬ SRT មានស្រាប់)
-        if (o["engine"] in funasr_srt.ENGINES and not (o.get("clean_voice") or o.get("novocal"))
-                and not self._existing_srt(story)
-                and not os.path.exists(os.path.join(folder, "SRT_ភាសាដើម", f"{name}.srt"))):
-            funasr_srt.prewarm(o["engine"])
-        # Part ច្រើន: មិនទាន់ Merge — ស្តាប់ពីសំឡេងត​គ្នា (listen) · Merge ធ្វើក្រោយ SRT + បកប្រែ (merged())
-        box = {"video": videos[0] if len(videos) == 1 else None, "listen": None}
-
-        def merged():
-            if box["video"] is None:
-                box["video"] = self._merge(i, videos, tmp)
-            else:
-                self._set(i, "merge", 100)
-            return box["video"]
-
-        def listen():  # ប្រភពសំឡេងសម្រាប់ស្តាប់ / Demucs / ចាប់ភេទ
-            if box["video"] is not None:
-                return box["video"]
-            if box["listen"] is None:
-                box["listen"] = self._listen_audio(i, videos, tmp) or merged()
-            return box["listen"]
+        # 1) Merge — ចម្លងផ្ទាល់ (លឿន) ប្រើទាំងសម្រាប់ស្តាប់ និងសម្រាប់វីដេអូចុងក្រោយ
+        if len(videos) > 1:
+            self._set(i, "merge", 0, f"Merge {len(videos)} Part...")
+            job = video_merge.start_job(videos, tmp, "merged", False, [])
+            m = _poll(job, lambda j: self._set(i, "merge", j["done"]), self.stop)
+            video = os.path.join(tmp, m["file"])
+            if m.get("mode") == "reencode":
+                st["notes"].append("Part មានទម្រង់ខុសគ្នា → encode ឡើងវិញ")
+        else:
+            video = videos[0]
+        self._set(i, "merge", 100, "")
 
         # 2) SRT — មានស្រាប់ក្នុង Folder? (ខ្មែរ → ប្រើភ្លាម · ភាសាដើម → បកប្រែតែប៉ុណ្ណោះ)
         cues = self._existing_srt(story)
@@ -276,7 +207,6 @@ class Pipeline:
             st["notes"].append("ប្រើ SRT ខ្មែរដែលមានស្រាប់")
             self._set(i, "translate", 100, f"SRT ខ្មែរមានស្រាប់ ({len(cues)} បន្ទាត់)")
             st["lines"] += len(cues)
-            video = merged()
             self._start_novocal(i, video, tmp)
             return video, cues
         if not cues and os.path.exists(orig_path):  # បានស្តាប់រួចពីមុន (ឧ. បកប្រែបរាជ័យ)
@@ -286,11 +216,10 @@ class Pipeline:
             self._set(i, "asr", 100, f"SRT ភាសាដើមមានស្រាប់ ({len(cues)} បន្ទាត់)")
         else:
             out = os.path.join(tmp, "orig.srt")
-            asr_src = self._clean_voice(i, listen(), tmp) if o.get("clean_voice") or o.get("novocal") else listen()
+            asr_src = self._clean_voice(i, video, tmp) if o.get("clean_voice") or o.get("novocal") else video
             from app import hears_audio
             if o["engine"] == "gemini_only" and hears_audio(o["key"]):  # Gemini ស្តាប់ + បកប្រែ + ភេទ ក្នុងជំហានតែមួយ
-                km = self._gemini_only(i, listen(), asr_src, tmp, km_path, orig_path)
-                return merged(), km
+                return self._gemini_only(i, video, asr_src, tmp, km_path, orig_path)
             if o["engine"] == "gemini_only":  # Server ផ្ទាល់ខ្លួនមិនស្តាប់សំឡេង → Whisper + Gemini ជំនួស
                 st["notes"].append("Server ផ្ទាល់ខ្លួនមិនស្តាប់សំឡេង — ប្រើ Whisper ស្តាប់ជំនួស")
             self._set(i, "asr", 0, "កំពុងបើក model ស្តាប់...")
@@ -321,12 +250,11 @@ class Pipeline:
             except OSError:
                 pass
 
-        if o.get("novocal"):
-            self._start_novocal(i, listen(), tmp)  # ស្របពេលជាមួយការបកប្រែ + TTS (បណ្តាញ មិនប្រើ GPU)
+        self._start_novocal(i, video, tmp)  # ស្របពេលជាមួយការបកប្រែ + TTS (បណ្តាញ មិនប្រើ GPU)
 
         from app import gemini_post, hears_audio
         if o["engine"] in ("gemini", "gemini_only"):  # 3) ភេទ ស្រី/ប្រុស + កែពាក្យ + បកប្រែ
-            voice_src = self.vocals.get(i) or listen()
+            voice_src = self.vocals.get(i) or video
             if hears_audio(o["key"]):  # Gemini ស្តាប់សំឡេង (Relay / Bayon / Google) — ម្តងតែមួយ
                 def window_done(done, total):
                     self._set(i, "translate", 100 * done / total, f"Gemini ស្តាប់ + ចាប់ភេទ + បកប្រែ {done}/{total}")
@@ -336,8 +264,7 @@ class Pipeline:
             else:  # Server ផ្ទាល់ខ្លួន (Router) មិនបាន upload សំឡេងទៅ Gemini → បកប្រែអត្ថបទ · ភេទតាម pitch ខាងក្រោម
                 st["notes"].append("Server ផ្ទាល់ខ្លួនមិនស្តាប់សំឡេង — ចាប់ភេទតាមកម្ពស់សំឡេង (pitch) លើកុំព្យូទ័រ")
                 km = self._translate_text(i, cues, o, gemini_post)
-            km = self._finish_km(i, km, voice_src, km_path, orig_path)
-            return merged(), km
+            return video, self._finish_km(i, km, voice_src, km_path, orig_path)
 
         km = self._translate_text(i, cues, o, gemini_post)  # 3) បកប្រែអត្ថបទ (ដុំៗស្របគ្នា)
         try:
@@ -346,7 +273,7 @@ class Pipeline:
             pass
         st["lines"] += len(km)
         self._set(i, "translate", 100, f"បកប្រែរួច {len(km)} បន្ទាត់")
-        return merged(), km
+        return video, km
 
     def _finish_km(self, i, km, voice_src, km_path, orig_path):
         """បន្ទាត់ខ្មែរ (+ភេទ) → បំពេញភេទដែលខ្វះតាម pitch · រក្សាទុក SRT ភាសាដើម + ខ្មែរ · កំណត់ចំណាំ"""
@@ -393,7 +320,7 @@ class Pipeline:
         self._set(i, "asr", 100, "")
         self._start_novocal(i, video, tmp)
         self._set(i, "translate", 90, "")
-        return self._finish_km(i, km, self.vocals.get(i) or video, km_path, orig_path)
+        return video, self._finish_km(i, km, self.vocals.get(i) or video, km_path, orig_path)
 
     def _translate_text(self, i, cues, o, gemini_post):
         """បកប្រែបន្ទាត់ (អត្ថបទ) → cue ដដែល + original · gender រក្សាដូចដើម (None = មិនដឹង)"""
@@ -409,7 +336,7 @@ class Pipeline:
         # → ជួររង់ចាំវែង ហើយ timeout (សាក: 1390 បន្ទាត់ ជាប់ 35 នាទី រួចបរាជ័យ) → កាត់បន្ថយ
         workers = transcribe.WORKERS if hears_audio(o["key"]) else ROUTER_WORKERS
         texts = transcribe.translate_lines([c["text"] for c in cues], "km", o["key"], o["model"], gemini_post,
-                                           on_batch=batch_done, workers=workers, title=self.state[i]["name"])
+                                           on_batch=batch_done, workers=workers)
         return [dict(c, original=c["text"], text=t, gender=c.get("gender")) for c, t in zip(cues, texts)]
 
     def _clean_voice(self, i, video, tmp):

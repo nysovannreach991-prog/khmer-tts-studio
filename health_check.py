@@ -94,31 +94,14 @@ def c_edge(voice):
     return run
 
 
-def c_key(key, model=""):
-    """model = model ដែលជ្រើសសម្រាប់ Server ផ្ទាល់ខ្លួន (ឧ. gemini-4-hydrogen) — ទទេ → 3.8 Flash ដូចដើម"""
-    model = model or "gemini-3.8-flash"
-
+def c_key(key):
     def run():
         t = time.time()
-        data = backend.gemini_post(key, model, {
+        data = backend.gemini_post(key, "gemini-3.8-flash", {
             "contents": [{"parts": [{"text": "Translate to Khmer. Reply with only the translation: 谢谢你"}]}]})
         text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        return f"\"谢谢你\" → \"{text[:30]}\" · {model} · {time.time() - t:.1f}s"
+        return f"\"谢谢你\" → \"{text[:30]}\" · {time.time() - t:.1f}s"
     return run
-
-
-def c_direct():
-    import gemini_direct
-    if gemini_direct.status()["status"] in ("off", "error"):
-        gemini_direct.start(gemini_direct.find_router_dir(backend.ROUTER_DIR))
-    if not gemini_direct.wait_ready(180):
-        raise RuntimeError(gemini_direct.status_text())
-    st = gemini_direct.status()
-    if st["status"] == "ready" and not st["ready"]:
-        raise RuntimeError("គ្មានគណនី Gemini ដែល ready — ចូល Google ក្នុង Router (Login_Account.bat)")
-    if any(a[1] == "needs_login" for a in st["accounts"]):
-        raise Warn(gemini_direct.status_text())
-    return gemini_direct.status_text()
 
 
 def c_drive(url, secret):
@@ -148,22 +131,18 @@ def key_kind(key):
     if key.startswith("AIza"):
         return "Google Gemini"
     if backend._custom_url():
-        return "Gemini Router (ក្នុងកម្មវិធី)" if backend.ROUTER_DIRECT else "Server ផ្ទាល់ខ្លួន"
+        return "Server ផ្ទាល់ខ្លួន"
     return "OpenAI (ChatGPT)" if key.startswith("sk-") else "Bayon"
 
 
-def build(keys, voice, gd=None, out_dir="", model=""):
+def build(keys, voice, gd=None, out_dir=""):
     checks = [("🌐 អ៊ីនធឺណិត", c_internet), ("🎬 ffmpeg", c_ffmpeg), ("⚡ Encode វីដេអូ", c_encoder),
               ("🎙 ស្តាប់សំឡេង (Whisper)", c_whisper), ("🔊 Edge TTS (បញ្ចូលសំឡេង)", c_edge(voice))]
-    if backend.ROUTER_DIRECT:  # engine ក្នុងកម្មវិធី — បើក/រង់ចាំ ហើយរាយគណនី មុនសាកបកប្រែ
-        checks.append(("⚡ Gemini Router ក្នុងកម្មវិធី", c_direct))
     if not keys:
         checks.append(("🔑 Key បកប្រែ", lambda: (_ for _ in ()).throw(
             Warn("មិនទាន់មាន key — ត្រូវការតែរឿងដែលគ្មាន SRT ខ្មែរ"))))
     for k in keys:
-        # model ដែលជ្រើស ប្រើតែជាមួយ key ដែលទៅ Server ផ្ទាល់ខ្លួន (Router) — key ផ្សេងសាកជាមួយ 3.8 Flash ដូចដើម
-        checks.append((f"🔑 {key_kind(k)} · {backend.key_label(k)}",
-                       c_key(k, model if key_kind(k) in ("Server ផ្ទាល់ខ្លួន", "Gemini Router (ក្នុងកម្មវិធី)") else "")))
+        checks.append((f"🔑 {key_kind(k)} · {backend.key_label(k)}", c_key(k)))
     if gd:
         checks.append(("☁ Google Drive", c_drive(*gd)))
     if out_dir:
@@ -236,7 +215,7 @@ class CheckDialog(QDialog):
 
     def _refresh(self):
         c = theme.C
-        colors = {"ok": c["success"], "warn": c["warn"], "fail": c["error"], "run": c["muted"]}
+        colors = {"ok": "#1f9d55", "warn": c["accent"], "fail": c["error"], "run": c["muted"]}
         for (state, text), (icon, detail) in zip(self.res, self.rows):
             icon.setText({"ok": "✅", "warn": "⚠️", "fail": "❌", "run": "⏳"}[state])
             detail.setText(text)

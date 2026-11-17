@@ -432,7 +432,7 @@ class LogoPage(QWidget):
         card.st.update(status="running", stage="video", pct=0, msg="", t0=time.time(), since=time.time(),
                        out=self.target)
         if self.specs[3] and len(card.videos) > 1:
-            self.merging = video_merge.start_job(card.videos, self.work, "merged", False, [], faststart=False)
+            self.merging = video_merge.start_job(card.videos, self.work, "merged", False, [])
             card.st.update(stage="merge", msg=f"🧩 Merge {len(card.videos)} Part...")
             self.timer.start(300)
             return
