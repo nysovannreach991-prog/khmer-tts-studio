@@ -1,6 +1,6 @@
 {
-  "version": "3.0.1",
-  "notes": "ត្រឡប់ទៅកំណែ 2.2.2 ដែលដំណើរការល្អ (ដកការផ្លាស់ប្តូរ v3 ដែលមានកំហុស)",
+  "version": "3.0.2",
+  "notes": "ជួសជុល៖ បង្អួចធំជាងអេក្រង់ (ផ្នែកខាងស្តាំ/ក្រោមបាត់) លើអេក្រង់តូច",
   "files": {
     "ads.py": "a8fad1d6808cef096bb40414e4139098c7cf74f34f92ab6bdc52d339de232e81",
     "app.py": "4e09e09695a9ae1c91f8afb6ec4147cde9e6e1307aaa083b64059f1d0e3d1505",
@@ -13,7 +13,7 @@
     "fonts/KantumruyPro-SemiBold.ttf": "bb9ff805ef4d919ce3f808d736d24cafca482418236c1eea32f9b6044aa2f650",
     "funasr_srt.py": "f360658afadaf1c9f7f248d1a07e2a7ddbdfaf9a2b968ed5ef62464fe90cba4c",
     "gdrive.py": "8d74e594bc31b44a46bbc9a24dedbdd0ac7a22af3045bd571aa2a62fe912bd4f",
-    "gui.py": "ceda0146a03ff274529e6ae29c457fe927047c6b069c1a1a657633c8b868ce8b",
+    "gui.py": "12b5463a0c8ac46a54945119044abff70fa601cce60a26d1b4b04efa055143d4",
     "health_check.py": "9f1a79d7d8c124152538373c4a1e5054cb3087d15437faa190f0e4ed1f76a2dc",
     "icon.ico": "e2821240052669d6f57f687ce40c1e0442d2c84c5aeeb93574036fc8d66f2462",
     "images/vector_board.png": "e3d531a0f6fdc09b3ee44cc2b0f3f47c6c39a617d116a2c915cd3f741b1c15f6",

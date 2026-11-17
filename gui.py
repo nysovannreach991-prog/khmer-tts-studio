@@ -498,6 +498,10 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(splitter)  # ប្លង់ចាស់ (មិនបង្ហាញទៀតទេ — រក្សាការកំណត់ដែលទំព័រថ្មីប្រើ)
         self.stack.addWidget(self.simple_page)
         self.stack.addWidget(self.logo_page)
+        # ទំព័រដែលលាក់ (ប្លង់ចាស់ ទទឹងអប្បបរមា ~1535px) កុំឱ្យកំណត់ទំហំអប្បបរមារបស់បង្អួច —
+        # បើមិនដូច្នោះ លើអេក្រង់តូច បង្អួចធំជាងអេក្រង់ (ផ្នែកខាងស្តាំ/ក្រោមបាត់ · ប៊ូតុង 🔍 ចុចមិនដល់)
+        self.stack.currentChanged.connect(self._stack_min_fix)
+        self._stack_min_fix()
         lay.addWidget(self.stack, 1)
         self.status_box = QWidget()
         status_lay = self._build_status_bar()
@@ -4222,6 +4226,13 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "ទំហំកម្មវិធី", "ត្រូវបើកកម្មវិធីឡើងវិញ ដើម្បីប្តូរទំហំ។ បើកឡើងវិញឥឡូវនេះ?") \
                 == QMessageBox.Yes:
             self._restart()
+
+    def _stack_min_fix(self, *_):
+        cur = self.stack.currentWidget()
+        for k in range(self.stack.count()):
+            page = self.stack.widget(k)
+            pol = QSizePolicy.Expanding if page is cur else QSizePolicy.Ignored
+            page.setSizePolicy(pol, pol)
 
     def _fit_to_screen(self):
         """កុំឱ្យបង្អួចធំជាងអេក្រង់ (ឧ. ទំហំដែលបានរក្សាទុកពី Scale ផ្សេង)"""
