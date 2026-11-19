@@ -471,10 +471,26 @@ _LINES_SCHEMA = {"type": "OBJECT", "properties": {"lines": {"type": "ARRAY", "it
                  "required": ["lines"]}
 
 
-def translate_lines(lines, target, api_key, model, gemini_post, on_batch=None, workers=WORKERS):
-    """បកប្រែបន្ទាត់ subtitle (ស្របគ្នាច្រើនដុំ) → បញ្ជីដែលមានចំនួនដូចគ្នា (ដុំដែលខុសចំនួន → ព្យាយាមម្តងទៀត)"""
+# GUI/app កំណត់ → រាយការណ៍វឌ្ឍនភាពបកប្រែទៅ Dashboard របស់ Gemini Router (Live Traffic Orbit)
+# callable(job_id, title, done, total, status, model) · None = មិនរាយការណ៍
+progress_hook = None
+
+
+def translate_lines(lines, target, api_key, model, gemini_post, on_batch=None, workers=WORKERS, title=""):
+    """បកប្រែបន្ទាត់ subtitle (ស្របគ្នាច្រើនដុំ) → បញ្ជីដែលមានចំនួនដូចគ្នា (ដុំដែលខុសចំនួន → ព្យាយាមម្តងទៀត)
+    title = ឈ្មោះរឿង/ឯកសារ បង្ហាញក្នុង Dashboard របស់ Router"""
     lang = LANGUAGES[target]
     batches = [lines[i:i + TRANSLATE_BATCH] for i in range(0, len(lines), TRANSLATE_BATCH)]
+    progress_id, progress_done, progress_lock = uuid.uuid4().hex[:12], [0], threading.Lock()
+
+    def report(status="running"):
+        if progress_hook:
+            try:
+                progress_hook(progress_id, title or f"បកប្រែ {len(lines)} បន្ទាត់", progress_done[0], len(lines),
+                              status, model)
+            except Exception:  # noqa: BLE001 — ការរាយការណ៍មិនត្រូវរំខានការបកប្រែ
+                pass
+    report()
 
     def ask(batch, before):
         """→ បញ្ជីចំនួនដូច batch ("" = មិនបានបកប្រែ) · JSON ខូច → បំបែកពាក់កណ្តាល ហើយសួរម្តងទៀត"""
@@ -515,10 +531,19 @@ def translate_lines(lines, target, api_key, model, gemini_post, on_batch=None, w
                 out[k] = t
         if on_batch:
             on_batch()
+        with progress_lock:
+            progress_done[0] += len(batch)
+        report()
         return [t or o for t, o in zip(out, batch)]  # មិនបានសោះ → ទុកភាសាដើម (កុំបាត់បន្ទាត់)
 
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(batches)))) as pool:
-        return [t for part in pool.map(work, range(len(batches))) for t in part]
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, len(batches)))) as pool:
+            result = [t for part in pool.map(work, range(len(batches))) for t in part]
+    except BaseException:
+        report("error")
+        raise
+    report("done")
+    return result
 
 
 def start_translate_job(src_srt, out_dir, base_name, target, api_key, model, gemini_post):
@@ -536,7 +561,7 @@ def start_translate_job(src_srt, out_dir, base_name, target, api_key, model, gem
                 raise RuntimeError("SRT គ្មាន subtitle")
             job["total"] = -(-len(cues) // TRANSLATE_BATCH)
             texts = translate_lines([c["text"] for c in cues], target, api_key, model, gemini_post,
-                                    on_batch=lambda: job.__setitem__("done", job["done"] + 1))
+                                    on_batch=lambda: job.__setitem__("done", job["done"] + 1), title=base_name)
             segs = [{"start": c["start"] / 1000, "end": c["end"] / 1000, "text": c["text"], "translation": t,
                      "gender": "unknown"} for c, t in zip(cues, texts)]
             job["file"], job["original_file"] = f"{base_name}.srt", f"{base_name}_orig.srt"

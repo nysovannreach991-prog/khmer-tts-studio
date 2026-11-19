@@ -126,6 +126,69 @@ _UNSPEAKABLE = re.compile(r"[　-ヿ㐀-鿿가-힯豈-﫿＀-￯]+")
 _HAS_WORD = re.compile(r"\w")
 
 
+EDGE_MAX_PARALLEL = 128   # ពិដានស្របគ្នារបស់ Edge TTS — កម្រិតពិតកំណត់ដោយ _EdgeGate តាមស្ថានភាព server
+EDGE_MIN_PARALLEL = 8
+
+
+class _EdgeGate:
+    """ស្របគ្នាអតិបរមាដែល Edge TTS ទ្រាំបាន រកដោយស្វ័យប្រវត្តិ (AIMD ដូច TCP):
+    * ជោគជ័យ ហើយល្បឿនឆ្លើយនៅធម្មតា → បន្ថែម 1 រៀងរាល់ 4 សំណើ (រហូតដល់ EDGE_MAX_PARALLEL)
+    * server ឆ្លើយយឺតជាង 1.6x នៃពេលចាប់ផ្តើម → ឈប់បន្ថែម (ស្របគ្នាច្រើនជាងនេះមិនលឿនជាងទេ)
+    * "No audio" / timeout ≥3 ក្នុង 20 សំណើចុងក្រោយ = Microsoft កំពុងបង្ខាំង → កាត់ពាក់កណ្តាល ហើយសម្រាក 2វិ
+    job["parallel"] = កម្រិតបច្ចុប្បន្ន (UI បង្ហាញ)"""
+
+    def __init__(self, start, job, cap=None):
+        self.cap = max(cap or EDGE_MAX_PARALLEL, start)
+        self.limit, self.active, self.job = float(start), 0, job
+        self.cv = threading.Condition()
+        self.recent, self.lat, self.base = [], [], None  # True/False ចុងក្រោយ · ពេលឆ្លើយចុងក្រោយ · មធ្យមដើម
+        self.last_cut, self.hold_until, self.peak = 0.0, 0.0, start
+        job["parallel"] = int(self.limit)
+
+    def acquire(self):
+        with self.cv:
+            while self.active >= int(self.limit) or time.time() < self.hold_until:
+                self.cv.wait(0.25)
+            self.active += 1
+        return time.time()
+
+    def release(self, t0, ok):
+        dt = time.time() - t0
+        with self.cv:
+            self.active -= 1
+            self.recent = (self.recent + [ok])[-20:]
+            if ok:
+                self.lat = (self.lat + [dt])[-20:]
+                if self.base is None and len(self.lat) >= 12:
+                    self.base = sorted(self.lat)[len(self.lat) // 2]
+                slow = self.base is not None and len(self.lat) >= 12 and sorted(self.lat)[len(self.lat) // 2] > 1.6 * self.base
+                if not slow and self.recent.count(False) == 0 and self.limit < self.cap:
+                    self.limit = min(self.cap, self.limit + 0.25)
+            elif self.recent.count(False) >= 3 and time.time() - self.last_cut > 5:
+                self.limit = max(EDGE_MIN_PARALLEL, self.limit * 0.5)
+                self.last_cut = time.time()
+                self.hold_until = self.last_cut + 2
+                self.recent = []
+            self.peak = max(self.peak, int(self.limit))
+            self.job["parallel"] = int(self.limit)
+            self.cv.notify_all()
+
+
+def _edge_call(edge_audio, text, voice, opts):
+    """សំណើ Edge មួយ ឆ្លងកាត់ _EdgeGate (បើមាន) — រាយការណ៍ជោគជ័យ/បង្ខាំង ឱ្យវាកែកម្រិតស្របគ្នា"""
+    gate = opts.get("_gate")
+    if gate is None:
+        return edge_audio(text, voice, opts["rate"], opts["pitch"], opts["volume"])
+    t0 = gate.acquire()
+    ok = False
+    try:
+        data = edge_audio(text, voice, opts["rate"], opts["pitch"], opts["volume"])
+        ok = True
+        return data
+    finally:
+        gate.release(t0, ok)
+
+
 class Skipped(Exception):
     """បន្ទាត់គ្មានអ្វីអានបាន — ទុកស្ងាត់ជំនួសការបញ្ឈប់ការងារទាំងមូល"""
 
@@ -133,7 +196,7 @@ class Skipped(Exception):
 def _synth_edge(text, voice, opts, edge_audio):
     for attempt in range(3):
         try:
-            return decode_to_pcm(edge_audio(text, voice, opts["rate"], opts["pitch"], opts["volume"]))
+            return decode_to_pcm(_edge_call(edge_audio, text, voice, opts))
         except RuntimeError as e:
             if "No audio" not in str(e) and "មិនបានផ្ញើសំឡេង" not in str(e):
                 raise
@@ -146,7 +209,7 @@ def _synth_edge(text, voice, opts, edge_audio):
     if clean == text or not _HAS_WORD.search(clean):
         raise Skipped()
     try:
-        return decode_to_pcm(edge_audio(clean, voice, opts["rate"], opts["pitch"], opts["volume"]))
+        return decode_to_pcm(_edge_call(edge_audio, clean, voice, opts))
     except RuntimeError:
         raise Skipped() from None
 
@@ -164,6 +227,14 @@ def _synth_gemini(text, voice, opts, gemini_call):
                 raise
             time.sleep(delay)
             delay = min(delay * 2, 60)
+
+
+def _synth_vox(text, voice, opts, synth):
+    """VoxCPM2 (voxcpm_tts.synth) — voice = "preset:<id>" ឬ "clone:<wav>" · គ្មានសំឡេង → ទុកស្ងាត់"""
+    pcm = synth(text, voice, opts)
+    if not len(pcm):
+        raise Skipped()
+    return pcm
 
 
 # ---------------- Job ----------------
@@ -186,18 +257,28 @@ def start_job(cues, engine, opts, out_dir, fmt, fit, max_speed, workers, edge_au
 
 def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gemini_call):
     """បង្កើតសំឡេងគ្រប់បន្ទាត់ ហើយដាក់តាមពេលវេលា — ត្រឡប់ PCM int16 (SAMPLE_RATE, mono)"""
-    synth_fn = _synth_gemini if engine == "gemini" else _synth_edge
-    backend = gemini_call if engine == "gemini" else edge_audio
+    synth_fn = _synth_gemini if engine == "gemini" else _synth_vox if engine == "voxcpm" else _synth_edge
+    backend = gemini_call if engine == "gemini" else opts["synth"] if engine == "voxcpm" else edge_audio
     factors = [1.0] * len(cues)  # ល្បឿនដែលបានពន្លឿនរួច (ក្នុង synth)
 
-    def synth(i):
+    edge = engine not in ("gemini", "voxcpm")
+    if edge and workers > 1:  # Edge: ស្របគ្នាអតិបរមាដែល server ទ្រាំបាន (ចាប់ផ្តើមពី workers · ឡើង/ចុះស្វ័យប្រវត្តិ)
+        opts = dict(opts, _gate=_EdgeGate(workers, job))
+    skipped = []  # បន្ទាត់ដែល Edge មិនផ្ញើសំឡេង (ច្រើនតែព្រោះបង្ខាំងមួយភ្លែត) → សាកម្តងទៀតយឺតៗ ចុងក្រោយ
+
+    def synth(i, final=False):
         # cue["voice"] = សំឡេងស្រី/ប្រុសដែលជ្រើសដោយស្វ័យប្រវត្តិ
         # decode + កាត់ស្ងាត់ + ពន្លឿន ធ្វើក្នុង thread ដដែល (ស្របគ្នា) — មិនរង់ចាំដល់ចុងបញ្ចប់
         cue = cues[i]
         try:
-            clip = trim_silence(synth_fn(cue["text"], cue.get("voice") or opts["voice"], opts, backend))
+            # pitch_add (Hz): តួអង្គទី 2 / ក្មេង ប្រើសំឡេង Edge ដដែល តែកម្ពស់សំឡេងផ្សេង
+            o = dict(opts, pitch=opts.get("pitch", 0) + cue["pitch_add"]) if cue.get("pitch_add") else opts
+            clip = trim_silence(synth_fn(cue["text"], cue.get("voice") or opts["voice"], o, backend))
         except Skipped:
-            job["warnings"].append(f"បន្ទាត់ទី {cue['index']} អានមិនបាន (\"{cue['text'][:30]}\") — ទុកស្ងាត់")
+            if edge and not final:
+                skipped.append(i)
+            else:
+                job["warnings"].append(f"បន្ទាត់ទី {cue['index']} អានមិនបាន (\"{cue['text'][:30]}\") — ទុកស្ងាត់")
             return np.zeros(0, np.int16)
         next_start = cues[i + 1]["start"] if i + 1 < len(cues) else cue["end"]
         slot = (max(cue["end"], next_start) - cue["start"]) * SAMPLE_RATE // 1000
@@ -220,7 +301,7 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
 
     clips = [None] * len(cues)
     failed = []
-    pool = ThreadPoolExecutor(max_workers=workers)
+    pool = ThreadPoolExecutor(max_workers=opts["_gate"].cap if opts.get("_gate") else workers)
     try:
         futures = {pool.submit(synth, i): i for i in range(len(cues))}
         pending, retried = set(futures), set()
@@ -256,6 +337,17 @@ def render_dub(job, cues, engine, opts, fit, max_speed, workers, edge_audio, gem
     finally:
         pool.shutdown(wait=False, cancel_futures=True)  # បរាជ័យ → កុំរង់ចាំបន្ទាត់ដែលនៅសល់
 
+    if skipped:  # ជុំទី 2: បន្ទាត់ដែលគ្មានសំឡេង — សម្រាក 3វិ រួចសាកម្តងទៀតតែ 4 ស្របគ្នា (នៅតែគ្មាន → ទុកស្ងាត់ + ព្រមាន)
+        job["retrying"] = len(skipped)
+        time.sleep(3)
+        if opts.get("_gate"):
+            opts["_gate"].limit = min(opts["_gate"].limit, 4)
+        with ThreadPoolExecutor(max_workers=4) as retry:
+            for i, clip in zip(list(skipped), retry.map(lambda i: synth(i, True), list(skipped))):
+                clips[i] = clip
+        job["retrying"] = 0
+    if opts.get("_gate"):
+        job["parallel_peak"] = opts["_gate"].peak
     job["status"] = "mixing"
     pieces, cursor = [], 0  # cursor = ចុងបញ្ចប់នៃ clip មុន (គិតជា sample)
     limit = max(CATCHUP_MAX, max_speed)

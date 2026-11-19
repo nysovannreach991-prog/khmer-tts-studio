@@ -34,6 +34,8 @@ import overlay
 import srt_dub
 import transcribe
 import video_dub
+import i18n
+import overlay_stage
 import theme
 import updater
 import video_merge
@@ -43,11 +45,14 @@ import funasr_srt as funasr_mod
 import auto_pipeline
 import logo_page as logo_page_mod
 import simple_ui
+import shell
+import studio_page as studio_mod
 import vector_fx
 import vocal_remove
 import sysmon
 import setup_check
 import health_check
+import gemini_direct
 import gdrive
 
 OUTPUT_DIR = backend.OUTPUT_DIR          # ថតលទ្ធផល — អ្នកប្រើអាចប្តូរបាន (set_output_dir)
@@ -327,12 +332,12 @@ class ActivationDialog(QDialog):
 
     def __init__(self, parent=None, error=""):
         super().__init__(parent)
-        self.setWindowTitle("AI Team #1 — License")
+        self.setWindowTitle("Mr. Reach Dubber Ultra — License")
         self.setMinimumWidth(620)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(10)
-        title = QLabel("🔑 បើកដំណើរការ AI Team #1")
+        title = QLabel("🔑 បើកដំណើរការ Mr. Reach Dubber Ultra")
         title.setStyleSheet("font-size:15pt; font-weight:bold")
         lay.addWidget(title)
         intro = QLabel("កម្មវិធីនេះត្រូវការ License key។ ផ្ញើ <b>Machine code</b> ខាងក្រោមទៅម្ចាស់កម្មវិធី "
@@ -430,7 +435,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         version = updater.local_version()
-        self.setWindowTitle("AI Team #1" + (f"  v{version}" if version != "0" else ""))
+        self.setWindowTitle("Mr. Reach Dubber Ultra" + (f"  v{version}" if version != "0" else ""))
         self.resize(*DESIGN_SIZE)
         self.settings = QSettings("KhmerTTS", "Studio")
         self.edge_voices = list(FALLBACK_EDGE_VOICES)
@@ -488,6 +493,7 @@ class MainWindow(QMainWindow):
         lay.setSpacing(10)
         lay.addWidget(self._build_header())
         # ✨ Simple mode — ផ្ទាំង Auto សាមញ្ញ (ប្តូរដោយប៊ូតុង ✨ Simple នៅខាងលើ)
+        simple_ui.BOARD = False  # បន្ទះសៀគ្វី Vector (theme ចាស់) ត្រូវបានដកចេញ
         self.simple_page = simple_ui.SimplePage(self._scan_folder)
         self.simple_page.start.connect(self._simple_start)
         self.simple_page.stop.connect(self._simple_stop)
@@ -498,11 +504,19 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(splitter)  # ប្លង់ចាស់ (មិនបង្ហាញទៀតទេ — រក្សាការកំណត់ដែលទំព័រថ្មីប្រើ)
         self.stack.addWidget(self.simple_page)
         self.stack.addWidget(self.logo_page)
-        # ទំព័រដែលលាក់ (ប្លង់ចាស់ ទទឹងអប្បបរមា ~1535px) កុំឱ្យកំណត់ទំហំអប្បបរមារបស់បង្អួច —
-        # បើមិនដូច្នោះ លើអេក្រង់តូច បង្អួចធំជាងអេក្រង់ (ផ្នែកខាងស្តាំ/ក្រោមបាត់ · ប៊ូតុង 🔍 ចុចមិនដល់)
-        self.stack.currentChanged.connect(self._stack_min_fix)
-        self._stack_min_fix()
-        lay.addWidget(self.stack, 1)
+        # 🎬 Dub Studio — ទំព័រកែសម្រួល (វីដេអូ · Dialogue · Timeline) · ទំព័រដើមក្នុងប្លង់ Studio
+        self.studio_page = studio_mod.StudioPage(self, backend, OUTPUT_DIR)
+        self.stack.addWidget(self.studio_page)
+        # 🧭 Studio shell — របារមុខងារខាងឆ្វេង (ក្រុម) → គ្រប់មុខងារក្នុងមួយចុច · Classic = លាក់ (ទំព័រ Auto តែមួយ)
+        self.nav = shell.SideNav(self)
+        self.nav.selected.connect(self._nav_go)
+        body = QHBoxLayout()
+        body.setSpacing(10)
+        body.addWidget(self.nav)
+        body.addWidget(self.stack, 1)
+        lay.addLayout(body, 1)
+        self.stack.currentChanged.connect(lambda _: self._sync_nav())
+        self.tabs.currentChanged.connect(lambda _: self._sync_nav())
         self.status_box = QWidget()
         status_lay = self._build_status_bar()
         status_lay.setContentsMargins(0, 0, 0, 0)
@@ -524,6 +538,11 @@ class MainWindow(QMainWindow):
         self.explorer.setVisible(explorer_on)  # (isVisible() = False មុនបង្អួចបង្ហាញ — ប្រើតម្លៃផ្ទាល់)
         self._explorer_sync_target()
         self._simple_load()
+        self._apply_layout(self.settings.value("ui_layout", "studio"))
+        self._hud_decorate()
+        if self.layout_mode == "studio":  # បើកកម្មវិធី → Dub Studio
+            self.stack.setCurrentWidget(self.studio_page)
+            self._sync_nav()
         self._update_engine()
         self.load_edge_voices()
         if ffmpeg_setup.available():
@@ -1119,6 +1138,7 @@ class MainWindow(QMainWindow):
               ("none", "គ្មាន (ប្រើដូចដើម)")]
     # (prefix, ចំណងជើង, លំនាំដើម)
     OV_DEFAULTS = {"lg": {"pos": "tr", "size": 12, "margin": 3, "opacity": 90, "strength": 15},
+                   "lg2": {"pos": "tl", "size": 12, "margin": 3, "opacity": 90, "strength": 15},
                    "lt": {"pos": "bl", "size": 45, "margin": 4, "opacity": 100, "strength": 15,
                           "start": 10, "every": 5, "show": 8, "per_part": True}}
 
@@ -1128,10 +1148,11 @@ class MainWindow(QMainWindow):
         left_w = QWidget()
         left = QVBoxLayout(left_w)
         left.setContentsMargins(0, 0, 6, 0)
-        self.ov = {}
+        self.ov, self.ov_boxes = {}, {}
         self._ov_loading = False
         left.addWidget(self._preset_bar())
         left.addWidget(self._overlay_card("lg", "🏷 Logo", "Logo នៅជ្រុងវីដេអូ — បង្ហាញជានិច្ច (វីដេអូនឹង loop)"))
+        left.addWidget(self._overlay_card("lg2", "🏷 Logo 2", "Logo ទី 2 (ឧ. ជ្រុងម្ខាងទៀត) — បង្ហាញជានិច្ច ជាមួយ Logo ទី 1"))
         left.addWidget(self._overlay_card("lt", "📺 Lower third", "ផ្ទាំងអក្សរខាងក្រោម — លេចឡើងតាមពេលកំណត់"))
         left.addWidget(self._watermark_card())
         left.addWidget(self._ads_card())
@@ -1179,7 +1200,10 @@ class MainWindow(QMainWindow):
         self.ov_preview.setMinimumSize(280, 158)
         self.ov_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.ov_preview.setWordWrap(True)
-        right.addWidget(self.ov_preview, 1)
+        self.ov_preview.hide()  # ជំនួសដោយ ov_stage (លេងវីដេអូ + អូស Logo) — label ចាស់ទុកសម្រាប់សារកំហុស
+        self.ov_stage = overlay_stage.OverlayStage(self)
+        right.addWidget(self.ov_stage, 1)
+        right.addWidget(self.ov_preview)
         self.btn_ov_clip = QPushButton("▶ Preview វីដេអូ (~10វិ)")
         self.btn_ov_clip.setCursor(Qt.PointingHandCursor)
         self.btn_ov_clip.clicked.connect(self._overlay_clip)
@@ -1264,6 +1288,7 @@ class MainWindow(QMainWindow):
             elif isinstance(widget, QCheckBox):
                 widget.toggled.connect(lambda _: self._ov_timer.start())
         self.ov[prefix] = c
+        self.ov_boxes[prefix] = box
         return box
 
     def _watermark_card(self):
@@ -1588,7 +1613,8 @@ class MainWindow(QMainWindow):
             spec = {"path": path, "key": c["key"].currentData(), "strength": c["strength"].value() / 100,
                     "pos": c["pos"].currentData(), "size": c["size"].value(), "margin": c["margin"].value(),
                     "opacity": c["opacity"].value(), "x": c["x"].value(), "y": c["y"].value(),
-                    "mode": "timed" if prefix == "lt" else "always", "kind": prefix}
+                    "mode": "timed" if prefix == "lt" else "always",
+                    "kind": "lg" if prefix == "lg2" else prefix}  # Logo 2 ប្រើប្រអប់ធីក "Logo" ដដែល
             if prefix == "lt":
                 spec.update(start=c["start"].value(), every=c["every"].value() * 60, show=c["show"].value(),
                             per_part=c["per_part"].isChecked())
@@ -1599,6 +1625,12 @@ class MainWindow(QMainWindow):
         return specs
 
     def _overlay_preview(self):
+        """Preview អន្តរកម្ម: វីដេអូ (ឬផ្ទៃពណ៌) + Logo / Lower third លើ ov_stage"""
+        video, canvas = self._ov_source()
+        self.ov_stage.set_source(video, canvas)
+        self.ov_stage.sync()
+
+    def _overlay_preview_image(self):
         if self._ov_pending:  # កំពុងគូរ → គូរម្តងទៀតពេលចប់
             self._ov_timer.start()
             return
@@ -2628,6 +2660,8 @@ class MainWindow(QMainWindow):
     def gemini_key(self):
         """Gemini (AIza...) ឬ Bayon Gateway (bayon_sk_...) — key ច្រើនបំបែកដោយ "," (app.gemini_post ប្តូរពេលមានបញ្ហា)"""
         own = backend.join_keys(self.api_key.text()) or os.environ.get("GEMINI_API_KEY", "")
+        if not own and backend.ROUTER_DIRECT:  # Router ក្នុងកម្មវិធី — មិនត្រូវការ key → key និម្មិត
+            return backend.DIRECT_KEY
         if own or not backend.RELAY_URL:
             return own
         # អតិថិជនគ្មាន key ផ្ទាល់ខ្លួន → License (AT1-…) → បកប្រែតាម Relay របស់ម្ចាស់ (key មិនដែលនៅលើកុំព្យូទ័រនេះ)
@@ -2815,7 +2849,9 @@ class MainWindow(QMainWindow):
         sp = self.simple_page
         gd = (sp.gd_url.text().strip(), sp.gd_secret.text()) if sp.gd_url.text().strip() and sp.gd_secret.text() \
             else None
-        checks = health_check.build(backend.parse_keys(self.gemini_key()), sp.voice.currentData(), gd, OUTPUT_DIR)
+        model = (sp.model.currentData() if self._uses_router() else None) or ""  # សាក model ដែលជ្រើស (ឧ. Hydrogen)
+        checks = health_check.build(backend.parse_keys(self.gemini_key()), sp.voice.currentData(), gd, OUTPUT_DIR,
+                                    model)
         dlg = health_check.CheckDialog(self, checks)
         dlg.setStyleSheet(sp.styleSheet())
         dlg.setAttribute(Qt.WA_DeleteOnClose)
@@ -3069,7 +3105,7 @@ class MainWindow(QMainWindow):
         overlays = self.overlays()
         for prefix, c in self.ov.items():
             if c["on"].isChecked() and not os.path.isfile(c["path"].text().strip()):
-                self._log(f"   ⚠ {'Logo' if prefix == 'lg' else 'Lower third'}: រកមិនឃើញឯកសារ — រំលង")
+                self._log(f"   ⚠ {'Lower third' if prefix == 'lt' else 'Logo 2' if prefix == 'lg2' else 'Logo'}: រកមិនឃើញឯកសារ — រំលង")
         if overlays:
             self._log(f"   🏷 {len(overlays)} Logo/Lower third — encode ដោយ {overlay.pick_encoder()}")
         ads = self.ads_spec()
@@ -3653,7 +3689,8 @@ class MainWindow(QMainWindow):
             if not multi:
                 return then(videos[0])
             self.enter_stage(s_merge)
-            job = video_merge.start_job(videos, self.vsrt_tmp, backend.safe_name(stem) or "story", False, [])
+            job = video_merge.start_job(videos, self.vsrt_tmp, backend.safe_name(stem) or "story", False, [],
+                                        faststart=False)
             self.set_busy(True)
             self.watch_job(job, lambda s: f"{name}: កំពុង Merge {len(videos)} Part {s['done']}%...",
                            lambda s: then(os.path.join(self.vsrt_tmp, s["file"])), lambda s: s_merge)
@@ -3721,6 +3758,8 @@ class MainWindow(QMainWindow):
                 with_source(start_whisper)
             return self.run_sync(lambda: self._vsrt_embedded(videos, o["wlang"], out_tmp),
                                  f"{name}: កំពុងរក subtitle ក្នុងវីដេអូ...", after)
+        if mode in ("sensevoice", "paraformer"):
+            funasr_mod.prewarm(mode)  # ផ្ទុក model កំឡុងពេល Merge / រៀបចំប្រភព
         with_source({"whisper": start_whisper, "sensevoice": start_funasr, "paraformer": start_funasr}.get(mode, start_gemini))
 
     @staticmethod
@@ -3851,6 +3890,8 @@ class MainWindow(QMainWindow):
         """ប្តូរថតលទ្ធផលសម្រាប់ការងារទាំងអស់ (GUI + backend) — ត្រឡប់ False បើប្រើមិនបាន"""
         global OUTPUT_DIR
         path = os.path.normpath(os.path.abspath(path))
+        if hasattr(self, "studio_page"):
+            self.studio_page.output_dir = path
         try:
             os.makedirs(path, exist_ok=True)
             probe = os.path.join(path, ".aiteam1_write_test")
@@ -4148,6 +4189,8 @@ class MainWindow(QMainWindow):
         if ext in explorer_mod.IMAGE or ext in VIDEO_EXT:
             menu.addAction("🏷 ដាក់ជា Logo", lambda: (self.ov["lg"]["path"].setText(path),
                                                       self.ov["lg"]["on"].setChecked(True)))
+            menu.addAction("🏷 ដាក់ជា Logo 2", lambda: (self.ov["lg2"]["path"].setText(path),
+                                                        self.ov["lg2"]["on"].setChecked(True)))
             menu.addAction("📺 ដាក់ជា Lower third", lambda: (self.ov["lt"]["path"].setText(path),
                                                             self.ov["lt"]["on"].setChecked(True)))
         if ext in VIDEO_EXT:
@@ -4167,13 +4210,21 @@ class MainWindow(QMainWindow):
         lay.setSpacing(12)
         logo = QLabel("🎙")
         logo.setObjectName("logo")
-        logo.setFixedSize(48, 48)
+        logo.setFixedSize(52, 52)
         logo.setAlignment(Qt.AlignCenter)
+        logo_png = os.path.join(backend.BASE_DIR, "logo.png")
+        if os.path.isfile(logo_png):  # logo របស់កម្មវិធី (Dubber Ultra)
+            logo.setText("")
+            pm = QPixmap(logo_png)
+            dpr = self.devicePixelRatioF()
+            pm = pm.scaled(int(52 * dpr), int(52 * dpr), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            logo.setPixmap(pm)
         lay.addWidget(logo)
         titles = QVBoxLayout()
         titles.setSpacing(0)
         title_row = QHBoxLayout()
-        title = QLabel("AI Team #1")
+        title = QLabel("Mr. Reach Dubber Ultra")
         title.setObjectName("appTitle")
         self.app_title = title
         title_row.addWidget(title)
@@ -4182,6 +4233,7 @@ class MainWindow(QMainWindow):
             pill = QLabel(f"v{version}")
             pill.setObjectName("pill")
             title_row.addWidget(pill)
+        title_row.addWidget(theme.StatusDot())  # HUD: ចំណុចស្ថានភាពតុបតែង (ភ្លឹបភ្លែតយឺត)
         title_row.addStretch()
         titles.addLayout(title_row)
         sub = QLabel(APP_SUB)
@@ -4196,13 +4248,22 @@ class MainWindow(QMainWindow):
         self.btn_explorer.toggled.connect(self._toggle_explorer)
         self.btn_update = QPushButton("🔄 Update")
         about = QPushButton("ⓘ")
+        self.btn_layout = QPushButton("🧭 ប្លង់ ▾")
+        self.btn_layout.setToolTip("ប្លង់កម្មវិធី — Studio: របារមុខងារខាងឆ្វេង (គ្រប់មុខងារ) · Classic: ទំព័រ Auto តែមួយ ដូចមុន")
+        lm = QMenu(self.btn_layout)
+        lm.addAction("🧭 Studio — របារមុខងារខាងឆ្វេង (ថ្មី)", lambda: self._set_layout("studio"))
+        lm.addAction("✨ Classic — ទំព័រ Auto តែមួយ (ចាស់)", lambda: self._set_layout("classic"))
+        self.btn_layout.setMenu(lm)
         self.btn_scale = QPushButton(f"🔍 {self._scale_label(self.settings.value('ui_scale', 'auto'))} ▾")
         self.btn_scale.setToolTip("ទំហំកម្មវិធី — Auto ប្តូរតាមទំហំអេក្រង់ និង Windows Scale")
         menu = QMenu(self.btn_scale)
         for key, label in UI_SCALES:
             menu.addAction(label, lambda k=key: self._set_ui_scale(k))
         self.btn_scale.setMenu(menu)
-        for b in (self.btn_explorer, self.btn_scale, self.btn_update, about):
+        self.btn_lang = QPushButton("🌐 ខ្មែរ" if i18n.LANG == "en" else "🌐 English")
+        self.btn_lang.setToolTip("ភាសាកម្មវិធី — English / ខ្មែរ")
+        self.btn_lang.clicked.connect(self._toggle_lang)
+        for b in (self.btn_explorer, self.btn_layout, self.btn_scale, self.btn_lang, self.btn_update, about):
             b.setObjectName("ghost")
             b.setCursor(Qt.PointingHandCursor)
             lay.addWidget(b)
@@ -4227,12 +4288,12 @@ class MainWindow(QMainWindow):
                 == QMessageBox.Yes:
             self._restart()
 
-    def _stack_min_fix(self, *_):
-        cur = self.stack.currentWidget()
-        for k in range(self.stack.count()):
-            page = self.stack.widget(k)
-            pol = QSizePolicy.Expanding if page is cur else QSizePolicy.Ignored
-            page.setSizePolicy(pol, pol)
+    def _toggle_lang(self):
+        i18n.set_lang("km" if i18n.LANG == "en" else "en")
+        if self.busy:
+            return self.set_status("ភាសាថ្មីនឹងប្រើពេលបើកកម្មវិធីលើកក្រោយ")
+        if QMessageBox.question(self, "ភាសា", "ត្រូវបើកកម្មវិធីឡើងវិញ ដើម្បីប្តូរភាសា។ បើកឡើងវិញឥឡូវនេះ?") == QMessageBox.Yes:
+            self._restart()
 
     def _fit_to_screen(self):
         """កុំឱ្យបង្អួចធំជាងអេក្រង់ (ឧ. ទំហំដែលបានរក្សាទុកពី Scale ផ្សេង)"""
@@ -4242,6 +4303,72 @@ class MainWindow(QMainWindow):
             self.resize(min(self.width(), avail.width() - 16), min(self.height(), avail.height() - 40))
         if not avail.contains(self.frameGeometry().topLeft()):
             self.move(avail.left() + 8, avail.top() + 8)
+
+    # ================= 🧭 Studio shell =================
+    def _hud_decorate(self):
+        """HUD: ជ្រុង bracket លើ panel ធំៗ · ពន្លឺ neon លើចំណងជើង · accessible name សម្រាប់ប៊ូតុង icon"""
+        sp = self.simple_page
+        for w in (self.findChild(QFrame, "header"), self.nav, sp.hero, sp.foot, sp.side, sp.router_panel,
+                  self.status_box):
+            theme.add_brackets(w)
+        theme.glow(self.app_title)
+        theme.name_icon_buttons(self)
+
+    def _set_layout(self, mode):
+        self.settings.setValue("ui_layout", mode)
+        self._apply_layout(mode)
+
+    def _apply_layout(self, mode):
+        """studio = Sidebar ខាងឆ្វេង + គ្រប់ទំព័រ · classic = ទំព័រ Auto (+ Logo & Ads) ដូចមុន"""
+        studio = mode == "studio"
+        self.layout_mode = "studio" if studio else "classic"
+        self.nav.setVisible(studio)
+        self.tabs.tabBar().setVisible(not studio)  # Studio: Sidebar ជំនួស tab bar
+        self.btn_layout.setText("🧭 Studio ▾" if studio else "✨ Classic ▾")
+        if studio:
+            self.nav.restyle()
+        elif self.stack.currentWidget() is self.splitter:  # Classic មិនមានទំព័រ tab → ត្រឡប់ Auto
+            self._go_page(self.simple_page)
+        self._sync_nav()
+
+    _TAB_BY_KEY = {"text": "text_tab", "srt": "srt_tab", "brand": "brand_tab", "stt": "stt_tab",
+                   "vsrt": "vsrt_tab", "merge": "merge_tab", "batch": "batch_tab", "files": "files_tab"}
+
+    def _nav_go(self, key):
+        """ចុចធាតុក្នុង Sidebar (ឬ Ctrl+1…9)"""
+        if key == "output":
+            return open_path(OUTPUT_DIR)
+        if key == "check":
+            return self._health_check()
+        if key in ("auto", "settings", "router"):
+            sp = self.simple_page
+            self._go_page(sp)
+            if key == "settings":
+                sp.show_settings()
+            elif key == "router":  # Dashboard (Live Traffic · គណនី · Log) លើទំព័រ Auto
+                sp.router_panel.set_collapsed(False)
+            return
+        if key == "logo":
+            return self._go_page(self.logo_page)
+        if key == "studio":
+            return self._go_page(self.studio_page)
+        tab = getattr(self, self._TAB_BY_KEY[key])
+        self.tabs.setCurrentWidget(tab)
+        self._go_page(self.splitter)
+
+    def _sync_nav(self):
+        """ទំព័រប្តូរ (តាម Sidebar / ប៊ូតុងក្នុងទំព័រ / tab) → Sidebar · របារស្ថានភាព · ចំណងជើងរង ស៉ីគ្នា"""
+        if not hasattr(self, "nav"):
+            return
+        cur = self.stack.currentWidget()
+        on_tabs = cur is self.splitter
+        key = ("auto" if cur is self.simple_page else "logo" if cur is self.logo_page
+               else "studio" if cur is self.studio_page else self._tab_kind())
+        self.nav.set_current(key)
+        studio = getattr(self, "layout_mode", "studio") == "studio"
+        self.status_box.setVisible(on_tabs and studio)  # 📊 ដំណើរការ របស់ផ្ទាំង tab
+        self.btn_explorer.setVisible(on_tabs and studio)
+        self.app_sub.setText(f"🧭 {shell.LABELS[key]}" if on_tabs and key in shell.LABELS else APP_SUB)
 
     # ================= ✨ Simple mode =================
     def _show_simple(self):
@@ -4256,7 +4383,7 @@ class MainWindow(QMainWindow):
         self.simple_page.key.setText(backend.join_keys(self.api_key.text()))  # key ផ្ទាល់ខ្លួនតែប៉ុណ្ណោះ (មិនមែន License)
         self._simple_key_state()
         self._gpu_check()
-        if theme.mode == "vector":
+        if simple_ui._vec():
             self.simple_page.boot()  # ចលនាបើកម៉ាស៊ីន (Linking... → ផ្ទាំងឡើង)
         else:
             simple_ui._fade_in(self.simple_page, 260)
@@ -4266,15 +4393,17 @@ class MainWindow(QMainWindow):
         cur = self.stack.currentWidget()
         if page is cur:
             return
-        if cur.btn_settings.isChecked():  # បិទផ្ទាំងការកំណត់មុនចាកចេញ
-            cur.btn_settings.setChecked(False)
+        btn = getattr(cur, "btn_settings", None)  # ទំព័រ tab (splitter) គ្មានផ្ទាំងការកំណត់អណ្តែត
+        if btn and btn.isChecked():  # បិទផ្ទាំងការកំណត់មុនចាកចេញ
+            btn.setChecked(False)
         if page is self.logo_page:
             page.restyle()
             self._ov_timer.start(50)
         old = self.stack.grab()
         page.resize(self.stack.size())
         self.stack.setCurrentWidget(page)
-        page.layout().activate()  # ទំព័រមិនទាន់ធ្លាប់បង្ហាញ → រៀបទំហំមុនថតរូប (កុំឲ្យទទេពេលរំកិល)
+        if page.layout():  # ទំព័រមិនទាន់ធ្លាប់បង្ហាញ → រៀបទំហំមុនថតរូប (កុំឲ្យទទេពេលរំកិល) · QSplitter គ្មាន layout
+            page.layout().activate()
         new = self.stack.grab()
         vector_fx.SlideOverlay(self.stack, old, new, forward=page is self.logo_page)
 
@@ -4319,6 +4448,9 @@ class MainWindow(QMainWindow):
         # Server OpenAI-compatible ផ្ទាល់ខ្លួន (Base URL) — QSettings តែប៉ុណ្ណោះ
         backend.OPENAI_BASE_URL = s.value("openai_base_url", "")
         sp.base_url.setText(backend.OPENAI_BASE_URL)
+        # ⚡ Gemini Router ក្នុងកម្មវិធី (Direct) — ត្រូវដឹងមុន _sync_model_combos (_custom_url ពឹងលើវា)
+        backend.ROUTER_DIRECT = s.value("router_direct", "false") in (True, "true")
+        backend.ROUTER_DIR = s.value("router_dir", "")
         # ឥឡូវដឹង key + Base URL → combo Model នៃផ្ទាំងផ្សេងៗ (OpenAI ឬ Gemini) ហើយជ្រើស model ដែលរក្សាទុកវិញ
         self._sync_model_combos({self.stt_model: s.value("stt_model", ""), self.vsrt_model: s.value("vsrt_model", ""),
                                  self.vsrt_trans_model: s.value("vsrt_trans_model", "")})
@@ -4327,9 +4459,48 @@ class MainWindow(QMainWindow):
             backend.OPENAI_BASE_URL = t.strip()
             s.setValue("openai_base_url", t.strip())
             self._router_models_for = None  # Server ប្តូរ → ទាញបញ្ជី model ថ្មី
+            self._router_model_ids = []
             self._sync_model_combos()
             self._simple_key_state()
         sp.base_url.textChanged.connect(set_base)
+        sp.router_direct.setChecked(backend.ROUTER_DIRECT)
+        sp.router_row.setVisible(backend.ROUTER_DIRECT)
+        sp.router_dir.setText(backend.ROUTER_DIR)
+        sp.router_dir.setPlaceholderText(gemini_direct.find_router_dir() or "ថត Gemini Router (មាន engine.py)")
+        self._direct_timer = QTimer(self)
+        self._direct_timer.setInterval(1500)
+        self._direct_timer.timeout.connect(self._direct_poll)
+
+        def set_direct(on):
+            backend.ROUTER_DIRECT = on
+            s.setValue("router_direct", on)
+            sp.router_row.setVisible(on)
+            self._router_models_for = None  # បញ្ជី model ប្តូរ (Router ↔ Server/Bayon)
+            self._router_model_ids = []
+            self._sync_model_combos()
+            if on:
+                self._direct_start()
+            else:
+                self._direct_stop()
+            self._simple_key_state()
+        sp.router_direct.toggled.connect(set_direct)
+
+        def set_router_dir(t):
+            backend.ROUTER_DIR = t.strip()
+            s.setValue("router_dir", t.strip())
+        sp.router_dir.textChanged.connect(set_router_dir)
+        sp.btn_router_dir.clicked.connect(self._direct_browse)
+        # របារ 🔀 Gemini Router លើទំព័រ Auto ↔ checkbox ក្នុងការកំណត់ (តម្លៃតែមួយ)
+        sp.router_on.setChecked(backend.ROUTER_DIRECT)
+        sp.router_on.toggled.connect(lambda on: sp.router_direct.isChecked() != on and sp.router_direct.setChecked(on))
+        sp.router_direct.toggled.connect(lambda on: sp.router_on.isChecked() != on and sp.router_on.setChecked(on))
+        sp.btn_router_cfg.clicked.connect(self._router_settings)
+        # Dashboard បត់/លា — រក្សាទុក
+        sp.router_panel.set_collapsed(s.value("router_panel_collapsed", "false") in (True, "true"), emit=False)
+        sp.router_panel.collapsed_changed.connect(lambda on: s.setValue("router_panel_collapsed", on))
+        self._direct_show(gemini_direct.status_text() if backend.ROUTER_DIRECT else "○ មិនទាន់បើក")
+        if backend.ROUTER_DIRECT:
+            self._direct_start()
         # Model របស់ Server ផ្ទាល់ខ្លួន — ទាញពី /v1/models ពេល Server សកម្ម (ក្នុង _simple_key_state)
         self._router_models_for = None
         sp.model.currentIndexChanged.connect(
@@ -4345,6 +4516,57 @@ class MainWindow(QMainWindow):
             s.setValue("openai_tracking_id", t.strip())
         sp.tracking_id.textChanged.connect(set_tracking)
         self._show_simple()
+
+    def _router_settings(self):
+        """បើកការកំណត់ត្រង់ផ្នែក Gemini Router (ថត Router · model)"""
+        sp = self.simple_page
+        self._go_page(sp)
+        sp.show_settings()
+        QTimer.singleShot(450, lambda: sp.side_scroll.ensureWidgetVisible(sp.router_direct, 0, 160))
+
+    def _direct_show(self, text):
+        """ស្ថានភាព Gemini Router — ក្នុងការកំណត់ និងលើរបារទំព័រ Auto"""
+        sp = self.simple_page
+        sp.router_state.setText(text)
+        sp.router_led.setText(text)
+
+    def _direct_start(self):
+        """បើក engine របស់ Gemini Router ក្នុង process នេះ (thread ផ្ទាល់) ហើយតាមដានស្ថានភាពរហូត ready"""
+        sp = self.simple_page
+        folder = gemini_direct.find_router_dir(backend.ROUTER_DIR)
+        if not folder:
+            return self._direct_show("⚠ រកមិនឃើញថត Gemini Router (engine.py + profiles/) — ចុច 📂 ជ្រើសថត")
+        if not backend.ROUTER_DIR:
+            sp.router_dir.setText(folder)  # រកឃើញដោយស្វ័យប្រវត្តិ → រក្សាទុក
+        gemini_direct.start(folder, os.path.join(os.path.dirname(self._log_path()), "router_direct.log"))
+        self._direct_show(gemini_direct.status_text())
+        self._direct_timer.start()
+
+    def _direct_poll(self):
+        sp = self.simple_page
+        self._direct_show(gemini_direct.status_text())
+        if gemini_direct.status()["status"] != "starting":
+            self._direct_timer.stop()
+            self._file_log(f"router direct: {gemini_direct.status_text()}")
+            self._simple_key_state()
+
+    def _direct_stop(self):
+        self._direct_timer.stop()
+        threading.Thread(target=gemini_direct.stop, daemon=True).start()  # បិទ Chrome នៅខាងក្រោយ
+        self._direct_show("○ បិទ")
+
+    def _direct_browse(self):
+        sp = self.simple_page
+        d = QFileDialog.getExistingDirectory(self, "ថត Gemini Router (មាន engine.py)",
+                                             backend.ROUTER_DIR or "D:/Software")
+        if not d:
+            return
+        if not gemini_direct.is_valid(d):
+            return QMessageBox.warning(self, "ថតមិនត្រឹមត្រូវ",
+                                       f"{d}\n\nគ្មាន engine.py — សូមជ្រើសថត Gemini Router (ឧ. Gemini Router 1-2)")
+        sp.router_dir.setText(d)
+        if backend.ROUTER_DIRECT and gemini_direct.status()["status"] in ("off", "error"):
+            self._direct_start()
 
     def _uses_router(self):
         """key ទៅ Server ផ្ទាល់ខ្លួន (Base URL + key ដែលមិនមែន Google/Bayon/License)"""
@@ -4366,7 +4588,10 @@ class MainWindow(QMainWindow):
         """key OpenAI → combo Model បង្ហាញ model ChatGPT (tooltip = តម្លៃ) · key ផ្សេង → Gemini ដូចដើម
         saved = {combo: model ពី settings} ឱ្យជ្រើសវិញបន្ទាប់ពីប្តូរបញ្ជី"""
         openai = self._uses_openai()
-        want = [m[0] for m in backend.OPENAI_MODELS] if openai else list(transcribe.MODELS)
+        # Server ផ្ទាល់ខ្លួន (Gemini Router) → បញ្ជី model ពិតរបស់ Server (GET /v1/models, ឧ. gemini-4-hydrogen)
+        router_ids = list(getattr(self, "_router_model_ids", None) or []) if self._uses_router() else []
+        want = [m[0] for m in backend.OPENAI_MODELS] if openai else router_ids or list(transcribe.MODELS)
+        router_default = "gemini-4-hydrogen" if "gemini-4-hydrogen" in want else want[0]
         for combo in self._model_combos():
             cur = (saved or {}).get(combo) or combo.currentText()
             if [combo.itemText(i) for i in range(combo.count())] != want:
@@ -4377,7 +4602,8 @@ class MainWindow(QMainWindow):
                     for i, (_, name, inp, out) in enumerate(backend.OPENAI_MODELS):
                         combo.setItemData(i, f"{name} · ${inp:.2f} / ${out:.2f} ក្នុង 1M token (ចូល / ចេញ)", Qt.ToolTipRole)
                 combo.blockSignals(False)
-            combo.setCurrentText(cur if cur in want else backend.OPENAI_DEFAULT_MODEL if openai else want[0])
+            combo.setCurrentText(cur if cur in want else backend.OPENAI_DEFAULT_MODEL if openai
+                                 else router_default if router_ids else want[0])
             combo.setToolTip("Model OpenAI (ChatGPT) · $ ក្នុង 1M token ចូល / ចេញ — ដាក់ mouse លើ model ដើម្បីមើលតម្លៃ\n"
                              "ផ្ទាំងដែលស្តាប់សំឡេង (Gemini ស្តាប់) ត្រូវការ key Gemini/Bayon/Relay" if openai else "")
 
@@ -4407,6 +4633,9 @@ class MainWindow(QMainWindow):
         def show(models):
             if backend.OPENAI_BASE_URL != url:
                 return  # Server ប្តូរទៀតពេលកំពុងទាញ
+            # combo Model នៃផ្ទាំងផ្សេងៗ (សំឡេង→SRT · វីដេអូ→SRT · បកប្រែ SRT) ក៏បង្ហាញ model របស់ Server ដែរ
+            self._router_model_ids = [mid for mid, _ in models or []]
+            self._sync_model_combos()
             want = sp.model.currentData() or QSettings("KhmerTTS", "Studio").value("simple_model", "gemini-3.8-flash")
             sp.model.blockSignals(True)
             sp.model.clear()
@@ -4446,7 +4675,8 @@ class MainWindow(QMainWindow):
                 who, more = "✓ ម៉ាស៊ីនបកប្រែរបស់កម្មវិធី (តាម License) — មិនចាំបាច់មាន key", ""
             elif backend._custom_url() and not all(k.startswith(("AIza", "bayon_sk_"))
                                                    for k in backend.parse_keys(key)):
-                who = f"✓ Server ផ្ទាល់ខ្លួន — {backend.OPENAI_BASE_URL}"
+                who = (f"✓ Gemini Router ក្នុងកម្មវិធី — {gemini_direct.status_text()}" if backend.ROUTER_DIRECT
+                       else f"✓ Server ផ្ទាល់ខ្លួន — {backend.OPENAI_BASE_URL}")
             elif backend._custom_url():  # មាន Base URL តែ key ជា Bayon/Google → មិនទៅ Server ទេ
                 who = ("⚠ មាន Server ផ្ទាល់ខ្លួន តែ key ជា Bayon/Google → បកប្រែតាម Bayon/Google · "
                        "ចង់ប្រើ Server សូមដាក់ key sk-… ដែលម្ចាស់ផ្តល់ឱ្យ")
@@ -4789,7 +5019,7 @@ class MainWindow(QMainWindow):
     def _about(self):
         box = QMessageBox(self)
         box.setWindowTitle("អំពីកម្មវិធី")
-        text = f"AI Team #1  v{updater.local_version()}\n\nយើងជាធីម AI #1"
+        text = f"Mr. Reach Dubber Ultra  v{updater.local_version()}\n\nយើងជាធីម AI #1"
         change = None
         if licensing.enabled():
             _, info, _ = licensing.status()
@@ -4954,6 +5184,10 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
     def closeEvent(self, event):
+        if self.studio_page.running() and QMessageBox.question(
+                self, "Dub Studio", "Dub Studio កំពុងដំណើរការ។ បិទកម្មវិធីមែនទេ?") != QMessageBox.Yes:
+            event.ignore()
+            return
         if self.busy and QMessageBox.question(
                 self, "កំពុងដំណើរការ", "ការងារកំពុងដំណើរការ។ បិទកម្មវិធី ហើយបោះបង់ការងារនេះ?") != QMessageBox.Yes:
             event.ignore()
@@ -4966,6 +5200,9 @@ class MainWindow(QMainWindow):
             return
         self._save_settings()
         funasr_mod.stop_servers()  # process SenseVoice/Paraformer ដែលកំពុងរង់ចាំ
+        if backend.ROUTER_DIRECT:
+            gemini_direct.stop(timeout=10)  # បិទ Chrome profile របស់ Router
+        self.studio_page.shutdown()
         event.accept()
 
 
@@ -5047,6 +5284,7 @@ def main():
     except Exception:  # noqa: BLE001
         pass
     qt_app = QApplication(sys.argv)
+    i18n.install(qt_app)  # English version (ភាសា = en) — បកប្រែអក្សរ UI ពេលបង្ហាញ
     icon = os.path.join(backend.BASE_DIR, "icon.ico")
     if os.path.isfile(icon):
         qt_app.setWindowIcon(QIcon(icon))

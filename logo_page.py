@@ -193,6 +193,7 @@ class LogoPage(QWidget):
         pl = QVBoxLayout(preview)
         pl.setContentsMargins(14, 12, 14, 14)
         pl.addWidget(host.ov_preview_panel)  # ផ្ទាំង Preview ដើម (មើលជាមុន + ▶ Preview វីដេអូ)
+        host.ov_stage.more.connect(self._open_settings_at)  # ⚙ លើ Preview → ការកំណត់ពេញ
         body.addWidget(preview, 1)
         outer.addLayout(body, 1)
 
@@ -235,6 +236,13 @@ class LogoPage(QWidget):
         return backend.OUTPUT_DIR  # set_output_dir ប្តូរទាំង gui និង backend
 
     # ---------- ផ្ទាំងការកំណត់ ----------
+    def _open_settings_at(self, prefix):
+        """⚙ លើ Preview → បើកការកំណត់ ហើយរំកិលទៅប្រអប់របស់ Logo / Lower third នោះ"""
+        self.btn_settings.setChecked(True)
+        box = getattr(self.host, "ov_boxes", {}).get(prefix)
+        if box is not None:
+            QTimer.singleShot(320, lambda: self.host.ov_settings_panel.ensureWidgetVisible(box, 0, 20))
+
     def _toggle_settings(self, on):
         y, h = 6, self.height() - 12
         self.side.setFixedHeight(h)
@@ -333,6 +341,7 @@ class LogoPage(QWidget):
         for c in self.cards:
             c.set_selected(c is card)
         self.host.video_path.setText(card.videos[0])  # Preview លើវីដេអូទីមួយក្នុង Folder
+        self.host._select_data(self.host.ov_aspect, "auto")  # ចុចវីដេអូ → លេងវីដេអូនោះក្នុង Preview (មិនមែនផ្ទៃពណ៌)
         self.host._ov_timer.start(50)
 
     def _remove(self, card):
@@ -432,7 +441,7 @@ class LogoPage(QWidget):
         card.st.update(status="running", stage="video", pct=0, msg="", t0=time.time(), since=time.time(),
                        out=self.target)
         if self.specs[3] and len(card.videos) > 1:
-            self.merging = video_merge.start_job(card.videos, self.work, "merged", False, [])
+            self.merging = video_merge.start_job(card.videos, self.work, "merged", False, [], faststart=False)
             card.st.update(stage="merge", msg=f"🧩 Merge {len(card.videos)} Part...")
             self.timer.start(300)
             return

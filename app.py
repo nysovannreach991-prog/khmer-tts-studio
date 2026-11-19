@@ -28,6 +28,7 @@ import srt_dub
 import transcribe
 import video_dub
 import video_merge
+import gemini_direct
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOCAL = os.environ.get("LOCALAPPDATA", "")
@@ -252,6 +253,12 @@ BAYON_URL = "https://bayongateway.com/v1/chat/completions"
 # Server OpenAI-compatible ផ្ទាល់ខ្លួន (ឧ. Gemini Router របស់ម្ចាស់តាម Tailscale) — GUI កំណត់ពី QSettings
 # មាន → key ដែលមិនមែន Google (AIza…) ទៅទីនេះជំនួស Bayon
 OPENAI_BASE_URL = ""
+# ⚡ Gemini Router ក្នុងកម្មវិធី (Direct) — engine របស់ Router ក្នុង process នេះ (gemini_direct.py) · GUI កំណត់ពី QSettings
+# បើក → _custom_url() = DIRECT_URL (ឈ្នះ Base URL) · key ដែលមិនមែន Google (AIza…) → engine · គ្មាន key → DIRECT_KEY
+ROUTER_DIRECT = False
+ROUTER_DIR = ""
+DIRECT_URL = "direct://gemini-router"  # "url" សញ្ញា → _gateway_post ហៅ gemini_direct ជំនួស HTTP
+DIRECT_KEY = "sk-gemini-router-direct-key"  # key និម្មិត (ទម្រង់ sk-…) ពេលអ្នកប្រើគ្មាន key — ឱ្យកូដ "ត្រូវការ key" ឆ្លងកាត់
 
 
 def _load_relay_url():
@@ -290,10 +297,36 @@ def _relay_post(license_key, model, body):
 
 
 def _custom_url():
+    if ROUTER_DIRECT:  # Router ក្នុងកម្មវិធី — ឈ្នះ Base URL
+        return DIRECT_URL
     base = OPENAI_BASE_URL.strip().rstrip("/")
     if not base:
         return ""
     return base if base.endswith("/chat/completions") else base + "/chat/completions"
+
+
+def router_progress(job_id, title, done, total, status="running", model=""):
+    """រាយការណ៍វឌ្ឍនភាពបកប្រែទៅ Dashboard របស់ Server ផ្ទាល់ខ្លួន (Gemini Router: POST /v1/progress →
+    បង្ហាញក្នុង Live Traffic Orbit) · ផ្ញើនៅខាងក្រោយ ហើយមិនអើពើកំហុស — មិនត្រូវរំខាន/ពន្យារការបកប្រែឡើយ
+    (Server ដែលគ្មាន endpoint នេះ → 404 ស្ងាត់ៗ) · មិនផ្ញើ key ទេ"""
+    url = _custom_url()
+    if not url or url == DIRECT_URL:  # ក្នុងកម្មវិធី → គ្មាន Dashboard
+        return
+    url = url[: -len("/chat/completions")] + "/progress"
+    payload = json.dumps({"job_id": job_id, "title": str(title)[:200], "done": done, "total": total,
+                          "unit": "lines", "status": status, "model": model or ""}).encode("utf-8")
+
+    def send():
+        try:
+            req = urllib.request.Request(url, data=payload, method="POST",
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=3).close()
+        except Exception:  # noqa: BLE001
+            pass
+    threading.Thread(target=send, daemon=True).start()
+
+
+transcribe.progress_hook = router_progress
 
 
 def custom_models(api_key=""):
@@ -302,6 +335,8 @@ def custom_models(api_key=""):
     url = _custom_url()
     if not url:
         return []
+    if url == DIRECT_URL:
+        return gemini_direct.models()
     url = url[: -len("/chat/completions")] + "/models"
     headers = {"Accept": "application/json"}
     key = clean_key(api_key)
@@ -491,7 +526,8 @@ def _gateway_post(api_key, model, body, url=None):
     """Bayon Gateway ឬ server OpenAI-compatible ផ្ទាល់ខ្លួន (url) ឬ OpenAI (url = OPENAI_API_URL) —
     បម្លែង body ទម្រង់ Gemini ទៅ/មក ដើម្បីឱ្យកូដផ្សេងមិនបាច់ដឹង"""
     openai = url == OPENAI_API_URL
-    name = "OpenAI" if openai else "Server ផ្ទាល់ខ្លួន" if url else "Bayon"
+    name = ("OpenAI" if openai else "Gemini Router (ក្នុងកម្មវិធី)" if url == DIRECT_URL
+            else "Server ផ្ទាល់ខ្លួន" if url else "Bayon")
     config = body.get("generationConfig", {})
     if "AUDIO" in config.get("responseModalities", []):
         raise RuntimeError(f"Gemini TTS មិនអាចប្រើតាម {name} បានទេ — សូមប្រើ Edge TTS (ឥតគិតថ្លៃ) "
@@ -520,37 +556,45 @@ def _gateway_post(api_key, model, body, url=None):
         if OPENAI_TRACKING_ID:  # ឃើញក្នុង Usage dashboard (user) · ចែកតាមអតិថិជន/រឿង
             # (metadata មិនបាន — OpenAI ទាមទារ store=true ដែលរក្សាទុកសន្ទនានៅ OpenAI → 400)
             payload["user"] = OPENAI_TRACKING_ID[:64]
-    req = urllib.request.Request(url or BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
-                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {clean_key(api_key)}"})
-    try:
-        # server ផ្ទាល់ខ្លួន (Router តាម Chrome) យឺត ហើយរង់ចាំជាជួរពេលមិត្តភក្តិច្រើនប្រើ → រង់ចាំយូរជាង
-        # (Router ខ្លួនឯងកំណត់ 300វិ ក្នុងមួយសំណើ — បើយើងឈប់មុនវា សំណើនៅតែរត់ក្នុង Chrome ហើយរវល់កាន់តែខ្លាំង)
-        slow = url and not openai  # OpenAI ឆ្លើយលឿន (10–30វិ) → timeout ធម្មតា
-        with urllib.request.urlopen(req, timeout=max(_timeout(body), 600) if slow else _timeout(body)) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
+    if url == DIRECT_URL:  # engine របស់ Router ក្នុង process នេះ (gemini_direct) — គ្មាន HTTP
         try:
-            detail = json.loads(detail)["error"]["message"]
-        except Exception:
-            pass
-        if openai and e.code == 401:
-            detail = (f"key OpenAI {key_label(clean_key(api_key))} មិនត្រូវ — ពិនិត្យនៅ platform.openai.com/api-keys "
-                      f"(key Router sk-team-… ត្រូវដាក់ Base URL Server ផ្ទាល់ខ្លួនផង)")
-        elif openai and (e.code == 429 and "quota" in str(detail).lower() or e.code == 402):
-            detail = (f"key OpenAI {key_label(clean_key(api_key))} អស់ credit — បញ្ចូលលុយនៅ platform.openai.com/billing "
-                      f"({str(detail)[:120]})")
-        elif url and e.code == 401:
-            detail = (f"key {key_label(clean_key(api_key))} មិនត្រូវ — សូមប្រើ key ដែលម្ចាស់ Server ផ្តល់ឱ្យ "
-                      f"(ឧ. sk-team-… ពី share_gate.json) មិនមែន key Bayon/Router ទេ")
-        elif not url and (e.code == 402 or "credit" in str(detail).lower()):
-            detail = (f"key {key_label(clean_key(api_key))} អស់ credit — បញ្ចូលលុយនៅ bayongateway.com "
-                      f"ឬប្តូរ key ក្នុង ⚙ ការកំណត់ ({str(detail)[:120]})")
-        raise RuntimeError(f"{name} API error {e.code}: {str(detail)[:300]}") from None
-    except urllib.error.URLError as e:
-        if not url:
+            data = gemini_direct.chat_completion(payload, timeout=max(_timeout(body), 600), router_dir=ROUTER_DIR)
+        except RuntimeError:
             raise
-        raise RuntimeError(f"{name}: ភ្ជាប់ {url} មិនបាន ({e.reason}) — កុំព្យូទ័រម្ចាស់បើក? Tailscale ភ្ជាប់?") from None
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"{name}: {str(e)[:300]}") from None
+    else:
+        req = urllib.request.Request(url or BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
+                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {clean_key(api_key)}"})
+        try:
+            # server ផ្ទាល់ខ្លួន (Router តាម Chrome) យឺត ហើយរង់ចាំជាជួរពេលមិត្តភក្តិច្រើនប្រើ → រង់ចាំយូរជាង
+            # (Router ខ្លួនឯងកំណត់ 300វិ ក្នុងមួយសំណើ — បើយើងឈប់មុនវា សំណើនៅតែរត់ក្នុង Chrome ហើយរវល់កាន់តែខ្លាំង)
+            slow = url and not openai  # OpenAI ឆ្លើយលឿន (10–30វិ) → timeout ធម្មតា
+            with urllib.request.urlopen(req, timeout=max(_timeout(body), 600) if slow else _timeout(body)) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            try:
+                detail = json.loads(detail)["error"]["message"]
+            except Exception:
+                pass
+            if openai and e.code == 401:
+                detail = (f"key OpenAI {key_label(clean_key(api_key))} មិនត្រូវ — ពិនិត្យនៅ platform.openai.com/api-keys "
+                          f"(key Router sk-team-… ត្រូវដាក់ Base URL Server ផ្ទាល់ខ្លួនផង)")
+            elif openai and (e.code == 429 and "quota" in str(detail).lower() or e.code == 402):
+                detail = (f"key OpenAI {key_label(clean_key(api_key))} អស់ credit — បញ្ចូលលុយនៅ platform.openai.com/billing "
+                          f"({str(detail)[:120]})")
+            elif url and e.code == 401:
+                detail = (f"key {key_label(clean_key(api_key))} មិនត្រូវ — សូមប្រើ key ដែលម្ចាស់ Server ផ្តល់ឱ្យ "
+                          f"(ឧ. sk-team-… ពី share_gate.json) មិនមែន key Bayon/Router ទេ")
+            elif not url and (e.code == 402 or "credit" in str(detail).lower()):
+                detail = (f"key {key_label(clean_key(api_key))} អស់ credit — បញ្ចូលលុយនៅ bayongateway.com "
+                          f"ឬប្តូរ key ក្នុង ⚙ ការកំណត់ ({str(detail)[:120]})")
+            raise RuntimeError(f"{name} API error {e.code}: {str(detail)[:300]}") from None
+        except urllib.error.URLError as e:
+            if not url:
+                raise
+            raise RuntimeError(f"{name}: ភ្ជាប់ {url} មិនបាន ({e.reason}) — កុំព្យូទ័រម្ចាស់បើក? Tailscale ភ្ជាប់?") from None
     try:
         text = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):

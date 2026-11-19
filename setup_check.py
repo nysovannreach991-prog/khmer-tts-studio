@@ -161,7 +161,7 @@ class SetupDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
         lay.setSpacing(10)
-        head = QLabel("🛠 កំពុងរៀបចំកុំព្យូទ័រសម្រាប់ AI Team #1")
+        head = QLabel("🛠 កំពុងរៀបចំកុំព្យូទ័រសម្រាប់ Mr. Reach Dubber Ultra")
         head.setStyleSheet("font-size: 14pt; font-weight: bold;")
         lay.addWidget(head)
         sub = QLabel("ធ្វើតែម្តងគត់ · ត្រូវការអ៊ីនធឺណិត · អាចបិទផ្ទាំងនេះបាន (វានៅតែធ្វើនៅខាងក្រោយ)")
