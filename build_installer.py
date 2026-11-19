@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 
+import gemini_direct
 import publish
 import updater
 
@@ -22,6 +23,11 @@ ISCC_PATHS = [
     os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Inno Setup 6", "ISCC.exe"),
     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Inno Setup 6", "ISCC.exe"),
 ]
+
+# Gemini Router engine ដែលដាក់ក្នុង Setup → {app}\gemini_router (មិនយក profiles / settings.json / telemetry = ទិន្នន័យ និង key របស់ម្ចាស់)
+ROUTER_FILES = ("engine.py", "telemetry_db.py", "captcha_solver.py", "login_chrome.py", "manual_chrome.py")
+ROUTER_REPO = os.path.join(APP_DIR, publish.ROUTER_DIR)  # ច្បាប់ចម្លងក្នុង repo → ទៅ GitHub / Update / Setup
+ROUTER_REQ = "playwright==1.64.1\nfastapi>=0.110\nuvicorn>=0.28\npydantic>=2.0\n"  # playwright ចាស់ជាង 1.64 គាំង
 
 PS = r"{sys}\WindowsPowerShell\v1.0\powershell.exe"
 QUIET = r'-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher.ps1"" -Quiet'
@@ -41,7 +47,7 @@ DisableReadyPage=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={dist}
-OutputBaseFilename=AITeam1_Setup_v{version}
+OutputBaseFilename={out_name}
 SetupIconFile={app_dir}\icon.ico
 UninstallDisplayIcon={{app}}\icon.ico
 UninstallDisplayName=AI Team #1
@@ -80,7 +86,45 @@ def find_iscc():
     return found
 
 
+def bundle_router(dest):
+    """ចម្លង engine របស់ Gemini Router ទៅ staging · ត្រឡប់ថតប្រភព ឬ "" បើរកមិនឃើញ"""
+    src = os.environ.get("GEMINI_ROUTER_DIR", "")
+    if not gemini_direct.is_valid(src):
+        try:
+            from PyQt5.QtCore import QSettings
+            src = str(QSettings("KhmerTTS", "Studio").value("router_dir", "") or "")
+        except Exception:  # noqa: BLE001
+            src = ""
+    if not gemini_direct.is_valid(src) or os.path.normcase(os.path.abspath(src)) == os.path.normcase(ROUTER_REPO):
+        raise RuntimeError("កំណត់ Folder Gemini Router ក្នុង ⚙ Settings ឬ GEMINI_ROUTER_DIR ជាមុនសិន")
+    os.makedirs(dest, exist_ok=True)
+    for name in ROUTER_FILES:
+        path = os.path.join(src, name)
+        if not os.path.isfile(path):
+            raise RuntimeError(f"Gemini Router ខ្វះ {name} ({src})")
+        if name == "engine.py":
+            with open(path, encoding="utf-8") as f:
+                code = f.read()
+            # កម្មវិធីរត់ដោយ pythonw (គ្មាន console) — ផ្ទាំងចូល Google ត្រូវការ python.exe
+            old = "py_exe = sys.executable\n"
+            if old not in code:
+                raise RuntimeError("engine.py ផ្លាស់ប្តូរ — រកមិនឃើញ 'py_exe = sys.executable'")
+            code = code.replace(old, 'py_exe = sys.executable.replace("pythonw.exe", "python.exe")\n')
+            with open(os.path.join(dest, name), "w", encoding="utf-8", newline="\n") as f:
+                f.write(code)
+        else:
+            shutil.copy2(path, os.path.join(dest, name))
+    with open(os.path.join(dest, "requirements.txt"), "w", encoding="ascii") as f:
+        f.write(ROUTER_REQ)
+    return src
+
+
 def main():
+    yes = "--yes" in sys.argv
+    if "--sync-router" in sys.argv:  # យក engine ថ្មីពី Folder Gemini Router មកដាក់ក្នុង repo (មុន publish)
+        src = bundle_router(ROUTER_REPO)
+        print(f"✓ gemini_router ← {src}" if src else "✕ រកមិនឃើញ Folder Gemini Router")
+        return 0 if src else 1
     version = updater.local_version()
     files = publish.collect_files()
     published = updater.local_manifest().get("files", {})
@@ -90,7 +134,7 @@ def main():
         for p in unpublished[:15]:
             print(f"   • {p}")
         print("  ល្អបំផុត: ដំណើរការ publish_update.bat ជាមុនសិន (ដើម្បីឱ្យ Setup និង GitHub ដូចគ្នា)")
-        if input("  បន្តបង្កើត Setup ដដែល? (y/N): ").strip().lower() != "y":
+        if not yes and input("  បន្តបង្កើត Setup ដដែល? (y/N): ").strip().lower() != "y":
             return 1
 
     iscc = find_iscc()
@@ -104,17 +148,20 @@ def main():
     for owner_only in publish.EXCLUDE_FILES | {"build_installer.py", "build_installer.bat"}:
         assert not os.path.exists(os.path.join(STAGING, owner_only)) or owner_only == "manifest.json", owner_only
 
+    router = os.path.isfile(os.path.join(STAGING, publish.ROUTER_DIR, "engine.py"))
+    print("✓ Gemini Router engine នៅក្នុង Setup" if router else "⚠ Setup នេះគ្មាន engine — python build_installer.py --sync-router")
+    out_name = f"AITeam1_Setup_v{version}"
     os.makedirs(DIST_DIR, exist_ok=True)
     iss = os.path.join(BUILD_DIR, "AITeam1.iss")
     with open(iss, "w", encoding="utf-8-sig") as f:  # BOM → Inno អានជា UTF-8 (អក្សរខ្មែរ)
         f.write(ISS.format(app_id=APP_ID, version=version, dist=DIST_DIR, app_dir=APP_DIR, staging=STAGING,
-                           ps=PS, quiet=QUIET, setup=SETUP))
+                           ps=PS, quiet=QUIET, setup=SETUP, out_name=out_name))
     print(f"🔨 កំពុងបង្កើត Setup v{version} ({len(files)} ឯកសារ)...")
     proc = subprocess.run([iscc, "/Q", iss], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         print(proc.stdout[-2000:], proc.stderr[-2000:])
         raise RuntimeError("Inno Setup បរាជ័យ")
-    out = os.path.join(DIST_DIR, f"AITeam1_Setup_v{version}.exe")
+    out = os.path.join(DIST_DIR, out_name + ".exe")
     print(f"✓ រួចរាល់: {out} ({os.path.getsize(out) / 1e6:.1f} MB)")
     print("  ផ្ញើឯកសារនេះឱ្យមិត្តភក្តិ — ចុចពីរដង → Install → រួចរាល់")
     return 0

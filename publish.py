@@ -18,6 +18,8 @@ EXCLUDE_FILES = {"manifest.json", "gui_error.log",
                  "license_admin.py", "license_admin.bat",
                  "publish.py", "publish_update.bat",
                  "build_installer.py", "build_installer.bat"}  # ឧបករណ៍ម្ចាស់ — មិនផ្តល់ឱ្យមិត្តភក្តិ
+ROUTER_DIR = "gemini_router"
+ROUTER_FILES = {"engine.py", "telemetry_db.py", "captcha_solver.py", "login_chrome.py", "manual_chrome.py", "requirements.txt"}
 GITIGNORE = ("outputs/\n__pycache__/\n.update_pending/\n*.log\n*.ini\n"
              "license_admin.py\nlicense_admin.bat\n*.key\nbuild/\ndist/\n")
 
@@ -47,6 +49,8 @@ def collect_files():
             rel = os.path.relpath(path, APP_DIR).replace(os.sep, "/")
             if name in EXCLUDE_FILES or os.path.splitext(name)[1].lower() not in INCLUDE_EXT:
                 continue
+            if rel.startswith(ROUTER_DIR + "/") and rel[len(ROUTER_DIR) + 1:] not in ROUTER_FILES:
+                continue  # profiles / settings.json / telemetry / _launch_*.bat = ទិន្នន័យរបស់កុំព្យូទ័រនេះ
             files[rel] = updater.sha256_file(path)
     return dict(sorted(files.items()))
 

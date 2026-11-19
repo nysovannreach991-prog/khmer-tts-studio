@@ -1387,5 +1387,9 @@
 "🧭 ប្លង់ ▾": "🧭 Layout ▾",
 "🧹 បិទ Chrome ": "🧹 Closing Chrome ",
 "🩺 ពិនិត្យថាប្រើបាន": "🩺 Health check",
-"🪄 កំពុងបកប្រែ ": "🪄 Translating "
+"🪄 កំពុងបកប្រែ ": "🪄 Translating ",
+"⚠ មិនទាន់មានគណនី Gemini — បើកទំព័រ Gemini Router រួចចុច ➕ Manual Account Login ដើម្បីចូល Google": "⚠ No Gemini account yet — open the Gemini Router page and click ➕ Manual Account Login to sign in to Google",
+") — បើកទំព័រ Gemini Router រួចចុច ➕ Manual Account Login ដើម្បីចូល Google": ") — open the Gemini Router page and click ➕ Manual Account Login to sign in to Google",
+"ដំឡើង library របស់ Gemini Router (ម្តងគត់ ~1 នាទី)": "Installing Gemini Router libraries (one time, ~1 min)",
+") — បិទកម្មវិធី ហើយបើកវិញ": ") — close the app and open it again"
 }

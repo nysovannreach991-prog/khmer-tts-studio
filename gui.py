@@ -4449,7 +4449,10 @@ class MainWindow(QMainWindow):
         backend.OPENAI_BASE_URL = s.value("openai_base_url", "")
         sp.base_url.setText(backend.OPENAI_BASE_URL)
         # ⚡ Gemini Router ក្នុងកម្មវិធី (Direct) — ត្រូវដឹងមុន _sync_model_combos (_custom_url ពឹងលើវា)
-        backend.ROUTER_DIRECT = s.value("router_direct", "false") in (True, "true")
+        # Router ភ្ជាប់មកជាមួយកម្មវិធី → បើកស្រាប់ តែពេលអ្នកប្រើមិនទាន់មាន key / Server (អ្នកប្រើចាស់ដែលមាន key នៅដដែល)
+        fresh = (gemini_direct.is_valid(gemini_direct.BUNDLED) and not str(s.value("api_key", "") or "").strip()
+                 and not str(s.value("openai_base_url", "") or "").strip())
+        backend.ROUTER_DIRECT = s.value("router_direct", "true" if fresh else "false") in (True, "true")
         backend.ROUTER_DIR = s.value("router_dir", "")
         # ឥឡូវដឹង key + Base URL → combo Model នៃផ្ទាំងផ្សេងៗ (OpenAI ឬ Gemini) ហើយជ្រើស model ដែលរក្សាទុកវិញ
         self._sync_model_combos({self.stt_model: s.value("stt_model", ""), self.vsrt_model: s.value("vsrt_model", ""),

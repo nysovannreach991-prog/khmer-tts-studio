@@ -44,6 +44,8 @@ _thread = None
 _engine = None
 _ready = threading.Event()
 _log = logging.getLogger("gemini-direct")
+# Router ដែលមកជាមួយ Setup (build_installer.py ដាក់ engine ក្នុងថតកម្មវិធី) — អ្នកប្រើមិនចាំបាច់មាន Folder Router ទេ
+BUNDLED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gemini_router")
 
 
 # ---------------------------------------------------------------- ថត Router
@@ -55,6 +57,8 @@ def find_router_dir(hint=""):
     """ថត Router ដែលមាន engine.py — hint (ពីការកំណត់) មុន · បន្ទាប់មក ទីតាំងធម្មតា (ថ្មីបំផុតមុន)"""
     if is_valid(hint):
         return hint
+    if is_valid(BUNDLED):
+        return BUNDLED
     patterns = []
     for root in (os.environ.get("GEMINI_ROUTER_DIR", ""), "D:/Software", os.path.join(os.path.expanduser("~"), "Desktop"),
                  os.path.join(os.environ.get("LOCALAPPDATA", ""), "AITeam1")):
@@ -101,6 +105,9 @@ def status():
     return out
 
 
+NO_ACCOUNT = "⚠ មិនទាន់មានគណនី Gemini — បើកទំព័រ Gemini Router រួចចុច ➕ Manual Account Login ដើម្បីចូល Google"
+
+
 def status_text():
     """អត្ថបទខ្លីសម្រាប់ GUI"""
     st = status()
@@ -113,6 +120,9 @@ def status_text():
         return f"↪ Router server កំពុងដំណើរការខាងក្រៅ (port {ROUTER_PORT}) → ប្រើវាតាម HTTP"
     if s == "error":
         return f"⚠ {st['error'][:200]}"
+    if not st["ready"] and not any(a[1] == "ready" for a in st["accounts"]):
+        need = [a[0] for a in st["accounts"] if a[1] == "needs_login"]
+        return NO_ACCOUNT + (f" · ត្រូវចូល Google ម្តងទៀត: {', '.join(need)}" if need else "")
     names = ", ".join(a[0] for a in st["accounts"] if a[1] == "ready") or "—"
     need = [a[0] for a in st["accounts"] if a[1] == "needs_login"]
     txt = f"✓ រួចរាល់ · {st['ready']}/{len(st['accounts'])} គណនី ({names})"
@@ -200,6 +210,31 @@ def _use_bundled_playwright(router_dir):
         sys.path.append(site)  # package ផ្សេងដែល system គ្មាន (ឧ. fastapi) នៅតែរកឃើញ — តែ package របស់កម្មវិធីឈ្នះ
 
 
+def _install_requirements(router_dir):
+    """pip install -r <router>/requirements.txt (តែ Router ដែលភ្ជាប់មកជាមួយកម្មវិធី) → True បើជោគជ័យ"""
+    import importlib
+    import subprocess
+    req = os.path.join(router_dir, "requirements.txt")
+    if os.path.normcase(os.path.abspath(router_dir)) != os.path.normcase(BUNDLED) or not os.path.isfile(req):
+        return False
+    _set("starting", "ដំឡើង library របស់ Gemini Router (ម្តងគត់ ~1 នាទី)")
+    py = sys.executable.replace("pythonw.exe", "python.exe")
+    try:
+        proc = subprocess.run([py, "-m", "pip", "install", "--disable-pip-version-check", "--no-warn-script-location", "-r", req],
+                              capture_output=True, text=True, errors="replace", timeout=900,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:  # noqa: BLE001
+        _log.warning("router requirements install failed: %s", e)
+        return False
+    if proc.returncode:
+        _log.warning("router requirements install failed: %s", (proc.stdout + proc.stderr)[-800:])
+        return False
+    for name in [m for m in sys.modules if m.split(".")[0] in ("engine", "playwright", "greenlet", "pyee", "fastapi", "pydantic")]:
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+    return True
+
+
 def _run(router_dir, log_path):
     global _loop, _engine
     try:
@@ -223,7 +258,13 @@ def _run(router_dir, log_path):
         try:
             import engine  # noqa: PLC0415 — module របស់ Router
         except ImportError as e:
-            raise RuntimeError(f"ផ្ទុក engine របស់ Router មិនបាន ({e}) — pip install playwright fastapi uvicorn pydantic") from None
+            # Router ភ្ជាប់មកតាម Update: launcher ចាស់មិនទាន់ដំឡើង library → ដំឡើងនៅទីនេះ រួចសាកម្តងទៀត
+            if not _install_requirements(router_dir):
+                raise RuntimeError(f"ផ្ទុក engine របស់ Router មិនបាន ({e}) — pip install playwright fastapi uvicorn pydantic") from None
+            try:
+                import engine  # noqa: PLC0415
+            except ImportError as e2:
+                raise RuntimeError(f"ផ្ទុក engine របស់ Router មិនបាន ({e2}) — បិទកម្មវិធី ហើយបើកវិញ") from None
         _engine = engine
         rlog = logging.getLogger("gemini-router")
         rlog.setLevel(logging.INFO)
@@ -284,7 +325,8 @@ async def _init(eng):
             pending = list(pending)
             _set("starting", f"{len(ids) - len(pending)}/{len(ids)} profile · ready {n_ready()}")
         if not n_ready():
-            raise RuntimeError("គ្មានគណនី Gemini ដែលចូលបាន (ready) — ចូល Google ក្នុង Router (Login_Account.bat)")
+            # engine នៅបើកដដែល — បើបិទ អ្នកប្រើថ្មីមិនអាចបន្ថែមគណនីដំបូង (➕ Manual Account Login) ឬ Relogin បានទេ
+            _log.warning("no ready Gemini account yet (%d profiles) - waiting for a sign-in", len(ids))
         _set("ready")
         _log.info("Gemini Router Direct ready: %s", status_text())
         _ready.set()
@@ -384,7 +426,7 @@ async def _chat(prompt, audio_path, model, timeout):
     except Exception as e:  # noqa: BLE001 — HTTPException 503 = គ្មានគណនី ready
         detail = getattr(e, "detail", None) or str(e)
         raise RuntimeError(f"Gemini Router: គ្មានគណនី Gemini ដែលចូលបាន ({str(detail)[:120]}) — "
-                           "ចូល Google ក្នុងថត profiles (Login_Account.bat) ឬពិនិត្យស្ថានភាពគណនីក្នុងការកំណត់") from None
+                           "បើកទំព័រ Gemini Router រួចចុច ➕ Manual Account Login ដើម្បីចូល Google") from None
     attempts = min(3, max(1, len(am.accounts)))
     # កំណត់ត្រាសំណើ ដូច Router (Live Request Log + telemetry.db) — Dashboard ក្នុងកម្មវិធីអានពីទីនេះ
     rl = eng.request_logger

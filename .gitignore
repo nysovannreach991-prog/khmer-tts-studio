@@ -8,3 +8,7 @@ license_admin.bat
 *.key
 build/
 dist/
+gemini_router/profiles/
+gemini_router/*.db
+gemini_router/*.json
+gemini_router/_launch_*.bat
