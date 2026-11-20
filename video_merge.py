@@ -7,69 +7,18 @@ import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 
 from srt_dub import jobs
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-PROBE_WORKERS = 8  # ffprobe ស្រាលតែយឺតម្តងមួយ (~50ms) — 100 Part: 4.6វិ → <1វិ
-
-
-def probe_all(paths):
-    """ffprobe ឯកសារទាំងអស់ស្របគ្នា (លំដាប់ដដែល)"""
-    with ThreadPoolExecutor(max_workers=max(1, min(PROBE_WORKERS, len(paths)))) as ex:
-        return list(ex.map(_probe, paths))
-
-
-def _encode_workers(enc):
-    """ចំនួន ffmpeg ដែល encode ស្របគ្នា — GPU: 3 sessions · libx264 ប្រើ core ទាំងអស់រួចហើយ → 1–2"""
-    if enc == "libx264":
-        return 2 if (os.cpu_count() or 4) >= 12 else 1
-    return 3
-
-
-class _Parallel:
-    """វឌ្ឍនភាពផ្នែកច្រើនដែលរត់ស្របគ្នា → job["done"] = lo + (hi-lo) × ផលបូកតាមទម្ងន់"""
-    def __init__(self, job, weights, lo, hi):
-        self.job, self.weights, self.lo, self.hi = job, weights, lo, hi
-        self.frac, self.lock = [0.0] * len(weights), threading.Lock()
-
-    def part(self, i):
-        return _Slot(self, i)
-
-    def update(self, i, pct):
-        with self.lock:
-            self.frac[i] = max(self.frac[i], min(pct, 100) / 100)
-            total = sum(self.weights) or 1
-            done = sum(f * w for f, w in zip(self.frac, self.weights)) / total
-            self.job["done"] = min(99, int(self.lo + (self.hi - self.lo) * done))
-
-
-class _Slot:
-    def __init__(self, parent, i):
-        self.parent, self.i = parent, i
-
-    def __setitem__(self, key, value):
-        if key == "done":
-            self.parent.update(self.i, value)
-
-
-def _run_parts(tasks, infos, job, lo, hi, workers):
-    """tasks[i](progress) encode ផ្នែក i — រត់ស្របគ្នា workers ដង · កំហុសទីមួយ → raise បន្ទាប់ពីទាំងអស់ចប់"""
-    prog = _Parallel(job, [i["duration"] for i in infos], lo, hi)
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(tasks)))) as ex:
-        futures = [ex.submit(fn, prog.part(i)) for i, fn in enumerate(tasks)]
-        for f in futures:
-            f.result()
 
 
 def _probe(path):
     proc = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
                           capture_output=True, creationflags=_NO_WINDOW)
     if proc.returncode != 0:
-        raise RuntimeError(f"មិនអាចអាន {os.path.basename(path)} — ឯកសារខូច ឬទាញយកមិនទាន់ចប់ "
-                           f"(សូមទាញយក Part នេះម្តងទៀត ឬលុបវាចេញ)")
+        raise RuntimeError(f"មិនអាចអាន {os.path.basename(path)}")
     info = json.loads(proc.stdout.decode("utf-8", "replace"))
     v = next((s for s in info["streams"] if s.get("codec_type") == "video"), None)
     a = next((s for s in info["streams"] if s.get("codec_type") == "audio"), None)
@@ -79,8 +28,7 @@ def _probe(path):
         "duration": float(info["format"].get("duration") or 0),
         "video": (v.get("codec_name"), v.get("width"), v.get("height"), v.get("pix_fmt"),
                   v.get("r_frame_rate"), v.get("profile")),
-        # profile: HE-AAC ≠ AAC-LC — ចម្លងផ្ទាល់ចូលគ្នា → សំឡេងខូចចាប់ពីផ្នែកដែលប្តូរ (ffmpeg "Error number -1145393733")
-        "audio": (a.get("codec_name"), a.get("profile"), a.get("sample_rate"), a.get("channels")) if a else None,
+        "audio": (a.get("codec_name"), a.get("sample_rate"), a.get("channels")) if a else None,
         "width": v.get("width"), "height": v.get("height"),
         "fps": float(Fraction(v.get("r_frame_rate") or "25/1")) or 25.0,
     }
@@ -104,77 +52,43 @@ def _run_ffmpeg(args, total_sec, job):
         raise RuntimeError("ffmpeg: " + b"".join(err).decode("utf-8", "replace")[-400:])
 
 
-def _faststart(on):
-    """+faststart = សរសេរឯកសារម្តងទៀតទាំងមូល (moov ទៅមុខ) — ល្អសម្រាប់ stream · ឯកសារបណ្តោះអាសន្នមិនត្រូវការ"""
-    return ["-movflags", "+faststart"] if on else []
-
-
-def _concat_copy(paths, out, total, job, tmp, faststart=True):
+def _concat_copy(paths, out, total, job, tmp):
     lst = os.path.join(tmp, "list.txt")
     with open(lst, "w", encoding="utf-8") as f:
         for p in paths:
             f.write("file '" + os.path.abspath(p).replace("'", "'\\''") + "'\n")
     _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", lst, "-map", "0:v:0", "-map", "0:a:0?",
-                 "-c", "copy", *_faststart(faststart), out], total, job)
+                 "-c", "copy", "-movflags", "+faststart", out], total, job)
 
 
-def _audio_src(p, info):
-    if info["audio"]:  # apad + -t → សំឡេងវែងស្មើវីដេអូ (កុំឱ្យលឿន/យឺតជាងរូបភាពពេលភ្ជាប់)
-        return ["-i", p, "-map", "0:v:0", "-map", "0:a:0", "-af", "aresample=48000,apad"]
-    return ["-i", p, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]
-
-
-def _concat_audio_fix(paths, infos, out, total, job, tmp, faststart=True):
-    """វីដេអូដូចគ្នា តែសំឡេងខុសគ្នា (ឧ. HE-AAC + AAC-LC) → encode តែសំឡេងនៃផ្នែកនីមួយៗជា AAC-LC ដូចគ្នា
-    ចម្លងរូបភាពផ្ទាល់ (លឿនជាង encode វីដេអូទាំងមូលច្រើន) រួចភ្ជាប់ដោយចម្លងផ្ទាល់ · ផ្នែក 4 ស្របគ្នា (I/O bound)"""
-    parts = [os.path.join(tmp, f"a{i:04d}.mp4") for i in range(len(paths))]
-
-    def task(i):
-        p, info, part = paths[i], infos[i], parts[i]
-        return lambda prog: _run_ffmpeg([*_audio_src(p, info), "-t", f"{info['duration']:.3f}", "-c:v", "copy",
-                                         "-c:a", "aac", "-profile:a", "aac_low", "-b:a", "192k", "-ar", "48000",
-                                         "-ac", "2", part], info["duration"], prog)
-    _run_parts([task(i) for i in range(len(paths))], infos, job, 0, 90, 4)
-    _concat_copy(parts, out, total, _Scaled(job, 90, 10), tmp, faststart)
-
-
-def _concat_reencode(paths, infos, out, total, job, tmp, faststart=True):
+def _concat_reencode(paths, infos, out, total, job, tmp):
     """encode ផ្នែកនីមួយៗដាច់ដោយឡែកឱ្យទម្រង់ដូចគ្នា (ទំហំ/fps/សំឡេង PCM) រួចភ្ជាប់ដោយចម្លងផ្ទាល់ —
-    ពាក្យបញ្ជាខ្លីជានិច្ច ទោះមានផ្នែករាប់រយ (ពីមុន input ទាំងអស់ក្នុងពាក្យបញ្ជាមួយ → WinError 206)។
-    GPU encoder (NVENC/QSV/AMF) បើមាន + ផ្នែកច្រើនស្របគ្នា · ផ្នែកណាបរាជ័យលើ GPU → libx264 ផ្នែកនោះ"""
-    import overlay as ov
+    ពាក្យបញ្ជាខ្លីជានិច្ច ទោះមានផ្នែករាប់រយ (ពីមុន input ទាំងអស់ក្នុងពាក្យបញ្ជាមួយ → WinError 206)"""
     w, h = infos[0]["width"], infos[0]["height"]
     w, h = w - w % 2, h - h % 2
     fps = round(infos[0]["fps"], 3)
     vf = (f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,"
           f"setsar=1,fps={fps},format=yuv420p")
-    enc = ov.pick_encoder()
-    parts = [os.path.join(tmp, f"p{i:04d}.mkv") for i in range(len(paths))]
-    fallback = []
-
-    def task(i):
-        p, info, part = paths[i], infos[i], parts[i]
-
-        def run(prog):
-            base = [*_audio_src(p, info), "-t", f"{info['duration']:.3f}", "-vf", vf]
-            tail = ["-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", part]
-            try:
-                _run_ffmpeg([*base, *ov.encoder_args(enc), *tail], info["duration"], prog)
-            except RuntimeError:
-                if enc == "libx264":
-                    raise
-                fallback.append(i)
-                _run_ffmpeg([*base, *ov.encoder_args("libx264"), *tail], info["duration"], prog)
-        return run
-    _run_parts([task(i) for i in range(len(paths))], infos, job, 0, 95, _encode_workers(enc))
-    if fallback:
-        job["warnings"].append(f"{enc} បរាជ័យ {len(fallback)} ផ្នែក — ប្រើ libx264 ជំនួស")
+    parts, offset = [], 0.0
+    for i, (p, info) in enumerate(zip(paths, infos)):
+        dur = f"{info['duration']:.3f}"
+        if info["audio"]:  # apad + -t → សំឡេងវែងស្មើវីដេអូ (កុំឱ្យលឿន/យឺតជាងរូបភាពពេលភ្ជាប់)
+            src = ["-i", p, "-map", "0:v:0", "-map", "0:a:0", "-af", "aresample=48000,apad"]
+        else:  # ផ្នែកគ្មានសំឡេង → បំពេញដោយភាពស្ងាត់
+            src = ["-i", p, "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]
+        part = os.path.join(tmp, f"p{i:04d}.mkv")
+        share = 95 * info["duration"] / (total or 1)
+        _run_ffmpeg([*src, "-t", dur, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                     "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", part], info["duration"],
+                    _Scaled(job, offset, share))
+        parts.append(part)
+        offset += share
     lst = os.path.join(tmp, "list.txt")
     with open(lst, "w", encoding="utf-8") as f:
         f.writelines(f"file '{os.path.basename(p)}'\n" for p in parts)
     _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", lst, "-map", "0:v:0", "-map", "0:a:0",
-                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", *_faststart(faststart), out],
-                total, _Scaled(job, 95, 5))
+                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out],
+                total, _Scaled(job, offset, 100 - offset))
 
 
 def start_mute_job(paths, bases, out_dir, temp_files=(), audio=None):
@@ -210,7 +124,7 @@ class _Scaled:
 def _run_mute(job_id, paths, bases, out_dir, temp_files, audio=None):
     job = jobs[job_id]
     try:
-        infos = probe_all(paths)
+        infos = [_probe(p) for p in paths]
         audio_sec = _audio_duration(audio) if audio else 0
         total = sum(i["duration"] for i in infos) or 1
         stamp, offset = time.strftime("%Y%m%d_%H%M%S"), 0.0
@@ -261,52 +175,39 @@ def _run_mute(job_id, paths, bases, out_dir, temp_files, audio=None):
                 pass
 
 
-def start_job(paths, out_dir, name_base, force_reencode=False, temp_files=(), faststart=True):
-    """faststart=False សម្រាប់ឯកសារបណ្តោះអាសន្ន (Dub / Logo page) — មិនសរសេរឯកសារម្តងទៀត (លឿនជាង ~2 ដង លើ copy)"""
+def start_job(paths, out_dir, name_base, force_reencode=False, temp_files=()):
     job_id = uuid.uuid4().hex[:12]
     jobs[job_id] = {"status": "running", "done": 0, "total": 100, "error": None,
                     "file": None, "warnings": [], "mode": None}
     threading.Thread(target=_run_job,
-                     args=(job_id, paths, out_dir, name_base, force_reencode, list(temp_files), faststart),
+                     args=(job_id, paths, out_dir, name_base, force_reencode, list(temp_files)),
                      daemon=True).start()
     return job_id
 
 
-def _run_job(job_id, paths, out_dir, name_base, force_reencode, temp_files, faststart=True):
+def _run_job(job_id, paths, out_dir, name_base, force_reencode, temp_files):
     job = jobs[job_id]
-    try:  # ឯកសារបណ្តោះអាសន្ន (ផ្នែក encode ឡើងវិញ — អាចរាប់ GB) នៅថាសដូចលទ្ធផល មិនមែន C:\Temp ដែលអាចពេញ
-        tmp = tempfile.mkdtemp(prefix="merge_", dir=out_dir)
-    except OSError:
-        tmp = tempfile.mkdtemp(prefix="merge_")
+    tmp = tempfile.mkdtemp(prefix="merge_")
     try:
-        infos = probe_all(paths)
+        infos = [_probe(p) for p in paths]
         total = sum(i["duration"] for i in infos)
-        same_video = all(i["video"] == infos[0]["video"] for i in infos)
-        same = same_video and all(i["audio"] == infos[0]["audio"] for i in infos)
+        same = all(i["video"] == infos[0]["video"] and i["audio"] == infos[0]["audio"] for i in infos)
         name = f"{name_base}_merged_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
         out = os.path.join(out_dir, name)
         t0 = time.time()
         if same and not force_reencode:
             job["mode"] = "copy"
             try:
-                _concat_copy(paths, out, total, job, tmp, faststart)
+                _concat_copy(paths, out, total, job, tmp)
             except RuntimeError:
                 job["warnings"].append("ការចម្លងផ្ទាល់បរាជ័យ — កំពុង encode ឡើងវិញ")
                 job["mode"] = "reencode"
-                _concat_reencode(paths, infos, out, total, job, tmp, faststart)
-        elif same_video and not force_reencode:
-            job["mode"] = "audio"
-            job["warnings"].append("សំឡេងនៃ Part ខុសគ្នា (ឧ. HE-AAC / AAC-LC) — encode តែសំឡេង")
-            try:
-                _concat_audio_fix(paths, infos, out, total, job, tmp, faststart)
-            except RuntimeError:
-                job["mode"] = "reencode"
-                _concat_reencode(paths, infos, out, total, job, tmp, faststart)
+                _concat_reencode(paths, infos, out, total, job, tmp)
         else:
             job["mode"] = "reencode"
             if not same:
                 job["warnings"].append("វីដេអូមានទម្រង់ខុសគ្នា (ទំហំ/codec/fps) — ត្រូវ encode ឡើងវិញ (យឺតជាង)")
-            _concat_reencode(paths, infos, out, total, job, tmp, faststart)
+            _concat_reencode(paths, infos, out, total, job, tmp)
         job.update(file=name, duration=total, size=os.path.getsize(out), parts=len(paths),
                    seconds=round(time.time() - t0, 1), done=100, status="done")
     except Exception as e:

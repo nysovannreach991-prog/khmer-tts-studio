@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import (
 )
 
 import auto_pipeline
-import router_panel as router_panel_mod
 import theme
 import vector_fx
 from video_dub import DUCK_LABELS
@@ -37,16 +36,6 @@ def _fade_in(widget, ms=320):
     anim.setEasingCurve(QEasingCurve.OutCubic)
     anim.finished.connect(lambda: widget.setGraphicsEffect(None))  # កុំទុក effect (ធ្វើឱ្យយឺត/ព្រិល)
     anim.start()
-
-
-# បន្ទះសៀគ្វី (Vector board) — បិទលំនាំដើម: ទំព័រ Auto សាមញ្ញ (ទម្លាក់ Folder · បញ្ជីរឿង · ប៊ូតុង) ·
-# បើកបានពីម៉ឺនុយ 🧭 ប្លង់ (QSettings simple_board) → MainWindow កំណត់មុនបង្កើត SimplePage
-BOARD = False
-
-
-def _vec():
-    """ប្លង់ Vector board (បន្ទះសៀគ្វី) សកម្ម?"""
-    return theme.mode == "vector" and BOARD
 
 
 class SmoothBar(QProgressBar):
@@ -84,7 +73,7 @@ class _Notice(QLabel):
 
 
 class StepChips(QWidget):
-    """📝 SRT → 🌐 ខ្មែរ → 🧩 Merge → 🔊 សំឡេង → 🎬 វីដេអូ — ជំហានកំពុងធ្វើភ្លឺបញ្ចេញបញ្ចូល"""
+    """🧩 Merge → 📝 SRT → 🌐 ខ្មែរ → 🔊 សំឡេង → 🎬 វីដេអូ — ជំហានកំពុងធ្វើភ្លឺបញ្ចេញបញ្ចូល"""
 
     def __init__(self):
         super().__init__()
@@ -122,7 +111,7 @@ class StepChips(QWidget):
         self.sync_skin()
 
     def sync_skin(self):
-        vector = _vec()
+        vector = theme.mode == "vector"
         for a in self.arrows:
             a.setVisible(not vector)
         for t in self.traces.values():
@@ -130,7 +119,7 @@ class StepChips(QWidget):
         self._sync_flow()
 
     def _sync_flow(self):
-        on = _vec() and self.active is not None
+        on = theme.mode == "vector" and self.active is not None
         if on and not self._flow.isActive():
             self._flow.start()
         elif not on:
@@ -221,7 +210,7 @@ class StoryCard(QFrame):
         self.sync_skin()
 
     def sync_skin(self):
-        vector = _vec()
+        vector = theme.mode == "vector"
         self.led.setVisible(vector)
         self.icon.setVisible(not vector)
         self.bar.setFixedHeight(11 if vector else 6)  # Vector: LCD មាន padding → ត្រូវការកម្ពស់សម្រាប់ tick
@@ -319,7 +308,7 @@ class SimplePage(QWidget):
     start = pyqtSignal()
     stop = pyqtSignal()
     nav = pyqtSignal()  # ទៅទំព័រ 🏷 Logo & Ads
-    SIDE_W = 380
+    SIDE_W = 330
 
     def __init__(self, scan_folder):
         super().__init__()
@@ -357,27 +346,6 @@ class SimplePage(QWidget):
         hl.addWidget(self.title)
         self.steps = StepChips()
         hl.addWidget(self.steps)
-        # 🔀 Gemini Router ក្នុងកម្មវិធី — បើក/បិទ + ស្ថានភាព នៅលើទំព័រផ្ទាល់ (MainWindow ភ្ជាប់ជាមួយការកំណត់)
-        self.router_bar = QFrame()
-        self.router_bar.setObjectName("routerBar")
-        rb = QHBoxLayout(self.router_bar)
-        rb.setContentsMargins(14, 8, 10, 8)
-        rb.setSpacing(10)
-        rt = QLabel("🔀 Gemini Router")
-        rt.setObjectName("routerTitle")
-        rb.addWidget(rt)
-        self.router_on = QCheckBox("ក្នុងកម្មវិធី (Direct)")
-        self.router_on.setToolTip("ប្រើ Chrome profile របស់ Gemini Router ផ្ទាល់ក្នុងកម្មវិធីនេះ — មិនបាច់បើក Router server · មិនត្រូវការ key")
-        rb.addWidget(self.router_on)
-        self.router_led = QLabel("○ មិនទាន់បើក")
-        self.router_led.setObjectName("simpleMuted")
-        rb.addWidget(self.router_led, 1)
-        self.btn_router_cfg = QPushButton("⚙ ថត Router / Model")
-        self.btn_router_cfg.setObjectName("ghost")
-        self.btn_router_cfg.setCursor(Qt.PointingHandCursor)
-        self.btn_router_cfg.setToolTip("បើកការកំណត់ Gemini Router (ថត Router · ជ្រើស model · ស្ថានភាពគណនី)")
-        rb.addWidget(self.btn_router_cfg)
-        hl.addWidget(self.router_bar)
         # Vector: បន្ទះសៀគ្វី (module ៤ → កុំព្យូទ័រ → វីដេអូ) ជំនួសជួរជំហាន
         self.board = vector_fx.ProcessBoard({k: lab.split()[0] for k, lab in auto_pipeline.STAGES},
                                             self._board_model)
@@ -421,9 +389,6 @@ class SimplePage(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(self.list_box)
         left.addWidget(scroll, 1)
-        # 🔀 Gemini Router Dashboard (Live Traffic · គណនី · Request Log) — បត់បាន · ក្រោមបញ្ជីរឿង
-        self.router_panel = router_panel_mod.RouterPanel()
-        left.addWidget(self.router_panel, 2)  # លាតពេញចន្លោះទំនេរ (ធំជាងបញ្ជីរឿង 2:1 ពេលគ្មានរឿង)
         body.addLayout(left, 3)
 
         self.side = side = QFrame()
@@ -445,17 +410,6 @@ class SimplePage(QWidget):
         close.clicked.connect(lambda: self.btn_settings.setChecked(False))
         head_row.addWidget(close)
         sl.addLayout(head_row)
-        self.side_scroll = side_scroll = QScrollArea()  # ការកំណត់ច្រើន → រំកិលបានលើអេក្រង់ទាប
-        side_scroll.setObjectName("simpleScroll")
-        side_scroll.setWidgetResizable(True)
-        side_scroll.setFrameShape(QFrame.NoFrame)
-        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        side_inner = QWidget()
-        side_scroll.setWidget(side_inner)
-        sl.addWidget(side_scroll, 1)
-        sl = QVBoxLayout(side_inner)
-        sl.setContentsMargins(0, 0, 6, 0)
-        sl.setSpacing(8)
         sl.addWidget(self._label("🔊 សំឡេងខ្មែរ (Edge TTS)"))
         self.voice = QComboBox()
         for key, label in VOICES:
@@ -468,63 +422,26 @@ class SimplePage(QWidget):
         sl.addWidget(self.lang)
         sl.addWidget(self._label("📝 Model ស្តាប់"))
         self.asr = QComboBox()
-        self.asr.addItem("🤖 Whisper + Gemini · ចាប់ភេទ ស្រី/ប្រុស (ល្អបំផុត)", "gemini")
-        self.asr.addItem("🎯 Whisper turbo · GPU", "whisper")
+        self.asr.addItem("🎯 Whisper turbo · GPU (ណែនាំ)", "whisper")
         self.asr.addItem("⚡ SenseVoice (លឿនបំផុត)", "sensevoice")
-        self.asr.addItem("☁ Gemini តែមួយ · ស្តាប់ + បកប្រែ + ភេទ (មិនប្រើ Whisper / GPU)", "gemini_only")
-        self.asr.setToolTip("Whisper + Gemini: Whisper ធ្វើ SRT (គ្រប់ពាក្យ ពេលវេលាត្រូវ) រួច Gemini ស្តាប់សំឡេង\n"
-                            "ដើម្បីចាប់ភេទ ស្រី/ប្រុស កែពាក្យខុស និងបកប្រែ → សំឡេងខ្មែរ ស្រី/ប្រុស តាមតួអង្គ\n"
-                            "Whisper turbo លើ GPU: ច្បាស់ មិនបាត់ពាក្យខ្លីៗ (សំឡេងខ្មែរតែមួយ)\n"
+        self.asr.setToolTip("Whisper turbo លើ GPU: ច្បាស់ជាង មិនបាត់ពាក្យខ្លីៗ (ណែនាំ)\n"
                             "SenseVoice: លឿនជាង ~3 ដង តែអាចខុសពាក្យខ្លះ")
         self.asr.currentIndexChanged.connect(lambda _: self._sync_engine_note())
         sl.addWidget(self.asr)
-        self.merge = QCheckBox("🧩 Merge Part ទាំងអស់ជាវីដេអូមួយ")
-        self.merge.setChecked(True)
-        self.merge.setToolTip("ធីក: Part ទាំងអស់ក្នុង Folder → Merge → វីដេអូមួយ (កាត់ជាផ្នែកបានខាងក្រោម)\n"
-                              "មិនធីក: Part នីមួយៗធ្វើដាច់ដោយឡែក → វីដេអូមួយក្នុងមួយ Part (ឈ្មោះដូច Part) · "
-                              "SRT ឈ្មោះដូច Part ប្រើសម្រាប់ Part នោះ")
-        self.merge.toggled.connect(lambda _: self._sync_engine_note())
-        sl.addWidget(self.merge)
         sl.addWidget(self._label("✂ កាត់ជាផ្នែក"))
         self.part = QSpinBox()
         self.part.setRange(0, 120)
         self.part.setSuffix(" នាទី")
         self.part.setSpecialValueText("មិនកាត់")
         sl.addWidget(self.part)
-        self.keep_full = QCheckBox("🎞 រក្សាទុកវីដេអូពេញ (Merge) ផង")
-        self.keep_full.setToolTip("ពេលកាត់ជាផ្នែក — រក្សាទុកវីដេអូទាំងមូល (Merge + សំឡេងខ្មែរ) "
-                                  "ជា <ឈ្មោះ>_full.mp4 ក្នុងថត Output ក្រៅពីផ្នែកៗ\n"
-                                  "(\"មិនកាត់\" → វីដេអូចេញជាវីដេអូពេញស្រាប់ហើយ)")
-        sl.addWidget(self.keep_full)
-        sl.addWidget(self._label("💾 ថត Output"))
-        out_row = QHBoxLayout()
-        self.out_dir = QLineEdit()
-        self.out_dir.setReadOnly(True)
-        self.out_dir.setToolTip("ថតដែលវីដេអូលទ្ធផលទាំងអស់ត្រូវរក្សាទុក (រឿងនីមួយៗមាន Folder ផ្ទាល់ខ្លួនក្នុងនេះ)")
-        out_row.addWidget(self.out_dir, 1)
-        self.btn_out_pick = QPushButton("📁 ជ្រើស")
-        self.btn_out_pick.setToolTip("ជ្រើសថត Output ផ្សេង (ឧ. លើ Drive D:)")
-        out_row.addWidget(self.btn_out_pick)
-        self.btn_out_reset = QPushButton("↺")
-        self.btn_out_reset.setFixedWidth(34)
-        self.btn_out_reset.setToolTip("ត្រឡប់ទៅថតដើម")
-        out_row.addWidget(self.btn_out_reset)
-        sl.addLayout(out_row)
         self.use_brand = QCheckBox("🏷 ដាក់ Logo && Ads (តាមការកំណត់)")
         sl.addWidget(self.use_brand)
         self.mute = QCheckBox("🔇 Mute សំឡេងដើម")
         sl.addWidget(self.mute)
         self.novocal = QCheckBox("🎤 លុបតែការនិយាយ (រក្សាភ្លេង && សូរ)")
         self.novocal.setToolTip("លុបសំឡេងនិយាយភាសាដើមចេញ — ភ្លេង និងសូរផ្សេងៗនៅដដែល ជាមួយសំឡេងខ្មែរ")
-        # Mute និងលុបតែការនិយាយ ប្រើជាមួយគ្នាមិនបាន → ធីកមួយ ដោះមួយទៀតចេញ (មិនបិទប៊ូតុង — មិនឱ្យគិតថាខូច)
-        self.novocal.toggled.connect(lambda on: on and self.mute.setChecked(False))
-        self.mute.toggled.connect(lambda on: on and self.novocal.setChecked(False))
+        self.novocal.toggled.connect(lambda on: self.mute.setEnabled(not on))
         sl.addWidget(self.novocal)
-        self.clean_voice = QCheckBox("📞 ចាប់សំឡេងទូរស័ព្ទ / តិចៗក្រោមភ្លេង")
-        self.clean_voice.setToolTip("បំបែកសំឡេងនិយាយចេញពីភ្លេង (Demucs, GPU) មុនស្តាប់ — ចាប់បានការនិយាយតាមទូរស័ព្ទ\n"
-                                    "និងសំឡេងតិចៗដែលលាក់ក្រោមភ្លេង (យឺតជាងបន្តិច ~15%)\n"
-                                    "បើធីក \"លុបតែការនិយាយ\" ផង — ប្រើលទ្ធផលដដែល មិនយឺតបន្ថែម")
-        sl.addWidget(self.clean_voice)
         duck_row = QHBoxLayout()
         duck_row.addWidget(QLabel("🔉 បន្ថយភ្លេងពេលនិយាយ"))
         self.duck = QComboBox()
@@ -535,110 +452,21 @@ class SimplePage(QWidget):
         sync = lambda: self.duck.setEnabled(self.novocal.isChecked() or not self.mute.isChecked())  # noqa: E731
         self.mute.toggled.connect(lambda _: sync())
         self.novocal.toggled.connect(lambda _: sync())
-        sl.addWidget(self._label("🔑 Bayon / Gemini / OpenAI key (សម្រាប់បកប្រែ)"))
+        sl.addWidget(self._label("🔑 Bayon / Gemini key (សម្រាប់បកប្រែ)"))
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
-        self.key.setPlaceholderText("bayon_sk_... · AIza... (Gemini) · sk-... (OpenAI/ChatGPT) — ច្រើន key បំបែកដោយ ,")
-        self.key.setToolTip("key ច្រើន → key មានបញ្ហា ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ\n"
-                            "sk-… (OpenAI): ជ្រើស model + តម្លៃក្នុង 1M token ខាងក្រោម · Whisper ស្តាប់ · ភេទតាម pitch")
+        self.key.setPlaceholderText("bayon_sk_... ឬ AIza... (ច្រើន key បំបែកដោយ ,)")
+        self.key.setToolTip("key ច្រើន → key មានបញ្ហា ប្តូរទៅ key បន្ទាប់ដោយស្វ័យប្រវត្តិ")
         sl.addWidget(self.key)
-        self.base_url = QLineEdit()
-        self.base_url.setPlaceholderText("Server ផ្ទាល់ខ្លួន (ទុកទទេ = Bayon/Google) ឧ. http://100.x.x.x:5560/v1")
-        self.base_url.setToolTip("Base URL នៃ server OpenAI-compatible (ឧ. Gemini Router របស់ម្ចាស់តាម Tailscale)\n"
-                                 "key ដែលមិនមែន AIza… នឹងទៅ server នេះជំនួស Bayon")
-        sl.addWidget(self.base_url)
-        # ⚡ Gemini Router ក្នុងកម្មវិធី (Direct) — engine របស់ Router ក្នុង process នេះ · មិនបាច់បើក Router server ដាច់ដោយឡែក
-        self.router_direct = QCheckBox("⚡ Gemini Router ក្នុងកម្មវិធី (Direct)")
-        # អក្សរវែង → កុំឱ្យពង្រីកទទឹងផ្ទាំង (ផ្ទាំង 330px — ធំជាងនេះ អ្វីៗត្រូវកាត់)
-        self.router_direct.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.router_direct.setToolTip("ប្រើ Chrome profile (គណនី Gemini ដែលចូលរួចហើយ) របស់ Gemini Router ផ្ទាល់ក្នុងកម្មវិធីនេះ\n"
-                                      "ត្រូវការថត Gemini Router (engine.py + profiles/) លើកុំព្យូទ័រនេះ · មិនត្រូវការ key\n"
-                                      "បើ Router server កំពុងដំណើរការស្រាប់ (port 5550) → ប្រើវាតាម HTTP ដោយស្វ័យប្រវត្តិ")
-        sl.addWidget(self.router_direct)
-        self.router_row = QWidget()
-        rv = QVBoxLayout(self.router_row)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(4)
-        rr = QHBoxLayout()
-        rr.addWidget(QLabel("📁 ថត Router"))
-        self.router_dir = QLineEdit()
-        self.router_dir.setToolTip("ថតដែលមាន engine.py + profiles/ (ទទេ = រកដោយស្វ័យប្រវត្តិ ឧ. D:\\Software\\…)")
-        self.router_dir.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        rr.addWidget(self.router_dir, 1)
-        self.btn_router_dir = QPushButton("📂")
-        self.btn_router_dir.setFixedWidth(34)
-        self.btn_router_dir.setToolTip("ជ្រើសថត Gemini Router")
-        rr.addWidget(self.btn_router_dir)
-        rv.addLayout(rr)
-        self.router_state = QLabel("")
-        self.router_state.setObjectName("simpleMuted")
-        self.router_state.setWordWrap(True)
-        rv.addWidget(self.router_state)
-        self.router_row.hide()
-        sl.addWidget(self.router_row)
-        # Model របស់ Server ផ្ទាល់ខ្លួន (Router មាន Gemini ច្រើន: 3.8 Flash, 3.1 Pro, 4 Argon …) — បង្ហាញតែពេលប្រើ Server
-        self.model_row = QWidget()
-        mr = QHBoxLayout(self.model_row)
-        mr.setContentsMargins(0, 0, 0, 0)
-        mr.addWidget(QLabel("🧠 Model"))
-        self.model = QComboBox()
-        self.model.setToolTip("Model Gemini ទាំងអស់ដែល Server ផ្ទាល់ខ្លួនមាន (GET /v1/models)\n"
-                              "3.8 Flash = លឿន · Pro / -high = គិតយូរជាង (យឺតជាង)")
-        mr.addWidget(self.model, 1)
-        self.btn_models = QPushButton("↻")
-        self.btn_models.setFixedWidth(34)
-        self.btn_models.setToolTip("ទាញបញ្ជី model ពី Server ម្តងទៀត")
-        mr.addWidget(self.btn_models)
-        self.model_row.hide()
-        sl.addWidget(self.model_row)
-        # OpenAI: Tracking ID (ស្រេចចិត្ត) — ផ្ញើជាមួយសំណើ ឱ្យឃើញ/ចែកការប្រើក្នុង Usage dashboard · បង្ហាញតែពេល key sk-…
-        self.tracking_row = QWidget()
-        tr = QHBoxLayout(self.tracking_row)
-        tr.setContentsMargins(0, 0, 0, 0)
-        tr.addWidget(QLabel("🏷 Tracking ID"))
-        self.tracking_id = QLineEdit()
-        self.tracking_id.setPlaceholderText("ឧ. ឈ្មោះអតិថិជន / ក្រុម (ស្រេចចិត្ត)")
-        self.tracking_id.setToolTip("ផ្ញើជាមួយសំណើ OpenAI នីមួយៗ (field user) → ឃើញនៅ "
-                                    "platform.openai.com/usage ថាអ្នកណា/រឿងណាប្រើ token ប៉ុន្មាន")
-        tr.addWidget(self.tracking_id, 1)
-        self.tracking_row.hide()
-        sl.addWidget(self.tracking_row)
         self.key_state = QLabel("")
         self.key_state.setObjectName("simpleMuted")
         self.key_state.setWordWrap(True)
         sl.addWidget(self.key_state)
-        self.btn_check = QPushButton("🩺 ពិនិត្យថាប្រើបាន")
-        self.btn_check.setToolTip("សាក key បកប្រែនីមួយៗ, Edge TTS, ffmpeg, GPU, Whisper, Google Drive ... ហើយបង្ហាញ ✓ / ✕")
-        sl.addWidget(self.btn_check)
-        sl.addWidget(self._label("☁ Google Drive"))
-        self.gd_on = QCheckBox("☁ Upload វីដេអូពេញទៅ Google Drive ពេលរួច")
-        self.gd_on.setToolTip("រឿងនីមួយៗរួច → Upload វីដេអូពេញ (_full.mp4 ឬវីដេអូតែមួយ) ទៅ Folder Google Drive\n"
-                              "ពេលកាត់ជាផ្នែក វាបង្កើតវីដេអូពេញឱ្យដោយស្វ័យប្រវត្តិ")
-        sl.addWidget(self.gd_on)
-        self.gd_url = QLineEdit()
-        self.gd_url.setPlaceholderText("Link Web app (https://script.google.com/macros/s/…/exec)")
-        sl.addWidget(self.gd_url)
-        gd_row = QHBoxLayout()
-        self.gd_secret = QLineEdit()
-        self.gd_secret.setEchoMode(QLineEdit.Password)
-        self.gd_secret.setPlaceholderText("ពាក្យសម្ងាត់ Upload")
-        gd_row.addWidget(self.gd_secret, 1)
-        self.btn_gd_test = QPushButton("✓ សាក")
-        self.btn_gd_test.setToolTip("សាកភ្ជាប់ទៅ Google Drive (មិន Upload អ្វីទេ)")
-        gd_row.addWidget(self.btn_gd_test)
-        sl.addLayout(gd_row)
-        self.gd_state = QLabel("")
-        self.gd_state.setObjectName("simpleMuted")
-        self.gd_state.setWordWrap(True)
-        sl.addWidget(self.gd_state)
         sl.addStretch()
         self.engine_note = QLabel()
         self.engine_note.setObjectName("simpleMuted")
         sl.addWidget(self.engine_note)
         self._sync_engine_note()
-        # ផ្ទាំងទទឹងថេរ — អក្សរវែង (checkbox / label / combo) កុំឱ្យ inner ធំជាង viewport (បើធំ អ្វីៗត្រូវកាត់ខាងឆ្វេង)
-        for wd in side_inner.findChildren((QCheckBox, QLabel, QComboBox, QLineEdit)):
-            wd.setSizePolicy(QSizePolicy.Ignored, wd.sizePolicy().verticalPolicy())
         self.body_w = QWidget()
         self.body_w.setLayout(body)
         outer.addWidget(self.body_w, 1)
@@ -693,7 +521,7 @@ class SimplePage(QWidget):
         self.restyle()
 
     def _side_geometry(self):
-        bottom = self.height() - 6 if _vec() else self.foot.y() - 8
+        bottom = self.height() - 6 if theme.mode == "vector" else self.foot.y() - 8
         return 6, max(200, bottom - 6)
 
     def _toggle_settings(self, on):
@@ -727,7 +555,7 @@ class SimplePage(QWidget):
 
     def _place_receipt(self):
         r = self.receipt
-        if _vec():  # ចេញពីរន្ធក្រោមកុំព្យូទ័រ
+        if theme.mode == "vector":  # ចេញពីរន្ធក្រោមកុំព្យូទ័រ
             slot = self.board.slot_rect
             top = self.board.mapTo(self, QPoint(int(slot.center().x()), int(slot.top())))
             r.move(top.x() - r.width() // 2, top.y() + 2)
@@ -754,7 +582,7 @@ class SimplePage(QWidget):
                 "can_start": self.btn_go.isEnabled(), "can_stop": self.btn_stop.isEnabled()}
 
     def _board_refresh(self):
-        if _vec():
+        if theme.mode == "vector":
             self.board.refresh()
 
     def _board_action(self, name):
@@ -776,7 +604,7 @@ class SimplePage(QWidget):
         self.add_paths([u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()])
 
     def paintEvent(self, e):
-        if _vec():  # ផ្ទៃខាងក្រោយបន្ទះសៀគ្វីស្រាលៗ (ឃើញនៅចន្លោះទទេ)
+        if theme.mode == "vector":  # ផ្ទៃខាងក្រោយបន្ទះសៀគ្វីស្រាលៗ (ឃើញនៅចន្លោះទទេ)
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             vector_fx.paint_backdrop(p, self.rect())
@@ -784,7 +612,7 @@ class SimplePage(QWidget):
 
     def boot(self, tries=0):
         """Vector: ចលនាបើកម៉ាស៊ីន (Linking... → ផ្ទាំងឡើងពីក្រោម)"""
-        if not _vec():
+        if theme.mode != "vector":
             return
         if not self.isVisible() or self.width() < 200:  # បង្អួចមិនទាន់បង្ហាញ → រង់ចាំបន្តិច
             if tries < 20:
@@ -886,13 +714,10 @@ class SimplePage(QWidget):
         return bool(self.pipeline and not self.pipeline.finished)
 
     def _sync_engine_note(self):
-        engine = self.asr.currentData()
-        asr = {"gemini": "📝 Whisper turbo + 🤖 Gemini ស្តាប់ (👩 ស្រី / 👨 ប្រុស)",
-               "gemini_only": "☁ Gemini ស្តាប់ផ្ទាល់ + បកប្រែ + ភេទ (មិនប្រើ Whisper / GPU)",
-               "whisper": "📝 Whisper turbo · GPU (ច្បាស់ មិនបាត់ពាក្យ)"}.get(engine, "📝 SenseVoice + VAD (លឿនបំផុត)")
-        merge = "🎬 ធ្វើម្តងមួយរឿង (មិនប្រជែង GPU)" if self.merge.isChecked() else "🎬 ម្តងមួយ Part · វីដេអូមួយក្នុងមួយ Part (មិន Merge)"
-        self.engine_note.setText(f"{asr}\n🌐 Gemini 3.8 Flash តាម Bayon\n🔊 Edge TTS ស្របគ្នា 48 បន្ទាត់"
-                                 f"{' · ស្រី/ប្រុស' if engine in ('gemini', 'gemini_only') else ''}\n{merge}")
+        asr = ("📝 Whisper turbo · GPU (ច្បាស់ មិនបាត់ពាក្យ)" if self.asr.currentData() == "whisper"
+               else "📝 SenseVoice + VAD (លឿនបំផុត)")
+        self.engine_note.setText(f"{asr}\n🌐 Gemini 3.8 Flash តាម Bayon\n🔊 Edge TTS ស្របគ្នា 48 បន្ទាត់\n"
+                                 "🎬 ធ្វើម្តងមួយរឿង (មិនប្រជែង GPU)")
 
     def attach(self, pipeline):
         """ចាប់ផ្តើមបង្ហាញវឌ្ឍនភាពនៃ pipeline"""
@@ -938,14 +763,14 @@ class SimplePage(QWidget):
             self._board_refresh()
             self.btn_open.show()
             self.leds.setText("■ ■ ■")
-            if _vec():
+            if theme.mode == "vector":
                 self._place_receipt()
                 self.receipt.print_out("Dub Complete" if ok else "Finished", [
                     f"✓ {done} រឿង" + (f" · ✕ {failed}" if failed else ""),
                     f"⏱ {fmt_dur(elapsed)}",
                     f"{sum(len(c.story['videos']) for c in self.cards)} Part → ថត Output"])
             return
-        if _vec():  # LED ៣ ដុំរត់ជាជួរ ពេលកំពុងធ្វើ
+        if theme.mode == "vector":  # LED ៣ ដុំរត់ជាជួរ ពេលកំពុងធ្វើ
             lit = self._tick % 3
             self.leds.setText(" ".join(f'<span style="color:{theme.C["accent"] if i == lit else theme.C["faint"]}">'
                                        "■</span>" for i in range(3)))
@@ -967,7 +792,7 @@ class SimplePage(QWidget):
     def restyle(self):
         c = theme.C
         grad = theme.GRAD.format(a=c["grad_a"], b=c["grad_b"])
-        vector = _vec()
+        vector = theme.mode == "vector"
         self.serial_row.setVisible(vector)
         self.board.setVisible(vector)
         # Vector: បន្ទះសៀគ្វីពេញផ្ទាំង (ទម្លាក់ Folder · បញ្ជីរឿង · START ទាំងអស់នៅលើបន្ទះ)
@@ -977,12 +802,10 @@ class SimplePage(QWidget):
         self._board_refresh()
         self.title.setVisible(not vector)
         self.steps.setVisible(not vector)
-        self.router_bar.setVisible(not vector)
         self.drop.icon.setVisible(not vector)  # Vector: ទុកកន្លែងឲ្យបន្ទះសៀគ្វី
         for card in self.cards:
             card.sync_skin()
         self.steps.sync_skin()
-        self.router_panel.restyle()
         self.leds.setText("■ ■ ■")
         if not vector:
             self.receipt.hide()
@@ -1003,8 +826,6 @@ QLabel#dropIcon {{ font-size: 26pt; }}
 QLabel#dropTitle {{ font-size: 13pt; font-weight: bold; }}
 QLabel#dropSub, QLabel#simpleMuted, QLabel#storyInfo, QLabel#storyDetail, QLabel#sideLabel {{ color: {c['muted']}; }}
 QLabel#sideHead {{ font-size: 12pt; font-weight: bold; }}
-QFrame#routerBar {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 12px; }}
-QLabel#routerTitle {{ font-weight: bold; }}
 QScrollArea#simpleScroll, QScrollArea#simpleScroll > QWidget > QWidget {{ background: transparent; }}
 QFrame#storyCard {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 14px; }}
 QFrame#storyCard[state="running"] {{ border: 1px solid {c['accent']}; }}

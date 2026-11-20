@@ -28,7 +28,6 @@ import srt_dub
 import transcribe
 import video_dub
 import video_merge
-import gemini_direct
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LOCAL = os.environ.get("LOCALAPPDATA", "")
@@ -250,109 +249,6 @@ def split_text(text, limit=GEMINI_CHUNK_CHARS):
 
 
 BAYON_URL = "https://bayongateway.com/v1/chat/completions"
-# Server OpenAI-compatible ផ្ទាល់ខ្លួន (ឧ. Gemini Router របស់ម្ចាស់តាម Tailscale) — GUI កំណត់ពី QSettings
-# មាន → key ដែលមិនមែន Google (AIza…) ទៅទីនេះជំនួស Bayon
-OPENAI_BASE_URL = ""
-# ⚡ Gemini Router ក្នុងកម្មវិធី (Direct) — engine របស់ Router ក្នុង process នេះ (gemini_direct.py) · GUI កំណត់ពី QSettings
-# បើក → _custom_url() = DIRECT_URL (ឈ្នះ Base URL) · key ដែលមិនមែន Google (AIza…) → engine · គ្មាន key → DIRECT_KEY
-ROUTER_DIRECT = False
-ROUTER_DIR = ""
-DIRECT_URL = "direct://gemini-router"  # "url" សញ្ញា → _gateway_post ហៅ gemini_direct ជំនួស HTTP
-DIRECT_KEY = "sk-gemini-router-direct-key"  # key និម្មិត (ទម្រង់ sk-…) ពេលអ្នកប្រើគ្មាន key — ឱ្យកូដ "ត្រូវការ key" ឆ្លងកាត់
-
-
-def _load_relay_url():
-    """Relay របស់ម្ចាស់ (Cloudflare Worker) — មិនមែនការសម្ងាត់ទេ (key នៅលើ Relay) · ដាក់ក្នុង update_config.json"""
-    try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_config.json"),
-                  encoding="utf-8") as f:
-            return json.load(f).get("relay_url", "").strip().rstrip("/")
-    except (OSError, ValueError):
-        return ""
-
-
-# អតិថិជនគ្មាន key ផ្ទាល់ខ្លួន → GUI ប្រើ License (AT1-…) ជា "key" → បកប្រែតាម Relay (key របស់ម្ចាស់)
-RELAY_URL = _load_relay_url()
-
-
-def _relay_post(license_key, model, body):
-    import licensing
-    req = urllib.request.Request(
-        f"{RELAY_URL}/v1/generate", data=json.dumps({"model": model, "body": body}).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json", "X-License": license_key, "X-Machine": licensing.machine_code(),
-                 # Cloudflare បិទ "Python-urllib" (error 1010 — ស្គាល់ថាជា bot) → ប្រើឈ្មោះកម្មវិធីជំនួស
-                 "User-Agent": "AITeam1 (Windows)"})
-    try:
-        with urllib.request.urlopen(req, timeout=max(_timeout(body), 180)) as resp:  # Relay សាក key ច្រើន → យូរជាង
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        try:
-            detail = json.loads(detail)["error"]["message"]
-        except Exception:
-            pass
-        raise RuntimeError(f"ម៉ាស៊ីនបកប្រែ (Relay) error {e.code}: {str(detail)[:300]}") from None
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"ម៉ាស៊ីនបកប្រែ (Relay) ភ្ជាប់មិនបាន ({e.reason}) — ពិនិត្យអ៊ីនធឺណិត") from None
-
-
-def _custom_url():
-    if ROUTER_DIRECT:  # Router ក្នុងកម្មវិធី — ឈ្នះ Base URL
-        return DIRECT_URL
-    base = OPENAI_BASE_URL.strip().rstrip("/")
-    if not base:
-        return ""
-    return base if base.endswith("/chat/completions") else base + "/chat/completions"
-
-
-def router_progress(job_id, title, done, total, status="running", model=""):
-    """រាយការណ៍វឌ្ឍនភាពបកប្រែទៅ Dashboard របស់ Server ផ្ទាល់ខ្លួន (Gemini Router: POST /v1/progress →
-    បង្ហាញក្នុង Live Traffic Orbit) · ផ្ញើនៅខាងក្រោយ ហើយមិនអើពើកំហុស — មិនត្រូវរំខាន/ពន្យារការបកប្រែឡើយ
-    (Server ដែលគ្មាន endpoint នេះ → 404 ស្ងាត់ៗ) · មិនផ្ញើ key ទេ"""
-    url = _custom_url()
-    if not url or url == DIRECT_URL:  # ក្នុងកម្មវិធី → គ្មាន Dashboard
-        return
-    url = url[: -len("/chat/completions")] + "/progress"
-    payload = json.dumps({"job_id": job_id, "title": str(title)[:200], "done": done, "total": total,
-                          "unit": "lines", "status": status, "model": model or ""}).encode("utf-8")
-
-    def send():
-        try:
-            req = urllib.request.Request(url, data=payload, method="POST",
-                                         headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=3).close()
-        except Exception:  # noqa: BLE001
-            pass
-    threading.Thread(target=send, daemon=True).start()
-
-
-transcribe.progress_hook = router_progress
-
-
-def custom_models(api_key=""):
-    """Model ទាំងអស់ដែល Server ផ្ទាល់ខ្លួនមាន (GET /v1/models — OpenAI-compatible, ឧ. Gemini Router)
-    → [(id, ឈ្មោះបង្ហាញ), ...] · គ្មាន server / endpoint → []"""
-    url = _custom_url()
-    if not url:
-        return []
-    if url == DIRECT_URL:
-        return gemini_direct.models()
-    url = url[: -len("/chat/completions")] + "/models"
-    headers = {"Accept": "application/json"}
-    key = clean_key(api_key)
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        raise RuntimeError(f"ទាញបញ្ជី model ពី {url} មិនបាន ({getattr(e, 'reason', e)})") from None
-    out = []
-    for m in data.get("data", []) if isinstance(data, dict) else data:
-        mid = str(m.get("id", "")).strip() if isinstance(m, dict) else str(m).strip()
-        if mid:
-            out.append((mid, str(m.get("name") or mid) if isinstance(m, dict) else mid))
-    return out
 # model ដែល Bayon មិនមាន → model ជិតបំផុតដែលមាន
 BAYON_MODELS = {"gemini-3.5-flash": "gemini-3.8-flash", "gemini-3.1-pro-preview": "gemini-3.7-pro",
                 "gemini-2.5-flash": "gemini-3-flash"}
@@ -366,8 +262,7 @@ def clean_key(key):
     return key.split()[0] if key.split() else ""
 
 
-# sk-… = key server ផ្ទាល់ខ្លួន (ឧ. sk-team-… របស់ Share Gate) — កុំឱ្យបាត់ពេលដាក់ជាមួយ key Bayon/Google
-_KEY_RE = re.compile(r"bayon_sk_[A-Za-z0-9_\-]+|AIza[0-9A-Za-z_\-]{30,}|\bsk-[A-Za-z0-9_\-]{16,}")
+_KEY_RE = re.compile(r"bayon_sk_[A-Za-z0-9_\-]+|AIza[0-9A-Za-z_\-]{30,}")
 
 
 def parse_keys(text):
@@ -383,10 +278,9 @@ def join_keys(text):
 
 
 def is_gateway_key(key):
-    """True = key ទាំងអស់ជា Bayon / server ផ្ទាល់ខ្លួន (មិនអាចប្រើ Gemini TTS)"""
+    """True = key ទាំងអស់ជា Bayon (មិនអាចប្រើ Gemini TTS)"""
     keys = parse_keys(key)
-    return bool(keys) and all(k.startswith("bayon_sk_") or k.upper().startswith("AT1-") or is_openai_key(k)
-                              or (_custom_url() and not k.startswith("AIza")) for k in keys)
+    return bool(keys) and all(k.startswith("bayon_sk_") for k in keys)
 
 
 # key ដែលមានបញ្ហា → រំលងរហូតដល់ពេលនេះ (time.time()) · key_switch_hook(msg) ប្រាប់ GUI ពេលប្តូរ key
@@ -446,91 +340,11 @@ def _timeout(body):
     return 300 if has_audio or "AUDIO" in config.get("responseModalities", []) else 120
 
 
-# ---------------- OpenAI (ChatGPT) API — key sk-… ដោយគ្មាន Server ផ្ទាល់ខ្លួន ----------------
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-OPENAI_DEFAULT_MODEL = "gpt-6-luna"  # ថោក និងលឿន — គ្រប់គ្រាន់សម្រាប់បកប្រែ subtitle
-# (id, ឈ្មោះ, $ ក្នុង 1M token ចូល, $ ក្នុង 1M token ចេញ) — តម្លៃ Standard ពី developers.openai.com/api/docs/pricing
-# (ខែវិច្ឆិកា 2026) · វាស់លើរឿងពិត: 1000 បន្ទាត់ ≈ 13k token ចូល + 18k ចេញ (រឿង 2000 បន្ទាត់ ≈ 26k + 36k)
-OPENAI_MODELS = [
-    ("gpt-6-luna", "GPT-6 Luna (ថោកបំផុត · លឿន)", 0.10, 0.50),
-    ("gpt-5.6-luna", "GPT-5.6 Luna", 0.20, 1.20),
-    ("gpt-5.4-nano", "GPT-5.4 nano", 0.20, 1.25),
-    ("gpt-5-nano", "GPT-5 nano", 0.05, 0.40),
-    ("gpt-5-mini", "GPT-5 mini", 0.25, 2.00),
-    ("gpt-5.4-mini", "GPT-5.4 mini", 0.75, 4.50),
-    ("gpt-6.1-terra", "GPT-6.1 Terra", 1.00, 5.00),
-    ("gpt-5.6-terra", "GPT-5.6 Terra", 2.00, 12.00),
-    ("gpt-6.1-sol", "GPT-6.1 Sol", 2.00, 10.00),
-    ("gpt-6-sol", "GPT-6 Sol", 2.00, 10.00),
-    ("gpt-5.6-sol", "GPT-5.6 Sol", 4.00, 20.00),
-    ("gpt-5.4", "GPT-5.4", 2.50, 15.00),
-    ("gpt-5.2", "GPT-5.2", 1.75, 14.00),
-    ("gpt-5.1", "GPT-5.1", 1.25, 10.00),
-    ("gpt-5", "GPT-5", 1.25, 10.00),
-    ("gpt-5.5", "GPT-5.5", 5.00, 30.00),
-    ("gpt-6-astra", "GPT-6 Astra (ខ្លាំងបំផុត · ថ្លៃ)", 10.00, 50.00),
-    ("gpt-4.1-mini", "GPT-4.1 mini", 0.40, 1.60),
-    ("gpt-4.1", "GPT-4.1", 2.00, 8.00),
-    ("gpt-4o-mini", "GPT-4o mini", 0.15, 0.60),
-    ("gpt-4o", "GPT-4o", 2.50, 10.00),
-    ("o3", "o3 (គិតយូរ)", 2.00, 8.00),
-]
-OPENAI_TRACKING_ID = ""  # GUI កំណត់ — ផ្ញើជា user + metadata.tracking_id ឱ្យឃើញ/ចែកក្នុង Usage dashboard របស់ OpenAI
-usage = {"requests": 0, "input": 0, "output": 0, "cost": 0.0}  # token OpenAI ដែលប្រើក្នុងវគ្គនេះ (GUI បង្ហាញ)
-_usage_lock = threading.Lock()
-
-
-def is_openai_key(key):
-    """sk-… ដោយគ្មាន Server ផ្ទាល់ខ្លួន = key OpenAI (ChatGPT) · មាន Server → key Router (ឧ. sk-team-…)"""
-    return key.startswith("sk-") and not _custom_url()
-
-
-def openai_price(model):
-    """($ ក្នុង 1M token ចូល, ចេញ) ឬ None បើមិនស្គាល់ model"""
-    for mid, _, inp, out in OPENAI_MODELS:
-        if mid == model:
-            return inp, out
-    return None
-
-
-def openai_model_label(model):
-    for mid, name, inp, out in OPENAI_MODELS:
-        if mid == model:
-            return f"{name} · ${inp:.2f} / ${out:.2f} ក្នុង 1M token (ចូល / ចេញ)"
-    return model
-
-
-def _track_usage(model, data):
-    u = data.get("usage") if isinstance(data, dict) else None
-    if not isinstance(u, dict):
-        return
-    inp, out = int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
-    price = openai_price(model) or (0.0, 0.0)
-    with _usage_lock:
-        usage["requests"] += 1
-        usage["input"] += inp
-        usage["output"] += out
-        usage["cost"] += (inp * price[0] + out * price[1]) / 1e6
-
-
-def usage_text():
-    """ឧ. "12 សំណើ · 45,210 token ≈ $0.03" ឬ "" បើមិនទាន់ប្រើ"""
-    with _usage_lock:
-        if not usage["requests"]:
-            return ""
-        return (f"{usage['requests']} សំណើ · {usage['input'] + usage['output']:,} token "
-                f"(ចូល {usage['input']:,} · ចេញ {usage['output']:,}) ≈ ${usage['cost']:.3f}")
-
-
-def _gateway_post(api_key, model, body, url=None):
-    """Bayon Gateway ឬ server OpenAI-compatible ផ្ទាល់ខ្លួន (url) ឬ OpenAI (url = OPENAI_API_URL) —
-    បម្លែង body ទម្រង់ Gemini ទៅ/មក ដើម្បីឱ្យកូដផ្សេងមិនបាច់ដឹង"""
-    openai = url == OPENAI_API_URL
-    name = ("OpenAI" if openai else "Gemini Router (ក្នុងកម្មវិធី)" if url == DIRECT_URL
-            else "Server ផ្ទាល់ខ្លួន" if url else "Bayon")
+def _gateway_post(api_key, model, body):
+    """Bayon Gateway (OpenAI chat/completions) — បម្លែង body ទម្រង់ Gemini ទៅ/មក ដើម្បីឱ្យកូដផ្សេងមិនបាច់ដឹង"""
     config = body.get("generationConfig", {})
     if "AUDIO" in config.get("responseModalities", []):
-        raise RuntimeError(f"Gemini TTS មិនអាចប្រើតាម {name} បានទេ — សូមប្រើ Edge TTS (ឥតគិតថ្លៃ) "
+        raise RuntimeError("Gemini TTS មិនអាចប្រើតាម Bayon key បានទេ — សូមប្រើ Edge TTS (ឥតគិតថ្លៃ) "
                            "ឬ Gemini API Key ពី Google (AIza...)")
     content = []
     for part in body["contents"][0]["parts"]:
@@ -544,63 +358,24 @@ def _gateway_post(api_key, model, body, url=None):
     if want_json:
         schema = json.dumps(_schema_lower(config.get("responseSchema", {})), ensure_ascii=False)
         content.append({"type": "text", "text": f"Reply with ONLY valid JSON (no markdown) matching this JSON schema: {schema}"})
-    if openai and model.startswith("gemini"):  # ទំព័រដែលនៅប្រើឈ្មោះ model Gemini → model OpenAI ដើម
-        model = OPENAI_DEFAULT_MODEL
-    payload = {"model": model if url else BAYON_MODELS.get(model, model),
-               "messages": [{"role": "user", "content": content}]}
-    if not openai or model.startswith(("gpt-5", "gpt-6", "o")):  # GPT-4.x មិនទទួល reasoning_effort
-        payload["reasoning_effort"] = "low"  # low = លឿនជាងច្រើនដង គុណភាពដដែល
-    if openai:
-        if want_json:
-            payload["response_format"] = {"type": "json_object"}
-        if OPENAI_TRACKING_ID:  # ឃើញក្នុង Usage dashboard (user) · ចែកតាមអតិថិជន/រឿង
-            # (metadata មិនបាន — OpenAI ទាមទារ store=true ដែលរក្សាទុកសន្ទនានៅ OpenAI → 400)
-            payload["user"] = OPENAI_TRACKING_ID[:64]
-    if url == DIRECT_URL:  # engine របស់ Router ក្នុង process នេះ (gemini_direct) — គ្មាន HTTP
+    payload = {"model": BAYON_MODELS.get(model, model), "messages": [{"role": "user", "content": content}],
+               "reasoning_effort": "low"}  # low = លឿនជាងច្រើនដង គុណភាពដដែល
+    req = urllib.request.Request(BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {clean_key(api_key)}"})
+    try:
+        with urllib.request.urlopen(req, timeout=_timeout(body)) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
         try:
-            data = gemini_direct.chat_completion(payload, timeout=max(_timeout(body), 600), router_dir=ROUTER_DIR)
-        except RuntimeError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"{name}: {str(e)[:300]}") from None
-    else:
-        req = urllib.request.Request(url or BAYON_URL, data=json.dumps(payload).encode("utf-8"), method="POST",
-                                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {clean_key(api_key)}"})
-        try:
-            # server ផ្ទាល់ខ្លួន (Router តាម Chrome) យឺត ហើយរង់ចាំជាជួរពេលមិត្តភក្តិច្រើនប្រើ → រង់ចាំយូរជាង
-            # (Router ខ្លួនឯងកំណត់ 300វិ ក្នុងមួយសំណើ — បើយើងឈប់មុនវា សំណើនៅតែរត់ក្នុង Chrome ហើយរវល់កាន់តែខ្លាំង)
-            slow = url and not openai  # OpenAI ឆ្លើយលឿន (10–30វិ) → timeout ធម្មតា
-            with urllib.request.urlopen(req, timeout=max(_timeout(body), 600) if slow else _timeout(body)) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")
-            try:
-                detail = json.loads(detail)["error"]["message"]
-            except Exception:
-                pass
-            if openai and e.code == 401:
-                detail = (f"key OpenAI {key_label(clean_key(api_key))} មិនត្រូវ — ពិនិត្យនៅ platform.openai.com/api-keys "
-                          f"(key Router sk-team-… ត្រូវដាក់ Base URL Server ផ្ទាល់ខ្លួនផង)")
-            elif openai and (e.code == 429 and "quota" in str(detail).lower() or e.code == 402):
-                detail = (f"key OpenAI {key_label(clean_key(api_key))} អស់ credit — បញ្ចូលលុយនៅ platform.openai.com/billing "
-                          f"({str(detail)[:120]})")
-            elif url and e.code == 401:
-                detail = (f"key {key_label(clean_key(api_key))} មិនត្រូវ — សូមប្រើ key ដែលម្ចាស់ Server ផ្តល់ឱ្យ "
-                          f"(ឧ. sk-team-… ពី share_gate.json) មិនមែន key Bayon/Router ទេ")
-            elif not url and (e.code == 402 or "credit" in str(detail).lower()):
-                detail = (f"key {key_label(clean_key(api_key))} អស់ credit — បញ្ចូលលុយនៅ bayongateway.com "
-                          f"ឬប្តូរ key ក្នុង ⚙ ការកំណត់ ({str(detail)[:120]})")
-            raise RuntimeError(f"{name} API error {e.code}: {str(detail)[:300]}") from None
-        except urllib.error.URLError as e:
-            if not url:
-                raise
-            raise RuntimeError(f"{name}: ភ្ជាប់ {url} មិនបាន ({e.reason}) — កុំព្យូទ័រម្ចាស់បើក? Tailscale ភ្ជាប់?") from None
+            detail = json.loads(detail)["error"]["message"]
+        except Exception:
+            pass
+        raise RuntimeError(f"Bayon API error {e.code}: {detail}") from None
     try:
         text = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
-        raise RuntimeError(f"{name} ឆ្លើយតបមិនត្រឹមត្រូវ: {json.dumps(data)[:300]}") from None
-    if openai:
-        _track_usage(payload["model"], data)
+        raise RuntimeError(f"Bayon ឆ្លើយតបមិនត្រឹមត្រូវ: {json.dumps(data)[:300]}") from None
     return {"candidates": [{"content": {"parts": [{"text": _json_text(text) if want_json else text}]}}]}
 
 
@@ -631,28 +406,10 @@ def gemini_post(api_key, model, body):
     raise RuntimeError(f"Key ទាំង {len(order)} មានបញ្ហា — {last}")
 
 
-def hears_audio(api_key):
-    """True = key ទាំងអស់ទៅកាន់ server ដែលស្តាប់សំឡេងបាន (Google / Bayon / Relay)។
-    Server ផ្ទាល់ខ្លួន (Gemini Router តាម Chrome) ទទួលសំឡេងតែមិនបាន upload ទៅ Gemini (សាក: "NO AUDIO")"""
-    for k in parse_keys(api_key) or [clean_key(api_key)]:
-        if _custom_url() and not k.startswith("AIza") and not k.startswith("bayon_sk_") \
-                and not (k.upper().startswith("AT1-") and RELAY_URL):
-            return False
-        if is_openai_key(k):  # model chat OpenAI មិនទទួលសំឡេង (input_audio) → Whisper + បកប្រែអត្ថបទ
-            return False
-    return True
-
-
 def _post_one(api_key, model, body):
     api_key = clean_key(api_key)
-    if api_key.upper().startswith("AT1-") and RELAY_URL:  # License → Relay របស់ម្ចាស់
-        return _relay_post(api_key, model, body)
     if api_key.startswith("bayon_sk_"):
         return _gateway_post(api_key, model, body)
-    if _custom_url() and not api_key.startswith("AIza"):  # key server ផ្ទាល់ខ្លួន (ឧ. sk-…)
-        return _gateway_post(api_key, model, body, url=_custom_url())
-    if api_key.startswith("sk-"):  # OpenAI (ChatGPT) API
-        return _gateway_post(api_key, model, body, url=OPENAI_API_URL)
     req = urllib.request.Request(
         GEMINI_URL.format(model=model),
         data=json.dumps(body).encode("utf-8"),

@@ -17,18 +17,12 @@ import threading
 import time
 import uuid
 
-# process កូន (python <ឯកសារនេះ>.py) លើ Python embedded (._pth) — Folder របស់ script មិនស្ថិតក្នុង sys.path
-# → រកម៉ូឌុលកម្មវិធី (whisper_srt, ffmpeg_setup ...) មិនឃើញ · បន្ថែមវាដោយខ្លួនឯង
-if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "AITeam1")
 MODEL_DIR = os.path.join(DATA_DIR, "whisper")
 # (ឈ្មោះ model, ស្លាក, ទំហំប្រហែល MB)
-# សាកលើរឿងចិន: turbo ចាប់ការនិយាយបានច្រើនជាង large-v3 (large-v3 រំលងប្រយោគពេលមានភ្លេង) ហើយលឿនជាង 5–10 ដង
-MODELS = [("small", "⚡ លឿន · small", 480), ("large-v3-turbo", "🏆 ល្អបំផុត · turbo", 1600),
-          ("large-v3", "large-v3 (យឺត)", 3100)]
+MODELS = [("small", "⚡ លឿន · small", 480), ("large-v3-turbo", "👍 ល្អ · turbo", 1600),
+          ("large-v3", "🏆 ល្អបំផុត · large-v3", 3100)]
 LANGUAGES = [("", "🔍 រកឃើញខ្លួនឯង"), ("zh", "中文 ចិន"), ("en", "English"), ("th", "ไทย ថៃ"), ("ko", "한국어 កូរ៉េ"),
              ("ja", "日本語 ជប៉ុន"), ("vi", "Tiếng Việt"), ("id", "Indonesia"), ("hi", "हिन्दी ហិណ្ឌូ"),
              ("km", "ខ្មែរ")]
@@ -107,34 +101,6 @@ def has_nvidia():
                               creationflags=_NO_WINDOW).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
-
-
-_cap = []
-
-
-def gpu_compute_cap():
-    """compute capability របស់កាត NVIDIA (ឧ. 8.9 = RTX 40, 12.0 = RTX 50) · 0 = មិនដឹង/គ្មាន"""
-    if not _cap:
-        smi = shutil.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
-        try:
-            out = subprocess.run([smi, "--query-gpu=compute_cap", "--format=csv,noheader"], capture_output=True,
-                                 text=True, timeout=10, creationflags=_NO_WINDOW).stdout
-            _cap.append(max(float(v) for v in out.split()))
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            _cap.append(0.0)
-    return _cap[0]
-
-
-def torch_device(torch):
-    """"cuda" បើ torch ដំណើរការលើកាតនេះពិតប្រាកដ — torch CUDA ខ្លះគ្មាន kernel សម្រាប់កាតថ្មី
-    (ឧ. cu126 + RTX 50 → cudaErrorNoKernelImageForDevice) → ប្រើ "cpu" ជំនួសការបរាជ័យ"""
-    if not torch.cuda.is_available():
-        return "cpu"
-    try:
-        (torch.ones(8, device="cuda") * 2).sum().item()
-        return "cuda"
-    except Exception:  # noqa: BLE001
-        return "cpu"
 
 
 def gpu_ready():
@@ -225,115 +191,13 @@ def _load_audio(media):
     import numpy as np
     import ffmpeg_setup
     ffmpeg_setup.add_to_path()
-    if not ffmpeg_setup.available():
-        try:
-            ffmpeg_setup.download()  # កុំព្យូទ័រគ្មាន ffmpeg → ទាញយកឥឡូវ (~5 វិនាទី តាម GitHub)
-        except Exception:  # noqa: BLE001
-            return media  # ទាញយកមិនបាន → ឲ្យ faster-whisper (PyAV) អានខ្លួនឯង
     try:
-        proc = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", media,
-                               "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
-                              capture_output=True, creationflags=_NO_WINDOW)
-    except OSError:
-        return media
-    err = proc.stderr.decode("utf-8", "replace").strip()
-    no_audio = re.search(r"matches no streams|does not contain any stream", err)
-    if no_audio or (proc.returncode == 0 and not proc.stdout):
-        raise RuntimeError(f"វីដេអូនេះគ្មានសំឡេង (audio) — សូមពិនិត្យឯកសារ ឬទាញយកវីដេអូម្តងទៀត: "
-                           f"{os.path.basename(media)}")
-    if proc.returncode:
-        # កុំប្តូរទៅ PyAV (វាបង្ហាញតែ "tuple index out of range") — ប្រាប់មូលហេតុពិតពី ffmpeg
-        raise RuntimeError(f"ffmpeg អានវីដេអូមិនបាន (ឯកសារខូច ឬទាញយកមិនទាន់ចប់?): "
-                           f"{os.path.basename(media)} — {err[-300:]}")
-    return np.frombuffer(proc.stdout, np.float32).copy()
-
-
-def _patch_av():
-    """PyAV ថ្មី (>=15) លុប metadata_errors ចោល ប៉ុន្តែ faster-whisper នៅតែផ្ញើវា → ទម្លាក់វាចោល"""
-    try:
-        import av
-    except ImportError:
-        return
-    real = av.open
-    if getattr(real, "_aiteam1", False):
-        return
-
-    def open_(*args, **kwargs):
-        try:
-            return real(*args, **kwargs)
-        except TypeError as e:
-            if "metadata_errors" not in str(e):
-                raise
-            kwargs.pop("metadata_errors", None)
-            return real(*args, **kwargs)
-    open_._aiteam1 = True
-    av.open = open_
-
-
-# សាកលើរឿងចិនពិត: VAD ដើម (threshold 0.5, ស្ងាត់ 2វិ) រំលងពាក្យខ្លីៗ ("好了", "我送你吧") និងសំឡេងតិចៗក្រោមភ្លេង
-ASR_OPTS = dict(
-    vad_filter=True, vad_parameters=dict(threshold=0.25, min_silence_duration_ms=500, speech_pad_ms=300),
-    condition_on_previous_text=False,  # កុំឱ្យជាប់ធ្វើដដែលៗ (hallucination) ក្នុងរឿងវែង
-    no_speech_threshold=0.9, log_prob_threshold=None,  # កុំបោះចោលប្រយោគដែល model មិនសូវប្រាកដ
-    compression_ratio_threshold=2.6, beam_size=5, temperature=[0.0, 0.2, 0.4])
-# អក្សរដែល Whisper បង្កើតលើភ្លេង/ស្ងាត់ (មិនមែនការនិយាយពិត)
-_FAKE = re.compile(r"字幕|订阅|點贊|点赞|关注|謝謝觀看|谢谢观看|独播剧场|獨播劇場|Amara|Subtitles? by|"
-                   r"Thanks for watching|請不吝|请不吝|明镜", re.I)
-
-
-def _fill_gaps(model, audio, found, language, prompt):
-    """កន្លែងដែល VAD រសើប (0.2) ឮសំឡេងនិយាយ តែជុំទី 1 គ្មាន subtitle → ស្តាប់តែឃ្លានោះម្តងទៀត"""
-    from faster_whisper.vad import VadOptions, get_speech_timestamps
-    sr = 16000
-    spans = [(words[0][0], words[-1][1]) for words in found]
-    extra = []
-    chunks = get_speech_timestamps(audio, VadOptions(threshold=0.2, min_silence_duration_ms=300, speech_pad_ms=100))
-    for c in chunks:
-        a, b = c["start"] / sr, c["end"] / sr
-        covered = sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans)
-        if b - a < 0.4 or covered > 0.3 * (b - a):
-            continue  # មាន subtitle រួចហើយ (ឬខ្លីពេក)
-        start = max(0.0, a - 0.3)
-        segs, _ = model.transcribe(audio[int(start * sr): int((b + 0.3) * sr)], language=language,
-                                   word_timestamps=True, initial_prompt=prompt, vad_filter=False,
-                                   condition_on_previous_text=False, beam_size=5)
-        for s in segs:
-            text = s.text.strip()
-            if not text or s.no_speech_prob > 0.6 or s.avg_logprob < -1.0 or _FAKE.search(text):
-                continue
-            words = [(start + w.start, start + w.end, w.word) for w in (s.words or [])] or \
-                    [(start + s.start, start + s.end, s.text)]
-            if all(max(0.0, min(words[-1][1], y) - max(words[0][0], x)) < 0.3 for x, y in spans):
-                extra.append(words)
-    return extra
-
-
-def _compute_type(device):
-    """កាត GPU ចាស់ (ឧ. GTX 10xx) មិនគាំទ្រ float16 → ប្រើប្រភេទផ្សេងលើ GPU ដដែល (កុំធ្លាក់ទៅ CPU)"""
-    if device != "cuda":
-        return "int8"
-    import ctranslate2
-    ok = ctranslate2.get_supported_compute_types("cuda")
-    return next((t for t in ("float16", "int8_float16", "int8_float32", "float32") if t in ok), "float32")
-
-
-# GPU បរាជ័យ → មូលហេតុជាភាសាខ្មែរ (កម្មវិធីមិនប្តូរទៅ CPU ទេ ព្រោះ CPU យឺតជាង 10–20 ដង)
-_GPU_HINTS = [
-    (r"driver version is insufficient|CUDA driver|cudaErrorInsufficientDriver",
-     "Driver NVIDIA ចាស់ពេក — សូម Update driver ពី nvidia.com/drivers (ឬ GeForce Experience / NVIDIA App) "
-     "រួចបើកកម្មវិធីម្តងទៀត"),
-    (r"out of memory|CUBLAS_STATUS_ALLOC_FAILED",
-     "GPU អស់ VRAM — សូមបិទកម្មវិធីផ្សេងដែលប្រើ GPU (ហ្គេម, Chrome ...) រួចព្យាយាមម្តងទៀត"),
-    (r"cublas|cudnn|\.dll|LoadLibrary|Could not load library",
-     "ឯកសារ CUDA (cuBLAS / cuDNN) ខូច ឬខ្វះ — កម្មវិធីបានដំឡើងឡើងវិញ តែនៅតែមិនដំណើរការ"),
-]
-
-
-def _gpu_error(text):
-    for pattern, hint in _GPU_HINTS:
-        if re.search(pattern, text, re.I):
-            return f"GPU ប្រើមិនបាន: {hint} ({text[-150:]})"
-    return f"GPU ប្រើមិនបាន: {text[-200:]}"
+        out = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", media,
+                              "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                             capture_output=True, check=True, creationflags=_NO_WINDOW).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return media  # ffmpeg មិនបាន → ឲ្យ faster-whisper អានខ្លួនឯង
+    return np.frombuffer(out, np.float32).copy()
 
 
 def _transcribe(media, out_srt, model_name, lang, device):
@@ -345,34 +209,26 @@ def _transcribe(media, out_srt, model_name, lang, device):
         except OSError:
             pass
     from faster_whisper import WhisperModel
-    _patch_av()
 
     def say(**msg):
         print(json.dumps(msg, ensure_ascii=False), flush=True)
 
     say(phase="load", device=device)
-    model = WhisperModel(model_name, device=device, compute_type=_compute_type(device), download_root=MODEL_DIR)
+    model = WhisperModel(model_name, device=device, compute_type="float16" if device == "cuda" else "int8",
+                         download_root=MODEL_DIR)
     say(phase="listen", device=device)
-    audio = _load_audio(media)
-    prompt = "以下是普通话的句子。" if lang == "zh" else None  # ចិនអក្សរសាមញ្ញ
-    segments, info = model.transcribe(audio, language=lang or None, word_timestamps=True, **ASR_OPTS,
-                                      initial_prompt=prompt)
+    segments, info = model.transcribe(
+        _load_audio(media), language=lang or None, vad_filter=True, word_timestamps=True,
+        condition_on_previous_text=False,  # កុំឱ្យជាប់ធ្វើដដែលៗ (hallucination) ក្នុងរឿងវែង
+        initial_prompt="以下是普通话的句子。" if lang == "zh" else None)  # ចិនអក្សរសាមញ្ញ
     say(phase="listen", total=round(info.duration, 1), language=info.language)
-    found = []
-    for seg in segments:
-        say(progress=round(seg.end, 1))
-        if _FAKE.search(seg.text) and len(seg.text.strip()) < 30:
-            continue
-        found.append([(w.start, w.end, w.word) for w in (seg.words or [])] or [(seg.start, seg.end, seg.text)])
-    if not isinstance(audio, str):  # ជុំទី 2: ស្តាប់កន្លែងដែលមានសំឡេងនិយាយ តែគ្មាន subtitle ម្តងទៀត
-        found += _fill_gaps(model, audio, found, info.language, prompt)
-    found.sort(key=lambda words: words[0][0])
     lines = []
-    for words in found:
+    for seg in segments:
+        words = [(w.start, w.end, w.word) for w in (seg.words or [])] or [(seg.start, seg.end, seg.text)]
         lines += split_words(words)
+        say(progress=round(seg.end, 1))
     with open(out_srt, "w", encoding="utf-8") as f:
         for i, (a, b, text) in enumerate(lines, 1):
-            b = max(b, a + 0.3)  # ពាក្យដែល timestamp ចាប់ផ្តើម = បញ្ចប់ → subtitle 0 វិនាទី (អានមិនបាន)
             f.write(f"{i}\n{_fmt(a)} --> {_fmt(b)}\n{text}\n\n")
     say(done=len(lines), language=info.language)
 
@@ -434,26 +290,15 @@ def start_job(media, out_srt, model_name, lang, use_gpu):
 
     def run():
         try:
-            # កុំព្យូទ័រមានកាត NVIDIA → ប្រើតែ GPU ជានិច្ច (មិនធ្លាក់ទៅ CPU ស្ងាត់ៗទេ) · គ្មាន → CPU
-            # use_gpu ទុកសម្រាប់ភាពត្រូវគ្នាជាមួយកូដចាស់ (GUI ខ្លះផ្ញើ False ពេល CUDA មិនទាន់ដំឡើង)
-            if not has_nvidia():
-                run_once("cpu")
-            else:
-                if not gpu_ready():  # cuBLAS / cuDNN មិនទាន់មាន → ដំឡើងឥឡូវ (~1.5 GB ម្តងគត់)
-                    job.update(status="download", done=0, total=100)
-                    pip_install(GPU_PACKAGES)
+            devices = ["cuda", "cpu"] if use_gpu else ["cpu"]
+            for device in devices:
                 try:
-                    run_once("cuda")
+                    run_once(device)
+                    break
                 except RuntimeError as e:
-                    if not re.search(r"cuda|cublas|cudnn|gpu|\.dll|LoadLibrary|float16|out of memory", str(e), re.I):
-                        raise  # មិនមែនបញ្ហា GPU (ឧ. វីដេអូគ្មានសំឡេង) → ប្រាប់ដដែល
-                    if not re.search(_GPU_HINTS[2][0], str(e), re.I):
-                        raise RuntimeError(_gpu_error(str(e))) from None
-                    pip_install(["--force-reinstall", "--no-deps", *GPU_PACKAGES])  # DLL ខូច → ដំឡើងឡើងវិញម្តង
-                    try:
-                        run_once("cuda")
-                    except RuntimeError as e2:
-                        raise RuntimeError(_gpu_error(str(e2))) from None
+                    if device == "cpu":
+                        raise
+                    job["warnings"].append(f"GPU ប្រើមិនបាន ({str(e)[-120:]}) — ប្រើ CPU ជំនួស (យឺតជាង)")
             job["done"] = job["total"]
             job["status"] = "done"
         except Exception as e:  # noqa: BLE001

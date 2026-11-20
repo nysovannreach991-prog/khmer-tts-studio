@@ -101,28 +101,8 @@ DUCK = {1: "threshold=0.03:ratio=2:attack=20:release=500:makeup=1",
 DUCK_LABELS = ["បិទ", "ស្រាល", "មធ្យម", "ខ្លាំង"]
 
 
-def blur_chain(blur, w, h):
-    """blur = {"rects": [(x, y, w, h) ជាប្រភាគ 0..1 នៃស៊ុម], "sigma": កម្លាំង} → (filter chain, label) ឬ (None, None)
-    ព្រិលតំបន់ (អក្សររត់ដើម / logo) : crop → gblur → overlay ត្រឡប់ទៅកន្លែងដើម"""
-    rects = []
-    for fx, fy, fw, fh in (blur or {}).get("rects") or []:
-        x, y = int(max(0.0, fx) * w) // 2 * 2, int(max(0.0, fy) * h) // 2 * 2
-        rw, rh = min(int(fw * w) // 2 * 2, w - x), min(int(fh * h) // 2 * 2, h - y)
-        if rw >= 8 and rh >= 8:
-            rects.append((x, y, rw, rh))
-    if not rects:
-        return None, None
-    sigma = max(2.0, min(float((blur or {}).get("sigma") or 20), 60.0))
-    n = len(rects)
-    chain = [f"[0:v]split={n + 1}[bb0]" + "".join(f"[bs{k}]" for k in range(n))]
-    for k, (x, y, rw, rh) in enumerate(rects):
-        chain.append(f"[bs{k}]crop={rw}:{rh}:{x}:{y},gblur=sigma={sigma:.1f}:steps=2[bc{k}]")
-        chain.append(f"[bb{k}][bc{k}]overlay={x}:{y}[bb{k + 1}]")
-    return ";".join(chain), f"bb{n}"
-
-
 def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_sec, job, overlays=None, ads=None,
-                  keep_full=False, bg_audio=None, duck=0, blur=None):
+                  keep_full=False, bg_audio=None, duck=0):
     """ដាក់ dub_pcm ចូលវីដេអូ (រក្សាសំឡេងដើមតាម orig_volume) ហើយកាត់ជាផ្នែកៗ។
     overlays = Logo / Lower third (មើល overlay.py) — ត្រូវ encode វីដេអូឡើងវិញ
     ads = វីដេអូ Ads នៅកណ្តាល/ចុង (មើល ads.py) — ដាក់បន្ទាប់ពីកាត់ជាផ្នែករួច
@@ -161,15 +141,11 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
                 graph = f"{dub}[a]"
 
         with_ads = ads_mod.active(ads)
-        bchain, blabel = (None, None)
-        if blur and blur.get("rects"):
-            vinfo = _probe(video)
-            bchain, blabel = blur_chain(blur, vinfo["width"], vinfo["height"])
         # Ads → encode តែម្តង (វីដេអូ + Ads ក្នុង ffmpeg តែមួយ) ជំនួស copy/encode ហើយ encode ផ្នែកនីមួយៗម្តងទៀត។
         # លើកលែង: រក្សាទុកវីដេអូពេញ (គ្មាន Ads) → ប្រើវិធីចាស់ 2 ជំហាន
         single_pass = with_ads and not keep_full
         # encode ឡើងវិញ (Logo / Ads) → កាត់បានគ្រប់ទីកន្លែង មិនចាំបាច់រក keyframe
-        encode = bool(overlays) or single_pass or bool(bchain)
+        encode = bool(overlays) or single_pass
         points = cut_points(cues, duration, part_sec, keyframes(video) if part_sec > 0 and not encode else None)
         _warn_single_show(overlays, duration, points, job)
         folder = f"{name_base}_parts" if points else name_base
@@ -186,7 +162,7 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
         job["stage_pct"] = 0
         if single_pass:
             _encode_with_ads(video, base_inputs, graph, overlays, duration, points, cues, ads, dest, name_base,
-                             job, tmp, bchain, blabel)
+                             job, tmp)
             return folder, _collect(dest, folder, job, cues)
         progress = _StagePct(job, 0, 60 if with_ads else 100)
         force = ["-force_key_frames", ",".join(map(str, points))] if points else []
@@ -194,9 +170,7 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
             info = _probe(video)
             bounds = [0.0] + points + [duration]
             inputs, chains, vlabel = ov.build(overlays, info["width"], info["fps"], duration,
-                                              list(zip(bounds, bounds[1:])), len(base_inputs) // 2, blabel or "0:v")
-            if bchain:
-                chains = [bchain] + chains
+                                              list(zip(bounds, bounds[1:])), len(base_inputs) // 2)
             enc = ov.pick_encoder()
             job["encoder"] = enc
             args = ov.compact_args([*base_inputs, *inputs, "-filter_complex", ";".join(chains + [graph]),
@@ -212,25 +186,6 @@ def mix_and_split(video, dub_pcm, cues, out_dir, name_base, orig_volume, part_se
                 for f in os.listdir(dest):
                     os.remove(os.path.join(dest, f))
                 _run_ffmpeg(args + ov.encoder_args("libx264") + force + output, duration, progress)
-            if keep_full and points:
-                _join_parts(dest, out_dir, name_base, job)
-            return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
-
-        if bchain:  # ព្រិលអក្សរ → ត្រូវ encode វីដេអូឡើងវិញ
-            args = ov.compact_args([*base_inputs, "-filter_complex", f"{bchain};[{blabel}]format=yuv420p[vb];{graph}",
-                                    "-map", "[vb]", "-map", "[a]", "-t", f"{duration:.3f}",
-                                    "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"], tmp)
-            for enc in dict.fromkeys([ov.pick_encoder(), "libx264"]):
-                job["encoder"] = enc
-                try:
-                    _run_ffmpeg(args + ov.encoder_args(enc) + force + output, duration, progress)
-                    break
-                except RuntimeError:
-                    if enc == "libx264":
-                        raise
-                    job["warnings"].append(f"{enc} បរាជ័យ — ប្រើ libx264 ជំនួស (យឺតជាង)")
-                    for f in os.listdir(dest):
-                        os.remove(os.path.join(dest, f))
             if keep_full and points:
                 _join_parts(dest, out_dir, name_base, job)
             return folder, _collect(dest, folder, job, cues, ads if with_ads else None)
@@ -282,20 +237,17 @@ def _warn_single_show(overlays, duration, points, job):
                 "បន្ថយពេល 'ម្តងទៀតរៀងរាល់' (ឧ. 0.5 = 30វិ)")
 
 
-def _encode_with_ads(video, base_inputs, graph, overlays, duration, points, cues, ads, dest, name_base, job, tmp,
-                     bchain=None, blabel=None):
+def _encode_with_ads(video, base_inputs, graph, overlays, duration, points, cues, ads, dest, name_base, job, tmp):
     """វីដេអូ (+ Logo) + សំឡេង + Ads → encode តែម្តង ហើយកាត់ជាផ្នែក។
     វីដេអូមេត្រូវកាត់ជាដុំៗ (trim) នៅចំណុច Ads ហើយភ្ជាប់ជាមួយ Ads ដោយ concat"""
     info = _probe(video)
     w, h = info["width"] - info["width"] % 2, info["height"] - info["height"] % 2
     fps = round(info["fps"], 3)
     bounds = list(zip([0.0] + points, points + [duration]))
-    inputs, chains, vlabel = [], [], f"[{blabel or '0:v'}]"
+    inputs, chains, vlabel = [], [], "[0:v]"
     if overlays:
         inputs, chains, vlabel = ov.build(overlays, info["width"], info["fps"], duration, bounds,
-                                          len(base_inputs) // 2, blabel or "0:v")
-    if bchain:
-        chains = [bchain] + chains
+                                          len(base_inputs) // 2)
     chains = chains + [graph]
     parts, count = ads_mod.layout(bounds, cues, ads)
     segs = [s for part in parts for s in part]
@@ -506,4 +458,3 @@ def start_brand_job(video, out_dir, name_base, overlays, ads, part_sec, trim=Non
 
     threading.Thread(target=run, daemon=True).start()
     return job_id
-

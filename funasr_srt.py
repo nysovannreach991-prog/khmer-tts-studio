@@ -14,35 +14,17 @@ import threading
 import time
 import uuid
 
-# process កូន (python <ឯកសារនេះ>.py) លើ Python embedded (._pth) — Folder របស់ script មិនស្ថិតក្នុង sys.path
-# → រកម៉ូឌុលកម្មវិធី (whisper_srt, ffmpeg_setup ...) មិនឃើញ · បន្ថែមវាដោយខ្លួនឯង
-if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 import whisper_srt as ws
 
 MODEL_DIR = os.path.join(ws.DATA_DIR, "funasr")
-PACKAGES = ["torch", "funasr>=1.4.26", "modelscope", "kaldi-native-fbank"]
+PACKAGES = ["torch", "funasr>=1.2", "modelscope", "kaldi-native-fbank"]
 # torch កំណែ CUDA (~2.5 GB) ជំនួសកំណែ CPU — pip មិនប្តូរខ្លួនឯងទេ ព្រោះ "torch" មានរួចហើយ
-# cu126 = កាតចាស់ដល់ RTX 40 (sm_50–sm_90) · RTX 50 (Blackwell, sm_120) ត្រូវការ cu128 ឡើងទៅ
 GPU_PACKAGES = ["--force-reinstall", "--no-deps", "torch", "--index-url", "https://download.pytorch.org/whl/cu126"]
-
-
-def _cuda_tag():
-    return 128 if ws.gpu_compute_cap() >= 10 else 126
-
-
-def gpu_packages():
-    return GPU_PACKAGES[:-1] + [f"https://download.pytorch.org/whl/cu{_cuda_tag()}"]
 ENGINES = {  # ឈ្មោះ → (model, punc, ទំហំទាញយក MB)
     "sensevoice": ("iic/SenseVoiceSmall", None, 900),
     "paraformer": ("paraformer-zh", "ct-punc", 1080),
 }
 SENSEVOICE_LANGS = {"zh", "en", "yue", "ja", "ko"}
-# ឈ្មោះ model → ថតក្នុង MODEL_DIR/models (ទាញយករួច → ផ្ទុកពីថតផ្ទាល់ មិនសួរ ModelScope តាម Internet: 10វិ → 1.4វិ)
-_REPOS = {"fsmn-vad": "iic--speech_fsmn_vad_zh-cn-16k-common-pytorch", "iic/SenseVoiceSmall": "iic--SenseVoiceSmall",
-          "paraformer-zh": "iic--speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-          "ct-punc": "iic--punc_ct-transformer_cn-en-common-vocab471067-large"}
 BATCH = 32                 # VAD segment ក្នុងមួយដុំ
 VAD_OPTS = {"max_end_silence_time": 300,       # ms — កាត់នៅចន្លោះស្ងាត់ខ្លី → មួយប្រយោគ/segment
             "max_single_segment_time": 20000}  # ms — segment វែងបំផុត
@@ -50,19 +32,6 @@ _TAG = re.compile(r"<\|[^|]*\|>")
 _PUNCT = re.compile(r"^[\s，。！？、；：,.!?;:…\"'“”‘’（）()《》\-—]+$")
 _CJK_TOKEN = re.compile(r"[㐀-鿿가-힯぀-ヿ]")
 _TOKENS = re.compile(r"[㐀-鿿가-힯぀-ヿ]|[A-Za-z0-9'’]+|\S")
-
-
-def _local(model):
-    """ថត snapshot របស់ model បើទាញយកពេញហើយ — បើមិនទាន់ → ឈ្មោះដើម (FunASR ទាញយកពី ModelScope)"""
-    path = os.path.join(MODEL_DIR, "models", _REPOS.get(model, ""), "snapshots", "master")
-    ok = _REPOS.get(model) and all(os.path.isfile(os.path.join(path, f)) for f in ("model.pt", "config.yaml",
-                                                                                    "configuration.json"))
-    return path if ok else model
-
-
-def models_ready(engine):
-    model, punc, _ = ENGINES[engine]
-    return all(_local(m) != m for m in ("fsmn-vad", model, punc) if m)
 
 
 def installed():
@@ -76,17 +45,16 @@ def ensure_gpu_torch(on_line=None):
     import importlib.util as u
     if u.find_spec("torch") and not gpu_ready() and ws.has_nvidia():
         stop_servers()  # process ចាស់កំពុងប្រើ torch CPU → បិទសិន (Windows ចាក់សោឯកសារ)
-        ws.pip_install(gpu_packages(), on_line)
+        ws.pip_install(GPU_PACKAGES, on_line)
 
 
 def gpu_ready():
-    """torch មាន CUDA ដែលស្គាល់កាតនេះ (មិនមែនកំណែ CPU ឬ cu126 លើ RTX 50) — ពិនិត្យដោយមិន import torch (យឺត)"""
+    """torch មាន CUDA (មិនមែនកំណែ CPU) — ពិនិត្យដោយមិន import torch (យឺត)"""
     import importlib.metadata as md
     try:
-        m = re.search(r"\+cu(\d+)", md.version("torch"))
+        return "+cu" in md.version("torch")
     except md.PackageNotFoundError:
         return False
-    return bool(m) and int(m.group(1)) >= _cuda_tag()
 
 
 # ---------------- អត្ថបទ + ពេលវេលា → បន្ទាត់ subtitle ----------------
@@ -133,19 +101,12 @@ class _Engine:
         import torch
         from funasr import AutoModel
         self.engine = engine
-        self.device = "cuda:0" if ws.torch_device(torch) == "cuda" else "cpu"
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         say(phase="load", device=self.device)
         model, punc, _ = ENGINES[engine]
         common = {"disable_update": True, "device": self.device, "disable_pbar": True, "disable_log": True}
-        # VAD លើ CPU: model តូច ដំណើរការជាលំដាប់ → CPU លឿនជាង GPU (~1.6x) ហើយទុក VRAM ឱ្យ ASR
-        try:
-            self.vad = AutoModel(model=_local("fsmn-vad"), **dict(common, device="cpu"))
-            self.asr = AutoModel(model=_local(model), **({"punc_model": _local(punc)} if punc else {}), **common)
-        except Exception:  # noqa: BLE001 — ថត model ខូច/មិនពេញ → ឱ្យ FunASR ពិនិត្យ និងទាញយកឡើងវិញតាមឈ្មោះ
-            if _local(model) == model:
-                raise
-            self.vad = AutoModel(model="fsmn-vad", **dict(common, device="cpu"))
-            self.asr = AutoModel(model=model, **({"punc_model": punc} if punc else {}), **common)
+        self.vad = AutoModel(model="fsmn-vad", **common)
+        self.asr = AutoModel(model=model, **({"punc_model": punc} if punc else {}), **common)
         say(phase="ready", device=self.device)
 
     def run(self, media, out_srt, lang, say):
@@ -297,23 +258,6 @@ def start_job(media, out_srt, engine, lang):
 
     threading.Thread(target=run, daemon=True).start()
     return job_id
-
-
-def prewarm(engine):
-    """បើក process + ផ្ទុក model ទុកមុន (ឧ. កំឡុងពេល Merge) → ពេលដល់ជំហាន SRT មិនចាំបាច់រង់ចាំ ~8វិ
-    តែពេល model ទាញយករួច (លើកដំបូង start_job បង្ហាញ % ទាញយក) · មិនរារាំង thread ដែលហៅ"""
-    if engine not in ENGINES or not installed() or not models_ready(engine):
-        return
-
-    def run():
-        if _lock.acquire(blocking=False):  # ការងារកំពុងរត់ → មិនបាច់
-            try:
-                _server(engine)
-            except OSError:
-                pass
-            finally:
-                _lock.release()
-    threading.Thread(target=run, daemon=True).start()
 
 
 def stop_servers():
