@@ -182,33 +182,6 @@ try {
         Set-Content $marker $stamp
     }
 
-    # Built-in Gemini Router (only in the Setup that ships gemini_router\): its libraries, and a browser
-    # when Google Chrome is not installed. A failure here never blocks the app - the next start tries again.
-    $routerReq = Join-Path $AppDir "gemini_router\requirements.txt"
-    if (Test-Path $routerReq) {
-        $rStamp = (Get-FileHash $routerReq -Algorithm SHA256).Hash + "|" + $py
-        $rMarker = Join-Path $Data "router.stamp"
-        $rOld = if (Test-Path $rMarker) { (Get-Content $rMarker -Raw).Trim() } else { "" }
-        if ($rOld -ne $rStamp) {
-            Show-Console
-            Step "Installing the Gemini Router engine (one time only, about 60 MB) ..."
-            & $py -m pip install --disable-pip-version-check --no-warn-script-location --progress-bar on -r $routerReq
-            $ok = -not $LASTEXITCODE
-            if ($ok) {
-                $chrome = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-                            "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-                            "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe") | Where-Object { $_ -and (Test-Path $_) }
-                if (-not $chrome) {
-                    Step "Google Chrome not found - downloading a browser for the Gemini Router (about 180 MB) ..."
-                    & $py -m playwright install chromium
-                    if ($LASTEXITCODE) { $ok = $false }
-                }
-            }
-            if ($ok) { Set-Content $rMarker $rStamp }
-            else { Write-Host "    Gemini Router setup failed - it will be tried again at the next start" -ForegroundColor Yellow }
-        }
-    }
-
     # ffmpeg (audio / video tools) - download once so the app works right away
     if (-not (Test-Ffmpeg)) {
         Show-Console

@@ -45,6 +45,51 @@ def describe(spec):
     return " · ".join(f"{label}: {os.path.basename(path)}" for label, path in items)
 
 
+# ---------- ⚡ បង្រួម Ads ----------
+# Ads 4K / 60fps / bitrate ខ្ពស់ ត្រូវ decode + scale ពេលសៀតចូលវីដេអូនីមួយៗ (គ្រប់ Part, គ្រប់រឿង) →
+# បង្រួមម្តងត្រឹម Full HD 30fps H.264 + AAC 48kHz stereo (ដូចទម្រង់លទ្ធផល) → សៀតចូលលឿន ឯកសារតូច
+SHRINK_MAX_W, SHRINK_MAX_H, SHRINK_MAX_FPS = 1920, 1080, 30.0
+SHRINK_MAX_RATE = 1.5e6  # byte/វិនាទី (~12 Mbps) — ធំជាងនេះចាត់ទុកថាគួរបង្រួម
+
+
+def needs_shrink(path):
+    try:
+        info = _probe(path)
+    except RuntimeError:
+        return False
+    rate = os.path.getsize(path) / max(info["duration"], 0.1)
+    return (info["width"] > SHRINK_MAX_W or info["height"] > SHRINK_MAX_H or info["fps"] > SHRINK_MAX_FPS + 1
+            or rate > SHRINK_MAX_RATE)
+
+
+def shrink(path, out_dir=None):
+    """Ads → <ឈ្មោះ>_small.mp4 (≤1920×1080 រក្សារាង · ≤30fps · H.264 · AAC 48k stereo)។
+    ត្រឡប់ {"path", "before", "after", "width", "height"}"""
+    info = _probe(path)
+    out = ov._small_path(path, ".mp4", out_dir)
+    tmp = out[:-4] + ".tmp.mp4"
+    vf = (f"scale=w='min({SHRINK_MAX_W},iw)':h='min({SHRINK_MAX_H},ih)':force_original_aspect_ratio=decrease:"
+          f"force_divisible_by=2:flags=lanczos")
+    if info["fps"] > SHRINK_MAX_FPS + 1:
+        vf += f",fps={SHRINK_MAX_FPS:g}"
+    vf += ",format=yuv420p"
+    audio = (["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"] if info["audio"] else [])
+    job = {"done": 0}
+    for enc in dict.fromkeys([ov.pick_encoder(), "libx264"]):  # GPU បរាជ័យ → libx264
+        try:
+            _run_ffmpeg(["-i", path, "-vf", vf, "-map", "0:v:0", "-map", "0:a:0?", *ov.encoder_args(enc), *audio,
+                         "-movflags", "+faststart", tmp], info["duration"], job)
+            break
+        except RuntimeError:
+            if enc == "libx264":
+                raise
+    os.replace(tmp, out)
+    ov._media_info.cache_clear()
+    new = _probe(out)
+    return {"path": out, "before": os.path.getsize(path), "after": os.path.getsize(out),
+            "width": new["width"], "height": new["height"]}
+
+
 def quiet_point(cues, start, end):
     """ចំណុចជិតកណ្តាល [start, end] (វិនាទី) ដែលនៅចន្លោះស្ងាត់រវាង subtitle"""
     mid = (start + end) / 2
